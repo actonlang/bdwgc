@@ -4,12 +4,52 @@ const print = @import("std").debug.print;
 pub fn build(b: *std.build.Builder) void {
     const optimize = b.standardOptimizeOption(.{});
     const target = b.standardTargetOptions(.{});
+    const t = target.toTarget();
 
     const lib = b.addStaticLibrary(.{
         .name = "gc",
         .target = target,
         .optimize = optimize,
     });
+
+    var flags = std.ArrayList([]const u8).init(b.allocator);
+    defer flags.deinit();
+
+    flags.appendSlice(&.{
+        "-fno-sanitize=undefined",
+        // These are standard options from Makefile.direct
+        "-DALL_INTERIOR_POINTERS",
+        "-DENABLE_DISCLAIM",
+        "-DGC_ATOMIC_UNCOLLECTABLE",
+        "-DGC_GCJ_SUPPORT",
+        "-DJAVA_FINALIZATION",
+        "-DNO_EXECUTE_PERMISSION",
+        "-DUSE_MMAP",
+        "-DUSE_MUNMAP",
+        // Acton specific config
+        // TODO: how to modularize this?
+        "-DLARGE_CONFIG",
+        "-DGC_BUILTIN_ATOMIC",
+        "-DGC_THREADS",
+        "-DNO_PROC_FOR_LIBRARIES",
+        "-DREDIRECT_MALLOC=GC_malloc",
+        "-DIGNORE_FREE",
+        "-DPARALLEL_MARK",
+        "-DNO_GETCONTEXT",
+    }) catch |err| {
+        std.log.err("Error appending flags: {}", .{err});
+        std.os.exit(1);
+    };
+
+    if (t.abi.isMusl()) {
+        print("Using musl flags\n", .{});
+        flags.appendSlice(&.{
+            "-DNO_GETCONTEXT",
+        }) catch |err| {
+            std.log.err("Error appending flags: {}", .{err});
+            std.os.exit(1);
+        };
+    }
 
     const source_files = [_][]const u8{
         "allchblk.c",
@@ -45,27 +85,7 @@ pub fn build(b: *std.build.Builder) void {
         "win32_threads.c"
     };
 
-    lib.addCSourceFiles(&source_files, &[_][]const u8{
-        "-fno-sanitize=undefined",
-        // These are standard options from Makefile.direct
-        "-DALL_INTERIOR_POINTERS",
-        "-DENABLE_DISCLAIM",
-        "-DGC_ATOMIC_UNCOLLECTABLE",
-        "-DGC_GCJ_SUPPORT",
-        "-DJAVA_FINALIZATION",
-        "-DNO_EXECUTE_PERMISSION",
-        "-DUSE_MMAP",
-        "-DUSE_MUNMAP",
-        // Acton specific config
-        // TODO: how to modularize this?
-        "-DLARGE_CONFIG",
-        "-DGC_BUILTIN_ATOMIC",
-        "-DGC_THREADS",
-        "-DNO_PROC_FOR_LIBRARIES",
-        "-DREDIRECT_MALLOC=GC_malloc",
-        "-DIGNORE_FREE",
-        "-DPARALLEL_MARK",
-    });
+    lib.addCSourceFiles(&source_files, flags.items);
     lib.addIncludePath("include");
     lib.linkLibC();
     lib.installHeader("include/gc.h", "gc.h");
