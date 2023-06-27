@@ -41,6 +41,19 @@ pub fn build(b: *std.build.Builder) void {
         std.os.exit(1);
     };
 
+    if (t.os.tag == .linux) {
+        // For dynamically loaded libraries, we have to hook all thread creation
+        // so we can wrap it up in our own handler that does signal handling for
+        // stop the world. This includes GNU libc which creates its own internal
+        // threads, for example for DNS resolution.
+        flags.appendSlice(&.{
+            "-DGC_USE_DLOPEN_WRAP",
+        }) catch |err| {
+            std.log.err("Error appending flags: {}", .{err});
+            std.os.exit(1);
+        };
+    }
+
     if (t.abi.isMusl()) {
         print("Using musl flags\n", .{});
         flags.appendSlice(&.{
