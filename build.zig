@@ -99,7 +99,7 @@ pub fn build(b: *std.build.Builder) void {
     };
 
     lib.addCSourceFiles(&source_files, flags.items);
-    lib.addIncludePath("include");
+    lib.addIncludePath(.{ .path = "include" });
     lib.linkLibC();
     lib.installHeader("include/gc.h", "gc.h");
     lib.installHeadersDirectory("include/gc", "gc");
