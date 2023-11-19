@@ -98,7 +98,10 @@ pub fn build(b: *std.build.Builder) void {
         "win32_threads.c"
     };
 
-    lib.addCSourceFiles(&source_files, flags.items);
+    lib.addCSourceFiles(.{
+        .files = &source_files,
+        .flags = flags.items,
+    });
     lib.addIncludePath(.{ .path = "include" });
     lib.linkLibC();
     lib.installHeader("include/gc.h", "gc.h");
