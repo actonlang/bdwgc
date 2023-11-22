@@ -4,6 +4,7 @@ const print = @import("std").debug.print;
 pub fn build(b: *std.build.Builder) void {
     const optimize = b.standardOptimizeOption(.{});
     const target = b.standardTargetOptions(.{});
+    const no_threads = b.option(bool, "no_threads", "") orelse false;
     const t = target.toTarget();
 
     const lib = b.addStaticLibrary(.{
@@ -30,16 +31,23 @@ pub fn build(b: *std.build.Builder) void {
         // TODO: how to modularize this?
         "-DLARGE_CONFIG",
         "-DGC_BUILTIN_ATOMIC",
-        "-DGC_THREADS",
         "-DNO_PROC_FOR_LIBRARIES",
         "-DREDIRECT_MALLOC=GC_malloc",
         "-DIGNORE_FREE",
-        "-DPARALLEL_MARK",
         "-DNO_GETCONTEXT",
     }) catch |err| {
         std.log.err("Error appending flags: {}", .{err});
         std.os.exit(1);
     };
+
+    if (no_threads) {
+        // No threads!
+    } else {
+        flags.appendSlice(&.{
+            "-DGC_THREADS",
+            "-DPARALLEL_MARK",
+        }) catch @panic("OOM");
+    }
 
     if (t.os.tag == .linux) {
         // For dynamically loaded libraries, we have to hook all thread creation
