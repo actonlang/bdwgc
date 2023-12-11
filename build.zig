@@ -39,7 +39,6 @@ pub fn build(b: *std.build.Builder) void {
         "-DNO_PROC_FOR_LIBRARIES",
         "-DREDIRECT_MALLOC=GC_malloc",
         "-DIGNORE_FREE",
-        "-DNO_GETCONTEXT",
     }) catch |err| {
         std.log.err("Error appending flags: {}", .{err});
         std.os.exit(1);
