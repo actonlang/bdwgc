@@ -4,8 +4,13 @@ const print = @import("std").debug.print;
 pub fn build(b: *std.build.Builder) void {
     const optimize = b.standardOptimizeOption(.{});
     const target = b.standardTargetOptions(.{});
-    const no_threads = b.option(bool, "no_threads", "") orelse false;
+    var no_threads = b.option(bool, "no_threads", "") orelse false;
     const t = target.toTarget();
+
+    // No threads on wasm
+    if (t.isWasm()) {
+        no_threads = true;
+    }
 
     const lib = b.addStaticLibrary(.{
         .name = "gc",
