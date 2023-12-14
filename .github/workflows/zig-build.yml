@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ttriple: [ aarch64-linux-musl, wasm32-wasi, x86_64-linux-gnu.2.27, x86_64-linux-musl, x86_64-windows-gnu ]
+        ttriple: [ aarch64-macos-none, aarch64-linux-musl, wasm32-wasi, x86_64-macos-none, x86_64-linux-gnu.2.27, x86_64-linux-musl, x86_64-windows-gnu ]
 
     steps:
     - uses: actions/checkout@v4
