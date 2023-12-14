@@ -175,3 +175,7 @@ gc.def
 /pvs-project.log
 /pvs-project.tasks
 /strace_out
+
+# Zig
+zig-cache
+zig-out
