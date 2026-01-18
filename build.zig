@@ -13,13 +13,13 @@
 const builtin = @import("builtin");
 const std = @import("std");
 
-const zig_min_required_version = "0.12.0";
+const zig_min_required_version = "0.14.0";
 
 // TODO: specify PACKAGE_VERSION and LIB*_VER_INFO.
 
 // Compared to the CMake script, some definitions and compiler options
 // are hard-coded here, which is natural because build.zig is only built with
-// the Zig build system and Zig ships with an embedded clang (as of zig 0.12).
+// the Zig build system and Zig ships with an embedded clang (as of zig 0.14).
 // As a consequence, we do not have to support lots of different compilers
 // (a notable exception is msvc target which implies use of the corresponding
 // native compiler).
@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const t = target.result;
 
-    const default_enable_threads = !t.isWasm(); // both emscripten and wasi
+    const default_enable_threads = !t.cpu.arch.isWasm(); // emscripten/wasi
 
     // Customize build by passing "-D<option_name>[=false]" in command line.
     const enable_cplusplus = b.option(bool, "enable_cplusplus",
@@ -130,20 +130,6 @@ pub fn build(b: *std.Build) void {
         "Install header and pkg-config metadata files") orelse true;
     // TODO: support with_libatomic_ops, without_libatomic_ops
 
-    var gc = b.addStaticLibrary(.{
-        .name = "gc",
-        .target = target,
-        .optimize = optimize,
-    });
-    if (build_shared_libs) {
-        // TODO: convert VER_INFO values to [SO]VERSION ones
-        gc = b.addSharedLibrary(.{
-            .name = "gc",
-            .target = target,
-            .optimize = optimize,
-        });
-    }
-
     var source_files = std.ArrayList([]const u8).init(b.allocator);
     defer source_files.deinit();
     var flags = std.ArrayList([]const u8).init(b.allocator);
@@ -202,7 +188,7 @@ pub fn build(b: *std.Build) void {
                 "pthread_start.c",
                 "pthread_support.c",
             }) catch unreachable;
-            if (t.isDarwin()) {
+            if (t.os.tag.isDarwin()) {
                 source_files.append("darwin_stop_world.c") catch unreachable;
             } else {
                 source_files.append("pthread_stop_world.c") catch unreachable;
@@ -360,7 +346,7 @@ pub fn build(b: *std.Build) void {
             or (build_shared_libs and !disable_single_obj_compilation)) {
         source_files.clearAndFree();
         source_files.append("extra/gc.c") catch unreachable;
-        if (enable_threads and !t.isDarwin() and t.os.tag != .windows) {
+        if (enable_threads and !t.os.tag.isDarwin() and t.os.tag != .windows) {
             flags.append("-D GC_PTHREAD_START_STANDALONE") catch unreachable;
             source_files.append("pthread_start.c") catch unreachable;
         }
@@ -374,12 +360,11 @@ pub fn build(b: *std.Build) void {
     // TODO: declare that the libraries do not refer to external symbols
     // of build_shared_libs.
 
-    // zig cc supports these flags.
+    // zig cc supports this flag.
     flags.appendSlice(&.{
         // TODO: -Wno-unused-command-line-argument
         // Prevent "__builtin_return_address with nonzero argument is unsafe".
         "-Wno-frame-address",
-        "-fno-strict-aliasing",
     }) catch unreachable;
 
     if (build_shared_libs) {
@@ -419,7 +404,7 @@ pub fn build(b: *std.Build) void {
         flags.append("-D NO_GETCONTEXT") catch unreachable;
     }
 
-    if (!t.isDarwin() and t.os.tag != .windows) {
+    if (!t.os.tag.isDarwin() and t.os.tag != .windows) {
         // dl_iterate_phdr exists (as a strong symbol).
         flags.append("-D HAVE_DL_ITERATE_PHDR") catch unreachable;
         if (enable_threads) {
@@ -432,7 +417,7 @@ pub fn build(b: *std.Build) void {
     flags.append("-D GC_REQUIRE_WCSDUP") catch unreachable;
 
     // pthread_setname_np, if available, may have 1, 2 or 3 arguments.
-    if (t.isDarwin()) {
+    if (t.os.tag.isDarwin()) {
         flags.append("-D HAVE_PTHREAD_SETNAME_NP_WITHOUT_TID")
                 catch unreachable;
     } else if (t.os.tag == .linux) {
@@ -447,9 +432,9 @@ pub fn build(b: *std.Build) void {
         flags.append("-D HAVE_DLADDR") catch unreachable;
     }
 
-    // TODO: as of zig 0.12, exception.h and getsect.h are not provided
+    // TODO: as of zig 0.14, exception.h and getsect.h are not provided
     // by zig itself for Darwin target.
-    if (t.isDarwin() and !target.query.isNative()) {
+    if (t.os.tag.isDarwin() and !target.query.isNative()) {
         flags.append("-D MISSING_MACH_O_GETSECT_H") catch unreachable;
         flags.append("-D NO_MPROTECT_VDB") catch unreachable;
     }
@@ -461,21 +446,12 @@ pub fn build(b: *std.Build) void {
             flags.append("-Wno-inline-new-delete") catch unreachable;
         }
         if (t.abi == .msvc) {
-            // TODO: as of zig 0.12,
+            // TODO: as of zig 0.14,
             // "argument unused during compilation: -nostdinc++" warning is
             // reported if using MS compiler.
             flags.append("-Wno-unused-command-line-argument")
                 catch unreachable;
         }
-    }
-
-    if (build_cord and enable_werror and !enable_threads
-        and (t.abi == .gnueabi or t.abi == .gnueabihf or t.abi == .musleabi
-             or t.abi == .musleabihf)) {
-        // TODO: as of zig 0.12, if GCC built-in atomic intrinsic is used,
-        // "large atomic operation may incur significant performance penalty"
-        // warning is reported for 32-bit arm targets.
-        flags.append("-D AO_DISABLE_GCC_ATOMICS") catch unreachable;
     }
 
     // Extra user-defined flags (if any) to pass to the compiler.
@@ -487,6 +463,15 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // TODO: convert VER_INFO values to [SO]VERSION ones
+    const gc = b.addLibrary(.{
+        .linkage = if (build_shared_libs) .dynamic else .static,
+        .name = "gc",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
     gc.addCSourceFiles(.{
         .files = source_files.items,
         .flags = flags.items,
@@ -494,32 +479,22 @@ pub fn build(b: *std.Build) void {
     gc.addIncludePath(b.path("include"));
     gc.linkLibC();
 
-    var gccpp = b.addStaticLibrary(.{
-        .name = "gccpp",
-        .target = target,
-        .optimize = optimize,
-    });
-    var gctba = b.addStaticLibrary(.{
-        .name = "gctba",
-        .target = target,
-        .optimize = optimize,
-    });
+    var gccpp: *std.Build.Step.Compile = undefined;
+    var gctba: *std.Build.Step.Compile = undefined;
     if (enable_cplusplus) {
-        if (build_shared_libs) {
-            gccpp = b.addSharedLibrary(.{
-                .name = "gccpp",
+        gccpp = b.addLibrary(.{
+            .linkage = if (build_shared_libs) .dynamic else .static,
+            .name = "gccpp",
+            .root_module = b.createModule(.{
                 .target = target,
                 .optimize = optimize,
-            });
-        }
-        var gccpp_src_files = std.ArrayList([]const u8).init(b.allocator);
-        defer gccpp_src_files.deinit();
-        gccpp_src_files.appendSlice(&.{
-            "gc_badalc.cc",
-            "gc_cpp.cc",
-        }) catch unreachable;
+            }),
+        });
         gccpp.addCSourceFiles(.{
-            .files = gccpp_src_files.items,
+            .files = &.{
+                "gc_badalc.cc",
+                "gc_cpp.cc",
+            },
             .flags = flags.items,
         });
         gccpp.addIncludePath(b.path("include"));
@@ -527,18 +502,18 @@ pub fn build(b: *std.Build) void {
         linkLibCpp(gccpp);
         if (enable_throw_bad_alloc_library) {
             // The same as gccpp but contains only gc_badalc.
-            if (build_shared_libs) {
-                gctba = b.addSharedLibrary(.{
-                    .name = "gctba",
+            gctba = b.addLibrary(.{
+                .linkage = if (build_shared_libs) .dynamic else .static,
+                .name = "gctba",
+                .root_module = b.createModule(.{
                     .target = target,
                     .optimize = optimize,
-                });
-            }
-            var gctba_src_files = std.ArrayList([]const u8).init(b.allocator);
-            defer gctba_src_files.deinit();
-            gctba_src_files.append("gc_badalc.cc") catch unreachable;
+                }),
+            });
             gctba.addCSourceFiles(.{
-                .files = gctba_src_files.items,
+                .files = &.{
+                    "gc_badalc.cc",
+                },
                 .flags = flags.items,
             });
             gctba.addIncludePath(b.path("include"));
@@ -547,28 +522,22 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    var cord = b.addStaticLibrary(.{
-        .name = "cord",
-        .target = target,
-        .optimize = optimize,
-    });
+    var cord: *std.Build.Step.Compile = undefined;
     if (build_cord) {
-        if (build_shared_libs) {
-            cord = b.addSharedLibrary(.{
-                .name = "cord",
+        cord = b.addLibrary(.{
+            .linkage = if (build_shared_libs) .dynamic else .static,
+            .name = "cord",
+            .root_module = b.createModule(.{
                 .target = target,
                 .optimize = optimize,
-            });
-        }
-        var cord_src_files = std.ArrayList([]const u8).init(b.allocator);
-        defer cord_src_files.deinit();
-        cord_src_files.appendSlice(&.{
-            "cord/cordbscs.c",
-            "cord/cordprnt.c",
-            "cord/cordxtra.c",
-        }) catch unreachable;
+            })
+        });
         cord.addCSourceFiles(.{
-            .files = cord_src_files.items,
+            .files = &.{
+                "cord/cordbscs.c",
+                "cord/cordprnt.c",
+                "cord/cordxtra.c",
+            },
             .flags = flags.items,
         });
         cord.addIncludePath(b.path("include"));
@@ -605,7 +574,7 @@ pub fn build(b: *std.Build) void {
         if (enable_gcj_support) {
             installHeader(b, gc, "gc/gc_gcj.h");
         }
-        if (enable_threads and t.os.tag != .windows) {
+        if (enable_threads) {
             installHeader(b, gc, "gc/gc_pthread_redirects.h");
         }
         if (build_cord) {
@@ -659,8 +628,11 @@ pub fn build(b: *std.Build) void {
         }
     }
     if (enable_cplusplus) {
-        addTestExt(b, gc, gccpp, test_step, flags,
-                   "cpptest", "tests/cpp.cc");
+        addTestExt(b, gc, gccpp, test_step, flags, "cpptest", "tests/cpp.cc");
+        if (enable_throw_bad_alloc_library) {
+            addTestExt(b, gc, gctba, test_step, flags,
+                       "treetest", "tests/tree.cc");
+        }
     }
     if (enable_disclaim) {
         addTest(b, gc, test_step, flags,
@@ -673,7 +645,7 @@ pub fn build(b: *std.Build) void {
 fn linkLibCpp(lib: *std.Build.Step.Compile) void {
     const t = lib.rootModuleTarget();
     if (t.abi == .msvc) {
-        // TODO: as of zig 0.12, "unable to build libcxxabi" warning is
+        // TODO: as of zig 0.14, "unable to build libcxxabi" warning is
         // reported if linking C++ code using MS compiler.
         lib.linkLibC();
     } else {
