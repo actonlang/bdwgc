@@ -130,9 +130,9 @@ pub fn build(b: *std.Build) void {
         "Install header and pkg-config metadata files") orelse true;
     // TODO: support with_libatomic_ops, without_libatomic_ops
 
-    var source_files = std.ArrayList([]const u8).init(b.allocator);
+    var source_files = std.array_list.Managed([]const u8).init(b.allocator);
     defer source_files.deinit();
-    var flags = std.ArrayList([]const u8).init(b.allocator);
+    var flags = std.array_list.Managed([]const u8).init(b.allocator);
     defer flags.deinit();
 
     // Always enabled.
@@ -654,19 +654,21 @@ fn linkLibCpp(lib: *std.Build.Step.Compile) void {
 }
 
 fn addTest(b: *std.Build, gc: *std.Build.Step.Compile,
-           test_step: *std.Build.Step, flags: std.ArrayList([]const u8),
+           test_step: *std.Build.Step, flags: std.array_list.Managed([]const u8),
            testname: []const u8, filename: []const u8) void {
     addTestExt(b, gc, null, test_step, flags, testname, filename);
 }
 
 fn addTestExt(b: *std.Build, gc: *std.Build.Step.Compile,
               lib2: ?*std.Build.Step.Compile, test_step: *std.Build.Step,
-              flags: std.ArrayList([]const u8), testname: []const u8,
+              flags: std.array_list.Managed([]const u8), testname: []const u8,
               filename: []const u8) void {
     const test_exe = b.addExecutable(.{
         .name = testname,
-        .optimize = gc.root_module.optimize.?,
-        .target = gc.root_module.resolved_target.?
+        .root_module = b.createModule(.{
+            .optimize = gc.root_module.optimize.?,
+            .target = gc.root_module.resolved_target.?,
+        }),
     });
     test_exe.addCSourceFile(.{
         .file = b.path(filename),
