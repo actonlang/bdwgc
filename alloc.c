@@ -817,11 +817,10 @@ GC_collect_a_little_inner(size_t n_blocks)
           && GC_n_attempts < max_prior_attempts)
         GET_TIME(GC_start_time);
 #endif
-      if (GC_stopped_mark(GC_n_attempts >= max_prior_attempts
-                              ? GC_never_stop_func
-                              : GC_time_limit == GC_TIME_UNLIMITED
-                                    ? GC_default_stop_func
-                                    : GC_timeout_stop_func)) {
+      if (GC_stopped_mark(
+              GC_n_attempts >= max_prior_attempts  ? GC_never_stop_func
+              : GC_time_limit == GC_TIME_UNLIMITED ? GC_default_stop_func
+                                                   : GC_timeout_stop_func)) {
         GC_finish_collection();
       } else {
         GC_n_attempts++;
