@@ -377,6 +377,9 @@ GC_initiate_gc(void)
 #ifdef PARALLEL_MARK
 /* Initiate parallel marking. */
 STATIC void GC_do_parallel_mark(void);
+
+/* Use serial recovery after failed stack growth until allocation succeeds. */
+STATIC GC_bool GC_mark_stack_growth_failed = FALSE;
 #endif
 
 #ifdef GC_DISABLE_INCREMENTAL
@@ -539,17 +542,18 @@ GC_mark_some(ptr_t cold_gc_frame)
     if (ADDR_GE((ptr_t)GC_mark_stack_top, (ptr_t)GC_mark_stack)
 #ifdef PARALLEL_MARK
         && (!GC_parallel || GC_parallel_mark_disabled
-            || GC_mark_state == MS_INVALID
+            || GC_mark_stack_growth_failed || GC_mark_state == MS_INVALID
             || ADDR_GE((ptr_t)GC_mark_stack_top,
                        (ptr_t)(GC_mark_stack + GC_mark_stack_size / 4)))
 #endif
     ) {
 #ifdef PARALLEL_MARK
-      if (GC_parallel && !GC_parallel_mark_disabled) {
+      if (GC_parallel && !GC_parallel_mark_disabled
+          && !GC_mark_stack_growth_failed) {
         /* Drain a recovery batch without establishing the roots invariant. */
-        GC_VERBOSE_LOG_PRINTF("Parallel recovery batch: %lu pending entries\n",
-                              (unsigned long)(GC_mark_stack_top
-                                              - GC_mark_stack + 1));
+        GC_VERBOSE_LOG_PRINTF(
+            "Parallel recovery batch: %lu pending entries\n",
+            (unsigned long)(GC_mark_stack_top - GC_mark_stack + 1));
         GC_do_parallel_mark();
         GC_ASSERT(ADDR_LT((ptr_t)GC_mark_stack_top, GC_first_nonempty));
         GC_mark_stack_top = GC_mark_stack - 1;
@@ -1465,6 +1469,9 @@ alloc_mark_stack(size_t n)
 
   GC_ASSERT(I_HOLD_LOCK());
   new_stack = (mse *)GC_scratch_alloc(n * sizeof(struct GC_ms_entry));
+#ifdef PARALLEL_MARK
+  GC_mark_stack_growth_failed = new_stack == NULL;
+#endif
 #ifdef GWW_VDB
   /*
    * Do not recycle a stack segment obtained with the wrong flags.
