@@ -535,8 +535,37 @@ GC_mark_some(ptr_t cold_gc_frame)
       GC_mark_state = MS_PUSH_UNCOLLECTABLE;
       break;
     }
-    if (ADDR_GE((ptr_t)GC_mark_stack_top, (ptr_t)GC_mark_stack)) {
-      MARK_FROM_MARK_STACK();
+    /* Accumulate a batch instead of draining each marked block serially. */
+    if (ADDR_GE((ptr_t)GC_mark_stack_top, (ptr_t)GC_mark_stack)
+#ifdef PARALLEL_MARK
+        && (!GC_parallel || GC_parallel_mark_disabled
+            || GC_mark_state == MS_INVALID
+            || ADDR_GE((ptr_t)GC_mark_stack_top,
+                       (ptr_t)(GC_mark_stack + GC_mark_stack_size / 4)))
+#endif
+    ) {
+#ifdef PARALLEL_MARK
+      if (GC_parallel && !GC_parallel_mark_disabled) {
+        /* Drain a recovery batch without establishing the roots invariant. */
+        GC_VERBOSE_LOG_PRINTF("Parallel recovery batch: %lu pending entries\n",
+                              (unsigned long)(GC_mark_stack_top
+                                              - GC_mark_stack + 1));
+        GC_do_parallel_mark();
+        GC_ASSERT(ADDR_LT((ptr_t)GC_mark_stack_top, GC_first_nonempty));
+        GC_mark_stack_top = GC_mark_stack - 1;
+        if (GC_mark_state == MS_INVALID) {
+          /* Dropped work may belong to objects below the scan cursor. */
+          GC_scan_ptr = NULL;
+        }
+        /* Helpers are quiescent and the stack has no pending entries. */
+        if (GC_mark_stack_too_small) {
+          alloc_mark_stack(2 * GC_mark_stack_size);
+        }
+      } else
+#endif
+      {
+        MARK_FROM_MARK_STACK();
+      }
       GC_ASSERT(GC_mark_state == MS_PARTIALLY_INVALID
                 || GC_mark_state == MS_INVALID);
       break;
