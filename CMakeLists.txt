@@ -1064,6 +1064,22 @@ if(BUILD_TESTING)
     target_link_libraries(dbgfunctest PRIVATE gc)
     add_test(NAME dbgfunctest COMMAND dbgfunctest)
 
+    # This test includes the collector to inject OS allocation failures.
+    if(enable_cplusplus)
+        set_source_files_properties(tests/heapgrowth.c PROPERTIES LANGUAGE CXX)
+    endif()
+    add_executable(heapgrowthtest tests/heapgrowth.c ${NODIST_SRC})
+    if(MSVC)
+        target_sources(heapgrowthtest PRIVATE extra/msvc_dbg.c)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+        target_sources(heapgrowthtest PRIVATE sparc_mach_dep.S)
+    endif()
+    target_link_libraries(
+        heapgrowthtest PRIVATE ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+    )
+    add_test(NAME heapgrowthtest COMMAND heapgrowthtest)
+
     add_executable(hugetest tests/huge.c ${NODIST_SRC})
     target_link_libraries(hugetest PRIVATE gc)
     add_test(NAME hugetest COMMAND hugetest)

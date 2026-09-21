@@ -1749,6 +1749,21 @@ GC_scratch_recycle_inner(void *ptr, size_t sz)
     GC_add_to_heap((struct hblk *)((ptr_t)ptr + displ), recycled_bytes);
 }
 
+/*
+ * Bound speculative growth by the larger of the traditional increment
+ * and one sixteenth of the heap.  A fixed increment would force a full
+ * collection after each small expansion even when the live heap is large.
+ * Keep MAXHINCR unchanged for black-list spacing and write-watch buffers.
+ */
+static word
+max_heap_increment(void)
+{
+  word blocks = divHBLKSZ(GC_heapsize - GC_heapsize_at_forced_unmap) / 16;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  return blocks > MAXHINCR ? blocks : MAXHINCR;
+}
+
 GC_INNER GC_bool
 GC_expand_hp_inner(word n)
 {
@@ -1783,11 +1798,13 @@ GC_expand_hp_inner(word n)
    * Adjust heap limits generously for black-listing to work better.
    * `GC_add_to_heap()` performs minimal adjustment needed for correctness.
    */
-  expansion_slop = min_bytes_allocd() + 4 * MAXHINCR * HBLKSIZE;
+  expansion_slop
+      = SIZET_SAT_ADD(min_bytes_allocd(), 4 * max_heap_increment() * HBLKSIZE);
   if ((0 == GC_last_heap_addr && (ADDR(space) & SIGNB) == 0)
       || (GC_last_heap_addr != 0 && GC_last_heap_addr < ADDR(space))) {
     /* Assume the heap is growing up. */
-    if (LIKELY(ADDR(space) < GC_WORD_MAX - (sz + expansion_slop))) {
+    if (LIKELY(expansion_slop < GC_WORD_MAX - sz)
+        && LIKELY(ADDR(space) < GC_WORD_MAX - sz - expansion_slop)) {
       ptr_t new_limit = (ptr_t)space + sz + expansion_slop;
 
       if (ADDR_LT((ptr_t)GC_greatest_plausible_heap_addr, new_limit))
@@ -1795,7 +1812,7 @@ GC_expand_hp_inner(word n)
     }
   } else {
     /* Heap is growing down. */
-    if (LIKELY(ADDR(space) > expansion_slop + sizeof(ptr_t))) {
+    if (LIKELY(ADDR(space) > SIZET_SAT_ADD(expansion_slop, sizeof(ptr_t)))) {
       ptr_t new_limit = (ptr_t)space - expansion_slop - sizeof(ptr_t);
 
       if (ADDR_LT(new_limit, (ptr_t)GC_least_plausible_heap_addr))
@@ -1875,7 +1892,7 @@ GC_collect_or_expand(word needed_blocks, unsigned flags, GC_bool retry)
   static word last_fo_entries, last_bytes_finalized;
 
   GC_bool gc_not_stopped = TRUE;
-  word blocks_to_get;
+  word blocks_to_get, max_increment;
   IF_CANCEL(int cancel_state;)
 
   GC_ASSERT(I_HOLD_LOCK());
@@ -1910,20 +1927,24 @@ GC_collect_or_expand(word needed_blocks, unsigned flags, GC_bool retry)
     }
   }
 
-  blocks_to_get = (GC_heapsize - GC_heapsize_at_forced_unmap)
-                      / (HBLKSIZE * GC_free_space_divisor)
-                  + needed_blocks;
-  if (blocks_to_get > MAXHINCR) {
+  max_increment = max_heap_increment();
+  /* Divide separately to avoid overflow for large free-space divisors. */
+  blocks_to_get
+      = SIZET_SAT_ADD(divHBLKSZ(GC_heapsize - GC_heapsize_at_forced_unmap)
+                          / GC_free_space_divisor,
+                      needed_blocks);
+  if (blocks_to_get > max_increment) {
 #ifdef NO_BLACK_LISTING
     UNUSED_ARG(flags);
-    blocks_to_get = needed_blocks > MAXHINCR ? needed_blocks : MAXHINCR;
+    blocks_to_get
+        = needed_blocks > max_increment ? needed_blocks : max_increment;
 #else
     word slop;
 
     /*
      * Get the minimum required to make it likely that we can satisfy
      * the current request in the presence of black-listing.  This will
-     * probably be bigger than `MAXHINCR`.
+     * possibly exceed the speculative growth limit.
      */
     if ((flags & IGNORE_OFF_PAGE) != 0) {
       slop = 4;
@@ -1932,11 +1953,9 @@ GC_collect_or_expand(word needed_blocks, unsigned flags, GC_bool retry)
       if (slop > needed_blocks)
         slop = needed_blocks;
     }
-    if (needed_blocks + slop > MAXHINCR) {
-      blocks_to_get = needed_blocks + slop;
-    } else {
-      blocks_to_get = MAXHINCR;
-    }
+    blocks_to_get = SIZET_SAT_ADD(needed_blocks, slop);
+    if (blocks_to_get < max_increment)
+      blocks_to_get = max_increment;
 #endif
     if (blocks_to_get > divHBLKSZ(GC_WORD_MAX))
       blocks_to_get = divHBLKSZ(GC_WORD_MAX);
