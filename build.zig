@@ -595,11 +595,23 @@ pub fn build(b: *std.Build) void {
         }
     }
     addTest(b, gc, test_step, flags, "dbgfunctest", "tests/dbgfunc.c");
+    // These tests include the collector instead of linking its library.
+    inline for (.{
+        .{ "heapgrowthtest", "tests/heapgrowth.c" },
+        .{ "unmaptest", "tests/unmap.c" },
+    }) |test_case| {
+        addTestExt(b, gc, test_step, flags, test_case[0], test_case[1], .{
+            .link_gc = false,
+            .filename2 = if (t.abi == .msvc) "extra/msvc_dbg.c" else if (t.cpu.arch == .sparc or t.cpu.arch == .sparc64) "sparc_mach_dep.S" else null,
+            .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
+        });
+    }
     addTest(b, gc, test_step, flags, "hugetest", "tests/huge.c");
     addTest(b, gc, test_step, flags, "leaktest", "tests/leak.c");
     addTest(b, gc, test_step, flags, "middletest", "tests/middle.c");
     addTest(b, gc, test_step, flags, "realloctest", "tests/realloc.c");
     addTest(b, gc, test_step, flags, "smashtest", "tests/smash.c");
+    addTest(b, gc, test_step, flags, "markstacktest", "tests/markstack.c");
     addTest(b, gc, test_step, flags, "typedtest", "tests/typed.c");
     // TODO: build `staticrootstest` with `-D STATICROOTSLIB2`.
     addTestExt(b, gc, test_step, flags, "staticrootstest", "tests/staticroots.c", .{
@@ -650,6 +662,7 @@ fn addTest(b: *std.Build, gc: *std.Build.Step.Compile, test_step: *std.Build.Ste
 }
 
 fn addTestExt(b: *std.Build, gc: *std.Build.Step.Compile, test_step: *std.Build.Step, flags: std.ArrayListUnmanaged([]const u8), testname: []const u8, filename: []const u8, ext_args: struct {
+    link_gc: bool = true,
     filename2: ?[]const u8 = null,
     rc_filename: ?[]const u8 = null,
     lib2: ?*std.Build.Step.Compile = null,
@@ -680,7 +693,9 @@ fn addTestExt(b: *std.Build, gc: *std.Build.Step.Compile, test_step: *std.Build.
         });
     }
     test_exe.root_module.addIncludePath(b.path("include"));
-    test_exe.root_module.linkLibrary(gc);
+    if (ext_args.link_gc) {
+        test_exe.root_module.linkLibrary(gc);
+    }
     if (ext_args.lib2 != null) {
         test_exe.root_module.linkLibrary(ext_args.lib2.?);
     }
