@@ -478,6 +478,20 @@ GC_reclaim_generic(struct hblk *hbp, hdr *hhdr, size_t sz, GC_bool init,
   }
   if (IS_UNCOLLECTABLE(hhdr->hb_obj_kind))
     GC_set_hdr_marks(hhdr);
+
+  /* Clear "valid descriptor" mark for reclaimed objects in this block. */
+  if (hhdr->hb_valid_ds_bitmap != NULL) {
+    ptr_t q, p = hbp->hb_body;
+    ptr_t plim = p + HBLKSIZE - sz;
+
+    GC_ASSERT(IS_INDIR_PER_OBJ_DESCR(hhdr->hb_descr));
+    for (q = result; q != NULL; q = (ptr_t)obj_link(q))
+      if (ADDR_GE(q, p) && ADDR_GE(plim, q)) {
+        size_t bit_no = MARK_BIT_NO((size_t)(q - (ptr_t)hbp), sz);
+
+        hdr_clear_valid_ds_mark(hhdr, bit_no);
+      }
+  }
   return result;
 }
 
@@ -509,8 +523,8 @@ GC_reclaim_small_nonempty_block(struct hblk *hbp, size_t sz,
 }
 
 #ifdef ENABLE_DISCLAIM
-STATIC void
-GC_disclaim_and_reclaim_or_free_small_block(struct hblk *hbp)
+STATIC GC_bool
+GC_disclaim_and_reclaim_small_block(struct hblk *hbp)
 {
   hdr *hhdr;
   size_t sz;
@@ -527,13 +541,11 @@ GC_disclaim_and_reclaim_or_free_small_block(struct hblk *hbp)
   hhdr->hb_last_reclaimed = (unsigned short)GC_gc_no;
   flh_next = GC_reclaim_generic(hbp, hhdr, sz, ok->ok_init, (ptr_t)(*flh),
                                 (/* unsigned */ word *)&GC_bytes_found);
-  if (!GC_block_empty(hhdr)) {
-    *flh = flh_next;
-  } else {
-    GC_ASSERT(hbp == hhdr->hb_block);
-    GC_bytes_found += (GC_signed_word)HBLKSIZE;
-    GC_freehblk(hbp);
-  }
+  if (GC_block_empty(hhdr))
+    return FALSE;
+
+  *flh = flh_next;
+  return TRUE;
 }
 #endif /* ENABLE_DISCLAIM */
 
@@ -628,8 +640,9 @@ GC_reclaim_block(struct hblk *hbp, void *report_if_found)
 #endif
     } else if (GC_block_empty(hhdr)) {
 #ifdef ENABLE_DISCLAIM
-      if ((hhdr->hb_flags & HAS_DISCLAIM) != 0) {
-        GC_disclaim_and_reclaim_or_free_small_block(hbp);
+      if ((hhdr->hb_flags & HAS_DISCLAIM) != 0
+          && GC_disclaim_and_reclaim_small_block(hbp)) {
+        /* No-op. */
       } else
 #endif
       /* else */ {
@@ -644,6 +657,7 @@ GC_reclaim_block(struct hblk *hbp, void *report_if_found)
         for (; ADDR_GE(plim, p); p += sz)
           FREE_PROFILER_HOOK(p);
 #endif
+        GC_free_valid_ds_bitmap(hhdr);
         GC_bytes_found += (GC_signed_word)HBLKSIZE;
         GC_freehblk(hbp);
       }
