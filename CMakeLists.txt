@@ -1092,6 +1092,20 @@ if(BUILD_TESTING)
     target_link_libraries(middletest PRIVATE gc)
     add_test(NAME middletest COMMAND middletest)
 
+    add_executable(markstacktest tests/markstack.c ${NODIST_SRC})
+    target_link_libraries(markstacktest PRIVATE gc)
+    add_test(NAME markstacktest COMMAND markstacktest)
+    add_test(NAME markstackserialtest COMMAND markstacktest 1)
+    set_tests_properties(
+        markstacktest markstackserialtest
+        PROPERTIES TIMEOUT 60
+    )
+    set_tests_properties(markstacktest PROPERTIES ENVIRONMENT "GC_MARKERS=4")
+    set_tests_properties(
+        markstackserialtest
+        PROPERTIES ENVIRONMENT "GC_MARKERS=1"
+    )
+
     add_executable(realloctest tests/realloc.c ${NODIST_SRC})
     target_link_libraries(realloctest PRIVATE gc)
     add_test(NAME realloctest COMMAND realloctest)

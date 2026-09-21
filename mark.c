@@ -337,6 +337,11 @@ GC_is_marked(const void *p)
   return (int)mark_bit_from_hdr(hhdr, bit_no); /*< 0 or 1 */
 }
 
+#ifdef PARALLEL_MARK
+/* Do not retry an overflowing recovery batch before marking finishes. */
+STATIC GC_bool GC_parallel_recovery_failed = FALSE;
+#endif
+
 GC_INNER void
 GC_clear_marks(void)
 {
@@ -347,6 +352,9 @@ GC_clear_marks(void)
   GC_objects_are_marked = FALSE;
   GC_mark_state = MS_INVALID;
   GC_scan_ptr = NULL;
+#ifdef PARALLEL_MARK
+  GC_parallel_recovery_failed = FALSE;
+#endif
 }
 
 GC_INNER void
@@ -378,6 +386,9 @@ GC_initiate_gc(void)
 #endif
   if (GC_mark_state == MS_NONE) {
     GC_mark_state = MS_PUSH_RESCUERS;
+#ifdef PARALLEL_MARK
+    GC_parallel_recovery_failed = FALSE;
+#endif
   } else {
     /* This is really a full collection, and mark bits are invalid. */
     GC_ASSERT(GC_mark_state == MS_INVALID);
@@ -388,6 +399,32 @@ GC_initiate_gc(void)
 #ifdef PARALLEL_MARK
 /* Initiate parallel marking. */
 STATIC void GC_do_parallel_mark(void);
+
+/* Drain a recovery batch without establishing the roots invariant. */
+static void
+do_parallel_recovery(void)
+{
+  GC_bool was_too_small = GC_mark_stack_too_small;
+
+  GC_ASSERT(GC_mark_state == MS_PARTIALLY_INVALID);
+  GC_VERBOSE_LOG_PRINTF(
+      "Parallel recovery batch: %lu pending entries\n",
+      (unsigned long)(GC_mark_stack_top - GC_mark_stack + 1));
+  GC_do_parallel_mark();
+  GC_ASSERT(ADDR_LT((ptr_t)GC_mark_stack_top, GC_first_nonempty));
+  GC_mark_stack_top = GC_mark_stack - 1;
+  if (GC_mark_state == MS_INVALID) {
+    /*
+     * Dropped work can precede the scan cursor.  Restart serially,
+     * using the original recovery path even if stack growth fails.
+     * Do not grow the stack just to repeat a failing parallel batch.
+     */
+    GC_scan_ptr = NULL;
+    GC_parallel_recovery_failed = TRUE;
+    GC_mark_stack_too_small = was_too_small;
+    GC_VERBOSE_LOG_PRINTF("Parallel recovery overflow; resuming serially\n");
+  }
+}
 #endif
 
 #ifdef GC_DISABLE_INCREMENTAL
@@ -546,8 +583,25 @@ GC_mark_some(ptr_t cold_gc_frame)
       GC_mark_state = MS_PUSH_UNCOLLECTABLE;
       break;
     }
-    if (ADDR_GE((ptr_t)GC_mark_stack_top, (ptr_t)GC_mark_stack)) {
-      MARK_FROM_MARK_STACK();
+    /* Batch marked blocks only while parallel recovery is making progress. */
+    if (ADDR_GE((ptr_t)GC_mark_stack_top, (ptr_t)GC_mark_stack)
+#ifdef PARALLEL_MARK
+        && (!GC_parallel || GC_parallel_mark_disabled
+            || GC_parallel_recovery_failed || GC_mark_state == MS_INVALID
+            || ADDR_GE((ptr_t)GC_mark_stack_top,
+                       (ptr_t)(GC_mark_stack + GC_mark_stack_size / 4)))
+#endif
+    ) {
+#ifdef PARALLEL_MARK
+      if (GC_parallel && !GC_parallel_mark_disabled
+          && !GC_parallel_recovery_failed
+          && GC_mark_state == MS_PARTIALLY_INVALID) {
+        do_parallel_recovery();
+      } else
+#endif
+      {
+        MARK_FROM_MARK_STACK();
+      }
       GC_ASSERT(GC_mark_state == MS_PARTIALLY_INVALID
                 || GC_mark_state == MS_INVALID);
       break;
@@ -563,6 +617,14 @@ GC_mark_some(ptr_t cold_gc_frame)
       GC_mark_state = MS_PARTIALLY_INVALID;
     }
     GC_scan_ptr = GC_push_next_marked(GC_scan_ptr);
+#ifdef PARALLEL_MARK
+    /* Even a short final batch can overflow when descriptors expand. */
+    if (NULL == GC_scan_ptr && GC_mark_state == MS_PARTIALLY_INVALID
+        && ADDR_GE((ptr_t)GC_mark_stack_top, (ptr_t)GC_mark_stack)
+        && GC_parallel && !GC_parallel_mark_disabled
+        && !GC_parallel_recovery_failed)
+      do_parallel_recovery();
+#endif
     if (GC_mark_state == MS_PARTIALLY_INVALID)
       push_roots_and_advance(TRUE, cold_gc_frame);
     GC_ASSERT(GC_mark_state == MS_ROOTS_PUSHED

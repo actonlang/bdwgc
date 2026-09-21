@@ -61,6 +61,12 @@ check_PROGRAMS += middletest
 middletest_SOURCES = tests/middle.c
 middletest_LDADD = $(test_ldadd)
 
+TESTS += markstacktest$(EXEEXT)
+check_PROGRAMS += markstacktest
+markstacktest_SOURCES = tests/markstack.c
+markstacktest_LDADD = $(test_ldadd)
+EXTRA_DIST += tests/markstack.py tests/markstack_overflow.c
+
 TESTS += realloctest$(EXEEXT)
 check_PROGRAMS += realloctest
 realloctest_SOURCES = tests/realloc.c
@@ -215,6 +221,8 @@ check-without-test-driver: $(TESTS)
 	./hugetest$(EXEEXT)
 	./leaktest$(EXEEXT)
 	./middletest$(EXEEXT)
+	./markstacktest$(EXEEXT)
+	./markstacktest$(EXEEXT) 1
 	./realloctest$(EXEEXT)
 	./smashtest$(EXEEXT)
 	./staticrootstest$(EXEEXT)
