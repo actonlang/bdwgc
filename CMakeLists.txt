@@ -1100,6 +1100,22 @@ if(BUILD_TESTING)
     target_link_libraries(smashtest PRIVATE gc)
     add_test(NAME smashtest COMMAND smashtest)
 
+    # This test includes the collector to exercise private free-list layouts.
+    if(enable_cplusplus)
+        set_source_files_properties(tests/unmap.c PROPERTIES LANGUAGE CXX)
+    endif()
+    add_executable(unmaptest tests/unmap.c ${NODIST_SRC})
+    if(MSVC)
+        target_sources(unmaptest PRIVATE extra/msvc_dbg.c)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+        target_sources(unmaptest PRIVATE sparc_mach_dep.S)
+    endif()
+    target_link_libraries(
+        unmaptest PRIVATE ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+    )
+    add_test(NAME unmaptest COMMAND unmaptest)
+
     add_executable(typedtest tests/typed.c ${NODIST_SRC})
     target_link_libraries(typedtest PRIVATE gc)
     add_test(NAME typedtest COMMAND typedtest)

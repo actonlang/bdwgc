@@ -71,6 +71,13 @@ check_PROGRAMS += smashtest
 smashtest_SOURCES = tests/smash.c
 smashtest_LDADD = $(test_ldadd)
 
+# `unmap.c` includes the collector to exercise private free-list layouts.
+TESTS += unmaptest$(EXEEXT)
+check_PROGRAMS += unmaptest
+unmaptest_SOURCES = tests/unmap.c
+unmaptest_LDADD = $(nodist_libgc_la_OBJECTS) $(EXTRA_TEST_LIBS) \
+                 @addobjs@ $(THREADDLLIBS) $(UNWINDLIBS) $(ATOMIC_OPS_LIBS)
+
 TESTS += typedtest$(EXEEXT)
 check_PROGRAMS += typedtest
 typedtest_SOURCES = tests/typed.c
@@ -211,6 +218,7 @@ check-without-test-driver: $(TESTS)
 	./realloctest$(EXEEXT)
 	./smashtest$(EXEEXT)
 	./staticrootstest$(EXEEXT)
+	./unmaptest$(EXEEXT)
 	./typedtest$(EXEEXT)
 	test ! -f atomicopstest$(EXEEXT) || ./atomicopstest$(EXEEXT)
 	test ! -f cpptest$(EXEEXT) || ./cpptest$(EXEEXT)
