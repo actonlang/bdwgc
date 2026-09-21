@@ -514,10 +514,7 @@ GC_free_block_ending_at(struct hblk *h)
   return NULL;
 }
 
-/*
- * Add `hhdr` to the appropriate free list.  We maintain individual
- * free lists sorted by address.
- */
+/* Add `hhdr` to the head of the appropriate free list. */
 STATIC void
 GC_add_to_fl(struct hblk *h, hdr *hhdr)
 {
@@ -686,79 +683,84 @@ GC_merge_unmapped(void)
   size_t i;
   GC_bool merged = FALSE;
 
+  GC_ASSERT(I_HOLD_LOCK());
+
   for (i = 0; i <= N_HBLK_FLS; ++i) {
     struct hblk *h = GC_hblkfreelist[i];
 
     while (h != NULL) {
-      struct hblk *next;
-      hdr *hhdr, *nexthdr;
-      size_t size, next_size;
+      struct hblk *resume;
+      hdr *hhdr;
 
       GET_HDR(h, hhdr);
-      size = hhdr->hb_sz;
-      next = (struct hblk *)((ptr_t)h + size);
-      GET_HDR(next, nexthdr);
-      /* Coalesce with successor, if possible. */
-      {
-        struct hblk *hb_next = hhdr->hb_next; /*< read ahead for `LINT2` */
+      resume = hhdr->hb_next;
+      for (;;) {
+        struct hblk *next;
+        hdr *nexthdr;
+        size_t size, next_size;
+
+        size = hhdr->hb_sz;
+        next = (struct hblk *)((ptr_t)h + size);
+        GET_HDR(next, nexthdr);
         if (NULL == nexthdr || !HBLK_IS_FREE(nexthdr)
-            || BLOCKS_MERGE_OVERFLOW(hhdr, nexthdr)) {
-          /* Not mergeable with the successor. */
-          h = hb_next;
-          continue;
-        }
+            || BLOCKS_MERGE_OVERFLOW(hhdr, nexthdr))
+          break;
         next_size = nexthdr->hb_sz;
 #  ifdef CHERI_PURECAP
         /* FIXME: Coalesce with super-capability. */
-        if (!CAPABILITY_COVERS_RANGE(h, ADDR(next), ADDR(next) + nextsize)) {
-          h = hb_next;
-          continue;
-        }
+        if (!CAPABILITY_COVERS_RANGE(h, ADDR(next), ADDR(next) + next_size))
+          break;
 #  endif
-      }
 
-      /*
-       * Note that we usually try to avoid adjacent free blocks that are
-       * either both mapped or both unmapped.  But that is not guaranteed
-       * to hold since we remap blocks when we split them, and do not merge
-       * at that point.  It may also not hold if the merged block would be
-       * too big.
-       */
-      if (IS_MAPPED(hhdr) && !IS_MAPPED(nexthdr)) {
-        /* Make both consistent, so that we can merge. */
-        if (size > next_size) {
-          GC_adjust_num_unmapped(next, nexthdr);
-          GC_remap((ptr_t)next, next_size);
-        } else {
-          GC_adjust_num_unmapped(h, hhdr);
-          GC_unmap((ptr_t)h, size);
+        /*
+         * Note that we usually try to avoid adjacent free blocks that are
+         * either both mapped or both unmapped.  But that is not guaranteed
+         * to hold since we remap blocks when we split them, and do not merge
+         * at that point.  It may also not hold if the merged block would be
+         * too big.
+         */
+        if (IS_MAPPED(hhdr) && !IS_MAPPED(nexthdr)) {
+          /* Make both consistent, so that we can merge. */
+          if (size > next_size) {
+            GC_adjust_num_unmapped(next, nexthdr);
+            GC_remap((ptr_t)next, next_size);
+          } else {
+            GC_adjust_num_unmapped(h, hhdr);
+            GC_unmap((ptr_t)h, size);
+            GC_unmap_gap((ptr_t)h, size, (ptr_t)next, next_size);
+            hhdr->hb_flags |= WAS_UNMAPPED;
+          }
+        } else if (IS_MAPPED(nexthdr) && !IS_MAPPED(hhdr)) {
+          if (size > next_size) {
+            GC_adjust_num_unmapped(next, nexthdr);
+            GC_unmap((ptr_t)next, next_size);
+            GC_unmap_gap((ptr_t)h, size, (ptr_t)next, next_size);
+          } else {
+            GC_adjust_num_unmapped(h, hhdr);
+            GC_remap((ptr_t)h, size);
+            hhdr->hb_flags &= (unsigned char)~WAS_UNMAPPED;
+            hhdr->hb_last_reclaimed = nexthdr->hb_last_reclaimed;
+          }
+        } else if (!IS_MAPPED(hhdr) && !IS_MAPPED(nexthdr)) {
+          /* Unmap any gap in the middle. */
           GC_unmap_gap((ptr_t)h, size, (ptr_t)next, next_size);
-          hhdr->hb_flags |= WAS_UNMAPPED;
         }
-      } else if (IS_MAPPED(nexthdr) && !IS_MAPPED(hhdr)) {
-        if (size > next_size) {
-          GC_adjust_num_unmapped(next, nexthdr);
-          GC_unmap((ptr_t)next, next_size);
-          GC_unmap_gap((ptr_t)h, size, (ptr_t)next, next_size);
-        } else {
-          GC_adjust_num_unmapped(h, hhdr);
-          GC_remap((ptr_t)h, size);
-          hhdr->hb_flags &= (unsigned char)~WAS_UNMAPPED;
-          hhdr->hb_last_reclaimed = nexthdr->hb_last_reclaimed;
-        }
-      } else if (!IS_MAPPED(hhdr) && !IS_MAPPED(nexthdr)) {
-        /* Unmap any gap in the middle. */
-        GC_unmap_gap((ptr_t)h, size, (ptr_t)next, next_size);
+        /* If they are both unmapped, we merge, but leave unmapped. */
+        /* The resume cursor might itself be the successor being removed. */
+        if (next == resume)
+          resume = nexthdr->hb_next;
+        GC_remove_from_fl(hhdr);
+        GC_remove_from_fl(nexthdr);
+        hhdr->hb_sz += nexthdr->hb_sz;
+        GC_remove_header(next);
+        GC_add_to_fl(h, hhdr);
+        merged = TRUE;
       }
-      /* If they are both unmapped, we merge, but leave unmapped. */
-      GC_remove_from_fl_at(hhdr, i);
-      GC_remove_from_fl(nexthdr);
-      hhdr->hb_sz += nexthdr->hb_sz;
-      GC_remove_header(next);
-      GC_add_to_fl(h, hhdr);
-      merged = TRUE;
-      /* Start over at the beginning of list. */
-      h = GC_hblkfreelist[i];
+      /*
+       * Reinsertion puts `h` at a list head.  Continue at the saved cursor
+       * instead of revisiting the prefix after each successful merge.
+       */
+      h = resume;
     }
   }
   return merged;

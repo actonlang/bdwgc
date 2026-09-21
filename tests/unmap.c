@@ -23,6 +23,25 @@
 #endif
 #include "private/gc_priv.h"
 
+#ifdef USE_MUNMAP
+
+/* Count actual header lookups, including those in list/mapping helpers. */
+static size_t header_lookups;
+
+static hdr *
+test_get_hdr(const void *p)
+{
+  hdr *result;
+
+  GET_HDR(p, result);
+  ++header_lookups;
+  return result;
+}
+
+#  undef GET_HDR
+#  define GET_HDR(p, hhdr) (void)((hhdr) = test_get_hdr(p))
+#endif
+
 #include "../extra/gc.c"
 
 #ifdef USE_MUNMAP
@@ -268,16 +287,22 @@ clear_layout(void)
 static void
 run_layout(unsigned permutation)
 {
-  size_t before, after;
+  size_t before, after, work;
   GC_bool merged;
 
   make_layout();
   insert_layout(permutation);
   before = check_layout(FALSE);
   check_region_deltas();
+  header_lookups = 0;
   merged = GC_merge_unmapped();
+  work = header_lookups;
   after = check_layout(TRUE);
   TEST_ASSERT(merged == (after < before));
+  if (before > 3000 || work > 64 * (before + 1))
+    fprintf(stderr, "%lu lookups for %lu free blocks\n", (unsigned long)work,
+            (unsigned long)before);
+  TEST_ASSERT(work <= 64 * (before + 1));
   TEST_ASSERT(!GC_merge_unmapped());
   (void)check_layout(TRUE);
   clear_layout();
@@ -311,14 +336,31 @@ test_layouts(void)
           = { 1, 2, 3, 31, 32, 33, 39, 40, 47, 63, 255, 256 };
       append_piece(1, 0);
       for (j = 0; j < 40; ++j) {
-        size_t size
-            = sizes[GC_RAND_NEXT(&seed) % (sizeof(sizes) / sizeof(sizes[0]))];
+        size_t count = sizeof(sizes) / sizeof(sizes[0]);
+        size_t size = sizes[j < count ? j : GC_RAND_NEXT(&seed) % count];
         unsigned char which = (unsigned char)(GC_RAND_NEXT(&seed) % 3);
         append_piece(size, which);
       }
       run_layout(permutation);
     }
   }
+
+  /*
+   * Reverse insertion leaves isolated blocks ahead of mergeable pairs in
+   * bucket 1.  Restarting after each pair revisits the long isolated prefix.
+   * The lookup bound above rejects that quadratic traversal deterministically.
+   */
+  append_piece(1, 0);
+  for (i = 0; i < 1024; ++i) {
+    append_piece(1, 1);
+    append_piece(1, 0);
+  }
+  for (i = 0; i < 1024; ++i) {
+    append_piece(1, 1);
+    append_piece(1, 2);
+    append_piece(1, 0);
+  }
+  run_layout(1);
 }
 
 int
