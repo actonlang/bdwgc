@@ -1102,7 +1102,7 @@ retry:
      * if page size is larger than the block size).
      */
     GC_ASSERT(GC_page_size != 0);
-    if (GC_page_size != HBLKSIZE
+    if (GC_page_size > HBLKSIZE
 #  ifdef UFFDWP_VDB
         /*
          * Either the incremental mode is not enabled yet, or it is based

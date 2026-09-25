@@ -2605,7 +2605,7 @@ extern char **environ;
 #  undef USE_MUNMAP
 #  ifdef EMSCRIPTEN_TINY
 void *emmalloc_memalign(size_t align, size_t lb);
-#    define GET_MEM(lb) emmalloc_memalign(GC_page_size, lb)
+#    define GET_MEM(lb) emmalloc_memalign(HBLK_PAGE_SIZE, lb)
 #  endif
 #  ifdef EMSCRIPTEN
 #    define OS_TYPE "EMSCRIPTEN"

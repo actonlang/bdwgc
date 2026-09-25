@@ -1647,7 +1647,14 @@ run_one_test(void)
     TEST_ASSERT((ADDR(p) & 0x1ff) == 0);
     TEST_ASSERT(0 == *(const int *)p);
     TEST_ASSERT(GC_base_C(p) == p);
-    TEST_ASSERT((GC_size(p) & 0x1e0 /* at least */) == 0);
+    TEST_ASSERT(GC_size(p) >= 0x200 /* at least */);
+    /*
+     * The size is a multiple of the page size unless the object is
+     * a small one, the latter is possible if `HBLKSIZE` is bigger than
+     * twice the page size.
+     */
+    TEST_ASSERT((GC_size(p) & 0x1e0 /* at least */) == 0
+                || GC_size(p) <= MAXOBJBYTES);
   }
 #  endif
 #  ifndef ALL_INTERIOR_POINTERS
