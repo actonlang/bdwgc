@@ -150,6 +150,12 @@ number of collections while a large heap grows, at the expense of space.
 The special value "0" keeps the maximum heap increment fixed.  See also
 `GC_set_heap_growth_divisor()`.
 
+`GC_ALLOC_BUDGET_PERCENT=<value>` - Makes the allocation volume between
+collections the indicated percentage of the size of the live data and roots
+(see `GC_set_alloc_budget_percent()`) instead of depending on
+`GC_FREE_SPACE_DIVISOR`.  E.g. "100" lets the heap grow to about twice the
+size of the live data.  "0" selects the default policy.
+
 `GC_MIN_BYTES_ALLOCD=<bytes>` - Sets the minimum number of bytes allocated
 between collections (see `GC_set_min_bytes_allocd()`).  This bounds the
 collection frequency of programs with a small live heap at the expense of

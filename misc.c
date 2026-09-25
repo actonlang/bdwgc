@@ -1362,6 +1362,18 @@ GC_init(void)
     }
   }
   {
+    const char *str = GETENV("GC_ALLOC_BUDGET_PERCENT");
+
+    if (str != NULL) {
+      long percent = atol(str);
+
+      if (percent >= 0) {
+        /* "0" is used to restore the default policy. */
+        GC_alloc_budget_percent = (word)percent;
+      }
+    }
+  }
+  {
     const char *str = GETENV("GC_MIN_BYTES_ALLOCD");
 
     if (str != NULL) {

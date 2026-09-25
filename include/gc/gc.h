@@ -402,6 +402,38 @@ GC_API void GC_CALL GC_set_free_space_divisor(GC_word);
 GC_API GC_word GC_CALL GC_get_free_space_divisor(void);
 
 /**
+ * The setter and the getter of the allocation budget percentage.
+ * If the value is nonzero, then it replaces `GC_free_space_divisor` in
+ * deciding when to collect: a collection is triggered (once the heap is
+ * exhausted) after at least `N * value / 100` bytes have been allocated
+ * since the previous one, where `N` is the number of bytes in the objects
+ * found live by the previous collection (both traced and "atomic" ones)
+ * plus the size of the root set (including the thread stacks).  E.g., 100
+ * lets the heap grow to about twice the size of the live data, similar
+ * to Go's `GOGC` default.  Unlike with `GC_free_space_divisor`, the heap
+ * size relative to the live data does not depend on how much of the
+ * latter is traced (while the collection work per allocated byte grows
+ * with the traced fraction of the live data).  The volume is halved in
+ * the incremental mode, and `GC_set_min_bytes_allocd()` still sets its
+ * lower bound.  `GC_free_space_divisor` still determines the heap growth
+ * increment, and a heap expansion is still preceded by a collection if
+ * the heap has been expanded since the previous collection, thus
+ * a collection might occur before the volume is allocated if the latter
+ * exceeds the free space of the heap plus a heap growth increment.
+ * Zero (the default unless the collector is built with
+ * `GC_ALLOC_BUDGET_PERCENT` macro defined to a nonzero value) selects the
+ * policy based on `GC_free_space_divisor`.  The initial value may also be
+ * set by `GC_ALLOC_BUDGET_PERCENT` environment variable.  A new value is
+ * used starting from the next collection.  The setter and the getter are
+ * unsynchronized, so `GC_call_with_alloc_lock()`
+ * (`GC_call_with_reader_lock()` in case of the getter) is required to
+ * avoid data race (if the value is modified after the collector is put
+ * into the multi-threaded mode).
+ */
+GC_API void GC_CALL GC_set_alloc_budget_percent(GC_word);
+GC_API GC_word GC_CALL GC_get_alloc_budget_percent(void);
+
+/**
  * The maximum number of collections attempted before reporting out of
  * memory after heap expansion fails.  Initially 0.  The setter and
  * getter are unsynchronized, so `GC_call_with_alloc_lock()`

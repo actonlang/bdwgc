@@ -34,6 +34,11 @@ gctest_html_SOURCES = $(gctest_SOURCES)
 gctest_html_LDADD = $(gctest_LDADD)
 endif
 
+TESTS += allocbudgettest$(EXEEXT)
+check_PROGRAMS += allocbudgettest
+allocbudgettest_SOURCES = tests/allocbudget.c
+allocbudgettest_LDADD = $(test_ldadd)
+
 TESTS += dbgfunctest$(EXEEXT)
 check_PROGRAMS += dbgfunctest
 dbgfunctest_SOURCES = tests/dbgfunc.c
@@ -254,6 +259,7 @@ endif
 check-without-test-driver: export GC_PROMPT_DISABLED=1
 check-without-test-driver: $(TESTS)
 	./gctest$(EXEEXT)
+	./allocbudgettest$(EXEEXT)
 	./dbgfunctest$(EXEEXT)
 	./expandfailtest$(EXEEXT)
 	./heapgrowthtest$(EXEEXT)
