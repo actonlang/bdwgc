@@ -502,8 +502,8 @@ GC_free_block_ending_at(struct hblk *h)
 }
 
 /*
- * Add `hhdr` to the appropriate free list.  We maintain individual
- * free lists sorted by address.
+ * Add `hhdr` to the head of the appropriate free list.  The free lists
+ * are not sorted by address.
  */
 STATIC void
 GC_add_to_fl(struct hblk *h, hdr *hhdr)
@@ -672,8 +672,12 @@ GC_merge_unmapped(void)
   size_t i;
   GC_bool merged = FALSE;
 
+  GC_ASSERT(I_HOLD_LOCK());
   for (i = 0; i <= N_HBLK_FLS; ++i) {
     struct hblk *h = GC_hblkfreelist[i];
+    /* The block to continue with once `h` cannot be merged any more. */
+    struct hblk *resume = NULL;
+    GC_bool retry = FALSE;
 
     while (h != NULL) {
       struct hblk *next;
@@ -681,23 +685,25 @@ GC_merge_unmapped(void)
       size_t size, next_size;
 
       GET_HDR(h, hhdr);
+      if (!retry)
+        resume = hhdr->hb_next;
+      retry = FALSE;
       size = hhdr->hb_sz;
       next = (struct hblk *)((ptr_t)h + size);
       GET_HDR(next, nexthdr);
       /* Coalesce with successor, if possible. */
       {
-        struct hblk *hb_next = hhdr->hb_next; /*< read ahead for `LINT2` */
         if (NULL == nexthdr || !HBLK_IS_FREE(nexthdr)
             || BLOCKS_MERGE_OVERFLOW(hhdr, nexthdr)) {
           /* Not mergeable with the successor. */
-          h = hb_next;
+          h = resume;
           continue;
         }
         next_size = nexthdr->hb_sz;
 #  ifdef CHERI_PURECAP
         /* FIXME: Coalesce with super-capability. */
         if (!CAPABILITY_COVERS_RANGE(h, ADDR(next), ADDR(next) + next_size)) {
-          h = hb_next;
+          h = resume;
           continue;
         }
 #  endif
@@ -737,14 +743,27 @@ GC_merge_unmapped(void)
         GC_unmap_gap((ptr_t)h, size, (ptr_t)next, next_size);
       }
       /* If they are both unmapped, we merge, but leave unmapped. */
+      if (next == resume)
+        resume = nexthdr->hb_next;
       GC_remove_from_fl_at(hhdr, i);
       GC_remove_from_fl(nexthdr);
       hhdr->hb_sz += nexthdr->hb_sz;
       GC_remove_header(next);
       GC_add_to_fl(h, hhdr);
       merged = TRUE;
-      /* Start over at the beginning of list. */
-      h = GC_hblkfreelist[i];
+      /*
+       * Rather than start over at the beginning of the list, retry `h`
+       * if it is still in this list (now at its head), otherwise continue
+       * with `resume` (`h` is revisited when its new list is scanned).
+       * The blocks preceding `h` in the list need no rescan: none of them
+       * could be merged with its successor, and the merge does not change
+       * the successor of any other block.
+       */
+      if (GC_hblk_fl_from_blocks(divHBLKSZ(hhdr->hb_sz)) == i) {
+        retry = TRUE;
+      } else {
+        h = resume;
+      }
     }
   }
   return merged;
