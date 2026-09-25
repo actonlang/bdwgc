@@ -3443,6 +3443,19 @@ static int clear_refs_fd = -1;
 static int uffdwp_fd = -1;
 #  define IS_NON_MPROTECT_VDB() (uffdwp_fd != -1)
 
+/*
+ * Held by the `userfaultfd` monitor thread while it records a page as
+ * dirty and unprotects it, and by `GC_read_dirty` while it takes and
+ * clears the dirty bits and protects the heap.  The monitor thread is not
+ * stopped with the world, thus otherwise a page could be recorded dirty
+ * before (or while) the bits are taken, and unprotected after the heap is
+ * protected, i.e. writes to it would not be recorded in the next cycle.
+ * Besides, the thread calling `fork()` holds it from the at-fork prepare
+ * handler till the parent (or child) one.  It is acquired after the
+ * allocator lock and the mark lock, and before the dirty-bit lock.
+ */
+static pthread_mutex_t uffdwp_monitor_ml = PTHREAD_MUTEX_INITIALIZER;
+
 #else
 #  define IS_NON_MPROTECT_VDB() FALSE
 #endif
@@ -4697,6 +4710,8 @@ uffdwp_monitor_thread(void *arg)
     if (n > 1)
       GC_log_printf("Read %u userfaultfd messages at once\n", (unsigned)n);
 #  endif
+    if (pthread_mutex_lock(&uffdwp_monitor_ml) != 0)
+      ABORT("pthread_mutex_lock failed");
     for (i = 0; i < n; i++) {
       struct uffd_msg *p_msg = &msg_buf[i];
       struct hblk *h;
@@ -4724,10 +4739,28 @@ uffdwp_monitor_thread(void *arg)
        */
       uffdwp_write_protect(h, GC_page_size, TRUE);
     }
+    (void)pthread_mutex_unlock(&uffdwp_monitor_ml);
   }
 }
 
 #  ifdef CAN_HANDLE_FORK
+GC_INNER void
+GC_dirty_prepare_fork(void)
+{
+  /* Note: `uffdwp_fd` is changed only with the allocator lock held. */
+  GC_ASSERT(I_HOLD_LOCK());
+  if (uffdwp_fd != -1 && pthread_mutex_lock(&uffdwp_monitor_ml) != 0)
+    ABORT("pthread_mutex_lock failed (in fork prepare)");
+}
+
+GC_INNER void
+GC_dirty_update_parent(void)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  if (uffdwp_fd != -1)
+    (void)pthread_mutex_unlock(&uffdwp_monitor_ml);
+}
+
 GC_INNER void
 GC_dirty_update_child(void)
 {
@@ -4736,6 +4769,8 @@ GC_dirty_update_child(void)
     /* The GC incremental mode is off. */
     return;
   }
+  /* The lock is acquired by `GC_dirty_prepare_fork()` in the parent. */
+  (void)pthread_mutex_unlock(&uffdwp_monitor_ml);
   /*
    * Close the file descriptor inherited from the parent.  The kernel
    * unregisters all memory ranges itself (i.e. a manual memory unprotection
@@ -4950,6 +4985,12 @@ GC_read_dirty(GC_bool output_unneeded)
   )
 #  endif
   {
+#  ifdef UFFDWP_VDB
+    GC_bool monitor_locked = !GC_manual_vdb && IS_NON_MPROTECT_VDB();
+
+    if (monitor_locked && pthread_mutex_lock(&uffdwp_monitor_ml) != 0)
+      ABORT("pthread_mutex_lock failed");
+#  endif
     if (!output_unneeded)
       BCOPY(CAST_AWAY_VOLATILE_PVOID(GC_dirty_pages), GC_grungy_pages,
             sizeof(GC_dirty_pages));
@@ -4959,6 +5000,10 @@ GC_read_dirty(GC_bool output_unneeded)
       REGISTER_HEAP_LAZY();
       GC_protect_heap();
     }
+#  endif
+#  ifdef UFFDWP_VDB
+    if (monitor_locked)
+      (void)pthread_mutex_unlock(&uffdwp_monitor_ml);
 #  endif
     return;
   }

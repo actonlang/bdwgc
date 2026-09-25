@@ -3928,6 +3928,22 @@ GC_INNER void GC_dirty_update_child(void);
 #    else
 #      define GC_dirty_update_child() (void)0
 #    endif
+#    ifdef UFFDWP_VDB
+/*
+ * Acquire (before `fork`) and release (after `fork` in the parent
+ * process) the lock of the `userfaultfd` monitor thread, so that the
+ * child process does not inherit the lock held by the monitor thread
+ * (which does not exist in the child process); the child process
+ * releases the lock in `GC_dirty_update_child()`.  Both are called with
+ * the allocator lock (and the mark lock, if any) held, and before
+ * acquiring (after releasing) the dirty-bit lock.
+ */
+GC_INNER void GC_dirty_prepare_fork(void);
+GC_INNER void GC_dirty_update_parent(void);
+#    else
+#      define GC_dirty_prepare_fork() (void)0
+#      define GC_dirty_update_parent() (void)0
+#    endif
 #  endif /* CAN_HANDLE_FORK */
 
 #  if defined(MPROTECT_VDB) && defined(DARWIN) || defined(UFFDWP_VDB)
