@@ -342,6 +342,9 @@ jobs:
               -D _FORTIFY_SOURCE=2
             c_compiler: gcc
           - os: ubuntu-latest
+            conf_options: --enable-cplusplus --enable-gc-assertions
+            cflags_extra: -D HBLKSIZE=65536 -D _FORTIFY_SOURCE=2
+          - os: ubuntu-latest
             conf_options: >-
               --enable-cplusplus --enable-gc-assertions --enable-gc-debug
             cflags_extra: -std=c++20
@@ -390,6 +393,9 @@ jobs:
             conf_options: --enable-gc-assertions --enable-gc-debug
             cflags_extra: -D GC_DISABLE_INCREMENTAL -D _FORTIFY_SOURCE=2 -m32
             install_multilib: true
+          - os: macos-latest
+            conf_options: --enable-gc-assertions --enable-large-config
+            cflags_extra: -D HBLKSIZE=65536
           - os: ubuntu-latest
             conf_options: --enable-gc-assertions --enable-large-config
             cflags_extra: -D _FORTIFY_SOURCE=2 -march=native -mx32
