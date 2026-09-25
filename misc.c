@@ -1332,6 +1332,21 @@ GC_init(void)
         GC_free_space_divisor = (unsigned)space_divisor;
     }
   }
+  {
+    const char *str = GETENV("GC_HEAP_GROWTH_DIVISOR");
+
+    if (str != NULL) {
+      if (str[0] == '0' && str[1] == '\0') {
+        /* "0" is used to turn off the scaling of heap increments. */
+        GC_set_heap_growth_divisor(0);
+      } else {
+        long divisor = atol(str);
+
+        if (divisor > 0)
+          GC_set_heap_growth_divisor((GC_word)divisor);
+      }
+    }
+  }
 #ifdef USE_MUNMAP
   {
     const char *str = GETENV("GC_UNMAP_THRESHOLD");

@@ -1749,13 +1749,53 @@ GC_scratch_recycle_inner(void *ptr, size_t sz)
     GC_add_to_heap((struct hblk *)((ptr_t)ptr + displ), recycled_bytes);
 }
 
+#ifdef GC_HEAP_GROWTH_DIVISOR
+STATIC word GC_heap_growth_divisor = GC_HEAP_GROWTH_DIVISOR;
+#else
+/* Zero means the maximum heap increment does not depend on heap size. */
+STATIC word GC_heap_growth_divisor = 0;
+#endif
+
+GC_API void GC_CALL
+GC_set_heap_growth_divisor(GC_word value)
+{
+  GC_heap_growth_divisor = value;
+}
+
+GC_API GC_word GC_CALL
+GC_get_heap_growth_divisor(void)
+{
+  return GC_heap_growth_divisor;
+}
+
+/*
+ * Return the maximum number of blocks by which the heap is expanded
+ * beyond the current request.  This is the larger of `MAXHINCR` and the
+ * heap size (not counting the part present at the latest forced
+ * unmapping) divided by `GC_heap_growth_divisor` (unless the latter is
+ * zero).
+ */
+static word
+max_heap_increment(void)
+{
+  /* Read once: the setter does not acquire the allocator lock. */
+  word divisor = GC_heap_growth_divisor;
+  word blocks;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  if (0 == divisor)
+    return MAXHINCR;
+  blocks = divHBLKSZ(GC_heapsize - GC_heapsize_at_forced_unmap) / divisor;
+  return blocks > MAXHINCR ? blocks : MAXHINCR;
+}
+
 GC_INNER GC_bool
 GC_expand_hp_inner(word n)
 {
   size_t sz;
   struct hblk *space;
   /* Number of bytes by which we expect the heap to expand soon. */
-  word expansion_slop, min_allocd;
+  word expansion_slop, min_allocd, max_increment;
 
   GC_ASSERT(I_HOLD_LOCK());
   GC_ASSERT(GC_page_size != 0);
@@ -1784,7 +1824,11 @@ GC_expand_hp_inner(word n)
    * `GC_add_to_heap()` performs minimal adjustment needed for correctness.
    */
   min_allocd = min_bytes_allocd();
-  expansion_slop = SIZET_SAT_ADD(min_allocd, 4 * MAXHINCR * HBLKSIZE);
+  max_increment = max_heap_increment();
+  expansion_slop = max_increment <= divHBLKSZ(GC_WORD_MAX) / 4
+                       ? 4 * max_increment * HBLKSIZE
+                       : GC_WORD_MAX;
+  expansion_slop = SIZET_SAT_ADD(expansion_slop, min_allocd);
   if ((0 == GC_last_heap_addr && (ADDR(space) & SIGNB) == 0)
       || (GC_last_heap_addr != 0 && GC_last_heap_addr < ADDR(space))) {
     /* Assume the heap is growing up. */
@@ -1871,13 +1915,63 @@ GC_get_allocd_bytes_per_finalizer(void)
   return GC_allocd_bytes_per_finalizer;
 }
 
+/*
+ * Return the number of blocks to get from the OS to satisfy a request
+ * of `needed_blocks` blocks, if the expansion beyond the request is
+ * limited by `max_increment` blocks.  `GC_max_heapsize` is not taken
+ * into account.
+ */
+static word
+heap_expansion_blocks(word needed_blocks, unsigned flags, word max_increment)
+{
+  word blocks_to_get;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  /* Divide separately to avoid overflow for a huge free-space divisor. */
+  blocks_to_get = divHBLKSZ(GC_heapsize - GC_heapsize_at_forced_unmap)
+                      / GC_free_space_divisor
+                  + needed_blocks;
+  if (blocks_to_get > max_increment) {
+#ifdef NO_BLACK_LISTING
+    UNUSED_ARG(flags);
+    blocks_to_get
+        = needed_blocks > max_increment ? needed_blocks : max_increment;
+#else
+    word slop;
+
+    /*
+     * Get the minimum required to make it likely that we can satisfy
+     * the current request in the presence of black-listing.  This will
+     * probably be bigger than `max_increment`.
+     */
+    if ((flags & IGNORE_OFF_PAGE) != 0) {
+      slop = 4;
+    } else {
+      slop = 2 * divHBLKSZ(BL_LIMIT);
+      if (slop > needed_blocks)
+        slop = needed_blocks;
+    }
+    if (needed_blocks + slop > max_increment) {
+      blocks_to_get = needed_blocks + slop;
+    } else {
+      blocks_to_get = max_increment;
+    }
+#endif
+    if (blocks_to_get > divHBLKSZ(GC_WORD_MAX))
+      blocks_to_get = divHBLKSZ(GC_WORD_MAX);
+  } else if (blocks_to_get < MINHINCR) {
+    blocks_to_get = MINHINCR;
+  }
+  return blocks_to_get;
+}
+
 GC_INNER GC_bool
 GC_collect_or_expand(word needed_blocks, unsigned flags, GC_bool retry)
 {
   static word last_fo_entries, last_bytes_finalized;
 
   GC_bool gc_not_stopped = TRUE;
-  word blocks_to_get;
+  word blocks_to_get, fallback_blocks, max_increment;
   IF_CANCEL(int cancel_state;)
 
   GC_ASSERT(I_HOLD_LOCK());
@@ -1912,40 +2006,16 @@ GC_collect_or_expand(word needed_blocks, unsigned flags, GC_bool retry)
     }
   }
 
-  /* Divide separately to avoid overflow for a huge free-space divisor. */
-  blocks_to_get = divHBLKSZ(GC_heapsize - GC_heapsize_at_forced_unmap)
-                      / GC_free_space_divisor
-                  + needed_blocks;
-  if (blocks_to_get > MAXHINCR) {
-#ifdef NO_BLACK_LISTING
-    UNUSED_ARG(flags);
-    blocks_to_get = needed_blocks > MAXHINCR ? needed_blocks : MAXHINCR;
-#else
-    word slop;
-
-    /*
-     * Get the minimum required to make it likely that we can satisfy
-     * the current request in the presence of black-listing.  This will
-     * probably be bigger than `MAXHINCR`.
-     */
-    if ((flags & IGNORE_OFF_PAGE) != 0) {
-      slop = 4;
-    } else {
-      slop = 2 * divHBLKSZ(BL_LIMIT);
-      if (slop > needed_blocks)
-        slop = needed_blocks;
-    }
-    if (needed_blocks + slop > MAXHINCR) {
-      blocks_to_get = needed_blocks + slop;
-    } else {
-      blocks_to_get = MAXHINCR;
-    }
-#endif
-    if (blocks_to_get > divHBLKSZ(GC_WORD_MAX))
-      blocks_to_get = divHBLKSZ(GC_WORD_MAX);
-  } else if (blocks_to_get < MINHINCR) {
-    blocks_to_get = MINHINCR;
-  }
+  max_increment = max_heap_increment();
+  blocks_to_get = heap_expansion_blocks(needed_blocks, flags, max_increment);
+  /*
+   * If a scaled expansion is refused by the OS, then try the size which
+   * the fixed `MAXHINCR` limit would give, before falling back to the
+   * requested size.
+   */
+  fallback_blocks = max_increment > MAXHINCR
+                        ? heap_expansion_blocks(needed_blocks, flags, MAXHINCR)
+                        : needed_blocks;
 
   if (GC_max_heapsize > GC_heapsize) {
     word max_get_blocks = divHBLKSZ(GC_max_heapsize - GC_heapsize);
@@ -1964,6 +2034,8 @@ GC_collect_or_expand(word needed_blocks, unsigned flags, GC_bool retry)
   }
 #endif
   if (!GC_expand_hp_inner(blocks_to_get)
+      && (fallback_blocks >= blocks_to_get || fallback_blocks == needed_blocks
+          || !GC_expand_hp_inner(fallback_blocks))
       && (blocks_to_get == needed_blocks
           || !GC_expand_hp_inner(needed_blocks))) {
     if (!gc_not_stopped) {

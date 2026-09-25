@@ -143,6 +143,13 @@ the collector is built with `SMALL_CONFIG` macro defined.
 Setting it to larger values decreases space consumption and increases the
 garbage collection frequency.
 
+`GC_HEAP_GROWTH_DIVISOR` - Allows an automatic heap expansion to be as large
+as the heap size divided by the indicated value (if that is bigger than the
+default maximum heap increment).  Setting it to a smaller value reduces the
+number of collections while a large heap grows, at the expense of space.
+The special value "0" keeps the maximum heap increment fixed.  See also
+`GC_set_heap_growth_divisor()`.
+
 `GC_UNMAP_THRESHOLD` - Sets the desired threshold of memory blocks unmapping
 (the number of sequential garbage collections during those a candidate block
 for unmapping should be marked as free).  The special value "0" completely
