@@ -147,6 +147,12 @@ of fragmentation. In particular:
 
 * Programs with a large root set size and little live heap memory will
   expand the heap to amortize the cost of scanning the roots.
+* A single heap expansion is limited to a fixed size (`MAXHINCR` blocks,
+  a few megabytes), and the heap is not expanded again before the next
+  collection (so that black-listing remains effective), thus the number of
+  collections needed to grow a large heap is proportional to its size.
+  `GC_set_heap_growth_divisor()` raises the limit to a fraction of the heap
+  size.
 * GC actually collects more frequently in non-incremental mode. The large
   block allocator usually refuses to split large heap blocks once the garbage
   collection threshold is reached. This often has the effect of collecting

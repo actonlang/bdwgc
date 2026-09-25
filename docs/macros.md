@@ -613,6 +613,10 @@ in bytes.
 `GC_FREE_SPACE_DIVISOR=<value>` - Sets the alternate default value of
 `GC_free_space_divisor` variable.
 
+`GC_HEAP_GROWTH_DIVISOR=<value>` - Sets the default value of the heap growth
+divisor (see `GC_set_heap_growth_divisor()`); zero (the default) keeps the
+maximum heap increment independent of the heap size.
+
 `GC_ALLOCD_BYTES_PER_FINALIZER=<value>` - Sets the alternate default value of
 `GC_allocd_bytes_per_finalizer` variable.
 

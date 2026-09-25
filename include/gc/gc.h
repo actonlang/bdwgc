@@ -572,6 +572,24 @@ GC_API void GC_CALL GC_set_min_bytes_allocd(size_t);
 GC_API size_t GC_CALL GC_get_min_bytes_allocd(void);
 
 /**
+ * The setter and the getter of the heap growth divisor.  An automatic
+ * heap expansion is normally limited to a fixed number of bytes (a few
+ * megabytes), thus a program whose live data grows to gigabytes needs
+ * a full collection per such step.  If the value is nonzero, then the
+ * limit is raised to the heap size divided by the value (if that is
+ * bigger), so that the number of such collections grows logarithmically
+ * rather than linearly with the heap size, at the expense of a bigger
+ * heap.  The expansion is still at most about the heap size divided by
+ * `GC_free_space_divisor`, thus values not bigger than the latter have
+ * the same effect.  Zero (the default unless `GC_HEAP_GROWTH_DIVISOR`
+ * macro is defined to build the collector) keeps the fixed limit.
+ * The initial value may also be set by `GC_HEAP_GROWTH_DIVISOR`
+ * environment variable.  The functions do not use any synchronization.
+ */
+GC_API void GC_CALL GC_set_heap_growth_divisor(GC_word);
+GC_API GC_word GC_CALL GC_get_heap_growth_divisor(void);
+
+/**
  * Set/get the size in pages of units operated by `GC_collect_a_little()`.
  * The value should not be zero.  Not synchronized.
  */
@@ -2799,6 +2817,14 @@ GC_API void *GC_CALL GC_find_limit(void * /* `start` */, int /* `up` */);
 #  define GC_INIT_CONF_ALLOCD_BYTES_PER_FINALIZER (void)0
 #endif
 
+#ifdef GC_HEAP_GROWTH_DIVISOR
+/* Set the heap growth divisor to the desired value at start-up. */
+#  define GC_INIT_CONF_HEAP_GROWTH_DIVISOR \
+    GC_set_heap_growth_divisor(GC_HEAP_GROWTH_DIVISOR)
+#else
+#  define GC_INIT_CONF_HEAP_GROWTH_DIVISOR (void)0
+#endif
+
 #ifdef GC_FREE_SPACE_DIVISOR
 /* Set `GC_free_space_divisor` to the desired value at start-up. */
 #  define GC_INIT_CONF_FREE_SPACE_DIVISOR \
@@ -2888,6 +2914,7 @@ GC_API void *GC_CALL GC_find_limit(void * /* `start` */, int /* `up` */);
     GC_INIT_CONF_MAX_RETRIES;                         \
     GC_INIT_CONF_ALLOCD_BYTES_PER_FINALIZER;          \
     GC_INIT_CONF_FREE_SPACE_DIVISOR;                  \
+    GC_INIT_CONF_HEAP_GROWTH_DIVISOR;                 \
     GC_INIT_CONF_FULL_FREQ;                           \
     GC_INIT_CONF_TIME_LIMIT;                          \
     GC_INIT_CONF_MARKERS;                             \
