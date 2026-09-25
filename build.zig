@@ -703,6 +703,9 @@ pub fn build(b: *std.Build) void {
     }
     if (enable_threads) {
         addTest(b, gc, test_step, flags, "atomicopstest", "tests/atomicops.c");
+        if (t.os.tag != .windows) {
+            addTest(b, gc, test_step, flags, "forktest", "tests/fork.c");
+        }
         addTest(b, gc, test_step, flags, "initfromthreadtest", "tests/initfromthread.c");
         addTest(b, gc, test_step, flags, "subthreadcreatetest", "tests/subthreadcreate.c");
         addTest(b, gc, test_step, flags, "threadleaktest", "tests/threadleak.c");
