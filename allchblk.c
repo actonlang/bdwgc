@@ -696,7 +696,7 @@ GC_merge_unmapped(void)
         next_size = nexthdr->hb_sz;
 #  ifdef CHERI_PURECAP
         /* FIXME: Coalesce with super-capability. */
-        if (!CAPABILITY_COVERS_RANGE(h, ADDR(next), ADDR(next) + nextsize)) {
+        if (!CAPABILITY_COVERS_RANGE(h, ADDR(next), ADDR(next) + next_size)) {
           h = hb_next;
           continue;
         }
