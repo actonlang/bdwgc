@@ -4561,9 +4561,12 @@ soft_set_grungy_pages(ptr_t start, ptr_t limit, ptr_t next_start_hint,
 #  if defined(CHECK_SOFT_VDB) /* `&& defined(MPROTECT_VDB)` */
         /*
          * Ensure that each clean page according to the soft-dirty VDB is
-         * also identified such by the `mprotect`-based one.
+         * also identified such by the `mprotect`-based one.  This is not
+         * checked if `HBLKSIZE` is bigger than the page size: the latter
+         * VDB unprotects the whole heap block on a write fault, thus the
+         * other pages of the block are writable but could be clean.
          */
-        if (!is_static_root
+        if (!is_static_root && GC_page_size >= HBLKSIZE
             && get_pht_entry_from_index(GC_dirty_pages, PHT_HASH(vaddr))) {
           ptr_t my_start, my_end; /*< the values are not used */
 
