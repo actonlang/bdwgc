@@ -673,6 +673,13 @@ pub fn build(b: *std.Build) void {
         }
     }
     addTest(b, gc, test_step, flags, "dbgfunctest", "tests/dbgfunc.c");
+    // `expandfailtest` includes the collector source, thus it is not
+    // linked with `gc` library.
+    addTestExt(b, gc, test_step, flags, "expandfailtest", "tests/expandfail.c", .{
+        .link_gc = false,
+        .filename2 = if (t.abi == .msvc) "extra/msvc_dbg.c" else null,
+        .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
+    });
     addTest(b, gc, test_step, flags, "heapgrowthtest", "tests/heapgrowth.c");
     addTest(b, gc, test_step, flags, "hugetest", "tests/huge.c");
     addTest(b, gc, test_step, flags, "leaktest", "tests/leak.c");
@@ -729,6 +736,7 @@ fn addTest(b: *std.Build, gc: *std.Build.Step.Compile, test_step: *std.Build.Ste
 }
 
 fn addTestExt(b: *std.Build, gc: *std.Build.Step.Compile, test_step: *std.Build.Step, flags: std.ArrayListUnmanaged([]const u8), testname: []const u8, filename: []const u8, ext_args: struct {
+    link_gc: bool = true,
     filename2: ?[]const u8 = null,
     rc_filename: ?[]const u8 = null,
     lib2: ?*std.Build.Step.Compile = null,
@@ -759,7 +767,9 @@ fn addTestExt(b: *std.Build, gc: *std.Build.Step.Compile, test_step: *std.Build.
         });
     }
     test_exe.root_module.addIncludePath(b.path("include"));
-    test_exe.root_module.linkLibrary(gc);
+    if (ext_args.link_gc) {
+        test_exe.root_module.linkLibrary(gc);
+    }
     if (ext_args.lib2 != null) {
         test_exe.root_module.linkLibrary(ext_args.lib2.?);
     }

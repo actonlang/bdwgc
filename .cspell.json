@@ -387,6 +387,7 @@
     "Wapi",
     "wasi",
     "wcsdup",
+    "Wdangling",
     "WEBASSEMBLY",
     "Weiser",
     "WINALLOC",

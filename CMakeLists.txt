@@ -1064,6 +1064,25 @@ if(BUILD_TESTING)
     target_link_libraries(dbgfunctest PRIVATE gc)
     add_test(NAME dbgfunctest COMMAND dbgfunctest)
 
+    # The test includes the collector source instead of linking `gc`.
+    add_executable(expandfailtest tests/expandfail.c ${NODIST_SRC})
+    if(MSVC)
+        target_sources(expandfailtest PRIVATE extra/msvc_dbg.c)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+        target_sources(expandfailtest PRIVATE sparc_mach_dep.S)
+    endif()
+    target_link_libraries(
+        expandfailtest
+        PRIVATE ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+    )
+    if(enable_cplusplus AND NOT (BORLAND OR MSVC OR WATCOM))
+        # The collector source is compiled as C++ (by `-x c++` above),
+        # thus the test is linked by the C++ compiler (with its runtime).
+        set_target_properties(expandfailtest PROPERTIES LINKER_LANGUAGE CXX)
+    endif()
+    add_test(NAME expandfailtest COMMAND expandfailtest)
+
     add_executable(heapgrowthtest tests/heapgrowth.c ${NODIST_SRC})
     target_link_libraries(heapgrowthtest PRIVATE gc)
     add_test(NAME heapgrowthtest COMMAND heapgrowthtest)
