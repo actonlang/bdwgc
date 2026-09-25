@@ -39,6 +39,11 @@ check_PROGRAMS += dbgfunctest
 dbgfunctest_SOURCES = tests/dbgfunc.c
 dbgfunctest_LDADD = $(test_ldadd)
 
+TESTS += heapgrowthtest$(EXEEXT)
+check_PROGRAMS += heapgrowthtest
+heapgrowthtest_SOURCES = tests/heapgrowth.c
+heapgrowthtest_LDADD = $(test_ldadd)
+
 TESTS += hugetest$(EXEEXT)
 check_PROGRAMS += hugetest
 hugetest_SOURCES = tests/huge.c
@@ -197,6 +202,7 @@ check-without-test-driver: export GC_PROMPT_DISABLED=1
 check-without-test-driver: $(TESTS)
 	./gctest$(EXEEXT)
 	./dbgfunctest$(EXEEXT)
+	./heapgrowthtest$(EXEEXT)
 	./hugetest$(EXEEXT)
 	./leaktest$(EXEEXT)
 	./middletest$(EXEEXT)
