@@ -297,6 +297,16 @@ value is bigger than the page size, then the memory is obtained from the OS
 with the explicit alignment, and the virtual dirty bits (if any) are
 maintained per a heap block.
 
+`MINHINCR=<n>`, `MAXHINCR=<n>` - Set the minimum and maximum heap increments,
+in heap blocks.  By default, these are 16 and 2048 (64 and 4096 in case of
+`LARGE_CONFIG`), i.e. the increments in bytes are proportional to `HBLKSIZE`.
+E.g. `-D HBLKSIZE=16384 -D MINHINCR=16 -D MAXHINCR=1024` (along with
+`LARGE_CONFIG`) keeps the increments in bytes the same as for the typical
+default heap block size of 4 KB.  `MINHINCR` also determines the initial heap
+size and the black-list spacing guess.  The value of `MINHINCR` should not
+be too small (e.g. less than 4) as a single heap block added to a small heap
+could be black-listed.
+
 `USE_MMAP` - Forces to use `mmap()` instead of `sbrk()` to get new memory from
 the OS.  Works for Linux, FreeBSD, Cygwin, Solaris and Irix, at least.
 

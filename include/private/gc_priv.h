@@ -482,19 +482,26 @@ GC_INNER void GC_print_finalization_stats(void);
 #  endif
 #endif
 
-#ifdef LARGE_CONFIG
-#  define MINHINCR 64
-#  define MAXHINCR 4096
-#else
 /*
  * Minimum heap increment, in blocks of `HBLKSIZE`.  Note: must be multiple
- * of largest page size.
+ * of largest page size.  Could be overridden by client.
  */
-#  define MINHINCR 16
+#ifndef MINHINCR
+#  ifdef LARGE_CONFIG
+#    define MINHINCR 64
+#  else
+#    define MINHINCR 16
+#  endif
+#endif
 
-/* Maximum heap increment, in blocks. */
-#  define MAXHINCR 2048
-#endif /* !LARGE_CONFIG */
+/* Maximum heap increment, in blocks.  Could be overridden by client. */
+#ifndef MAXHINCR
+#  ifdef LARGE_CONFIG
+#    define MAXHINCR 4096
+#  else
+#    define MAXHINCR 2048
+#  endif
+#endif
 
 /* Stack saving for debugging. */
 
