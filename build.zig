@@ -78,6 +78,7 @@ pub fn build(b: *std.Build) void {
     const enable_large_config = b.option(bool, "enable_large_config", "Optimize for large heap or root set") orelse false;
     const enable_mark_bits = b.option(bool, "enable_mark_bits", "Use mark bits instead of mark bytes even if parallel marking") orelse false;
     const enable_mark_bit_per_obj = b.option(bool, "enable_mark_bit_per_obj", "Allocate a mark bit (or byte) per object instead of per granule") orelse false;
+    const page_hash_table_log2 = b.option(u8, "page_hash_table_log2", "Log2 of the number of page hash table entries (0 keeps the default)") orelse 0;
     const enable_gc_assertions = b.option(bool, "enable_gc_assertions", "Enable collector-internal assertion checking") orelse false;
     const enable_mmap = b.option(bool, "enable_mmap", "Use mmap instead of sbrk to expand the heap") orelse false;
     const enable_munmap = b.option(bool, "enable_munmap", "Return page to the OS if empty for N collections") orelse true;
@@ -285,6 +286,13 @@ pub fn build(b: *std.Build) void {
 
     if (enable_mark_bit_per_obj) {
         flags.append(b.allocator, "-D MARK_BIT_PER_OBJ") catch unreachable;
+    }
+
+    if (page_hash_table_log2 != 0) {
+        if (page_hash_table_log2 > 30) {
+            @panic("page_hash_table_log2 should be in range 1..30 (or 0 for the default)");
+        }
+        flags.append(b.allocator, b.fmt("-D LOG_PHT_ENTRIES={d}", .{page_hash_table_log2})) catch unreachable;
     }
 
     if (enable_gc_assertions) {
