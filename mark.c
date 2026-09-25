@@ -126,6 +126,18 @@ GC_reset_obj_kinds(void)
 #  define INITIAL_MARK_STACK_SIZE (1 * HBLKSIZE)
 #endif
 
+#ifdef PARALLEL_MARK
+#  ifdef LINT2
+#    define LOCAL_MARK_STACK_SIZE (HBLKSIZE / 8)
+#  else
+/*
+ * Under normal circumstances, this is big enough to guarantee we do not
+ * overflow half of it in a single call to `GC_mark_from`.
+ */
+#    define LOCAL_MARK_STACK_SIZE HBLKSIZE
+#  endif
+#endif
+
 #if !defined(GC_DISABLE_INCREMENTAL)
 /*
  * The number of dirty pages we marked from, excluding pointer-free pages,
@@ -678,6 +690,8 @@ GC_invalidate_mark_state(void)
 STATIC mse *
 GC_signal_mark_stack_overflow(mse *msp, const mse *mark_stack_limit)
 {
+  size_t discards = GC_MARK_STACK_DISCARDS;
+
   GC_mark_state = MS_INVALID;
 #ifdef PARALLEL_MARK
   /*
@@ -688,18 +702,39 @@ GC_signal_mark_stack_overflow(mse *msp, const mse *mark_stack_limit)
    * e.g. if the parallel marker is disabled because of a stop function or
    * a time limit, or during the mark state recovery after an overflow.
    */
-  if (!GC_parallel || mark_stack_limit == GC_mark_stack_limit)
+  if (!GC_parallel || mark_stack_limit == GC_mark_stack_limit) {
     GC_mark_stack_too_small = TRUE;
+  } else if (discards > LOCAL_MARK_STACK_SIZE / 8) {
+    /*
+     * `GC_MARK_STACK_DISCARDS` depends on `INITIAL_MARK_STACK_SIZE` (which
+     * could be defined by the client), thus it might exceed the capacity
+     * of a local mark stack.
+     */
+    discards = LOCAL_MARK_STACK_SIZE / 8;
+  }
 #else
   UNUSED_ARG(mark_stack_limit);
   GC_mark_stack_too_small = TRUE;
 #endif
   GC_COND_LOG_PRINTF("Mark stack overflow; current size: %lu entries\n",
                      (unsigned long)GC_mark_stack_size);
+#ifdef GC_ASSERTIONS
+  {
+    /* The overflowing mark stack is the global one, or a local one. */
+    const mse *mark_stack = GC_mark_stack;
+
+#  ifdef PARALLEL_MARK
+    if (mark_stack_limit != GC_mark_stack_limit)
+      mark_stack = mark_stack_limit - LOCAL_MARK_STACK_SIZE;
+#  endif
+    /* The new top should remain inside the mark stack. */
+    GC_ASSERT((word)(msp - mark_stack) >= discards);
+  }
+#endif
 #if defined(CPPCHECK)
   GC_noop1_ptr(msp);
 #endif
-  return msp - GC_MARK_STACK_DISCARDS;
+  return msp - discards;
 }
 
 GC_ATTR_NO_SANITIZE_ADDR_MEM_THREAD
@@ -1042,16 +1077,6 @@ STATIC unsigned GC_helper_count = 0;
 STATIC unsigned GC_active_count = 0;
 
 GC_INNER GC_signed_word GC_fl_builder_count = 0;
-
-#  ifdef LINT2
-#    define LOCAL_MARK_STACK_SIZE (HBLKSIZE / 8)
-#  else
-/*
- * Under normal circumstances, this is big enough to guarantee we do not
- * overflow half of it in a single call to `GC_mark_from`.
- */
-#    define LOCAL_MARK_STACK_SIZE HBLKSIZE
-#  endif
 
 GC_INNER void
 GC_wait_for_markers_init(void)
