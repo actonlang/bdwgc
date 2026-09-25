@@ -687,6 +687,12 @@ pub fn build(b: *std.Build) void {
     addTest(b, gc, test_step, flags, "realloctest", "tests/realloc.c");
     addTest(b, gc, test_step, flags, "smashtest", "tests/smash.c");
     addTest(b, gc, test_step, flags, "typedtest", "tests/typed.c");
+    // Likewise, `unmaptest` includes the collector source.
+    addTestExt(b, gc, test_step, flags, "unmaptest", "tests/unmap.c", .{
+        .link_gc = false,
+        .filename2 = if (t.abi == .msvc) "extra/msvc_dbg.c" else null,
+        .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
+    });
     // TODO: build `staticrootstest` with `-D STATICROOTSLIB2`.
     addTestExt(b, gc, test_step, flags, "staticrootstest", "tests/staticroots.c", .{
         .filename2 = "tests/staticroots_lib.c",
