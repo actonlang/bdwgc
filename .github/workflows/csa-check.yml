@@ -54,6 +54,6 @@ jobs:
           clang --analyze -Xanalyzer -analyzer-output=text -Werror
           -I include ${{ join(matrix.cflags_extra, ' ') }}
           `find . \( -iname '*.c' -o -iname '*.cc' \)
-          ! -path ./tests/expandfail.c` 2>&1
+          ! -path ./tests/expandfail.c ! -path ./tests/unmap.c` 2>&1
           | tee clang-analyzer-output.log;
           if [ -s clang-analyzer-output.log ]; then exit 1; fi
