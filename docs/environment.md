@@ -150,6 +150,12 @@ number of collections while a large heap grows, at the expense of space.
 The special value "0" keeps the maximum heap increment fixed.  See also
 `GC_set_heap_growth_divisor()`.
 
+`GC_MIN_BYTES_ALLOCD=<bytes>` - Sets the minimum number of bytes allocated
+between collections (see `GC_set_min_bytes_allocd()`).  This bounds the
+collection frequency of programs with a small live heap at the expense of
+space.  Optionally, may be specified with a multiplier suffix.  Zero and
+malformed values are ignored (with a warning).
+
 `GC_UNMAP_THRESHOLD` - Sets the desired threshold of memory blocks unmapping
 (the number of sequential garbage collections during those a candidate block
 for unmapping should be marked as free).  The special value "0" completely

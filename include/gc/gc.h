@@ -566,7 +566,8 @@ GC_API int GC_CALL GC_get_pages_executable(void);
 /**
  * The setter and the getter of the minimum value returned by the internal
  * `min_bytes_allocd()`.  The value should not be zero; the default value
- * is one.  Not synchronized.
+ * is one.  The initial value may also be set by `GC_MIN_BYTES_ALLOCD`
+ * environment variable.  Not synchronized.
  */
 GC_API void GC_CALL GC_set_min_bytes_allocd(size_t);
 GC_API size_t GC_CALL GC_get_min_bytes_allocd(void);
