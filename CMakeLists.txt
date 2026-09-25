@@ -1064,6 +1064,10 @@ if(BUILD_TESTING)
     target_link_libraries(dbgfunctest PRIVATE gc)
     add_test(NAME dbgfunctest COMMAND dbgfunctest)
 
+    add_executable(heapgrowthtest tests/heapgrowth.c ${NODIST_SRC})
+    target_link_libraries(heapgrowthtest PRIVATE gc)
+    add_test(NAME heapgrowthtest COMMAND heapgrowthtest)
+
     add_executable(hugetest tests/huge.c ${NODIST_SRC})
     target_link_libraries(hugetest PRIVATE gc)
     add_test(NAME hugetest COMMAND hugetest)
