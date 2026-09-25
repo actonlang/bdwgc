@@ -93,6 +93,7 @@ pub fn build(b: *std.Build) void {
     const dirty_tracking_backend = b.option(DirtyTrackingBackend, "dirty_tracking_backend", "Virtual dirty bits implementation used by incremental collection") orelse .auto;
     const enable_mprotect_vdb = b.option(bool, "enable_mprotect_vdb", "Build in the mprotect-based virtual dirty bits implementation") orelse true;
     const heap_growth_divisor = b.option(u32, "heap_growth_divisor", "Allow a heap expansion up to the heap size divided by this value (0 keeps the maximum heap increment fixed)") orelse 0;
+    const block_size = b.option(u32, "block_size", "Heap block size in bytes, a power of two in range 4096..65536 (0 keeps the default)") orelse 0;
     const enable_gc_assertions = b.option(bool, "enable_gc_assertions", "Enable collector-internal assertion checking") orelse false;
     const enable_mmap = b.option(bool, "enable_mmap", "Use mmap instead of sbrk to expand the heap") orelse false;
     const enable_munmap = b.option(bool, "enable_munmap", "Return page to the OS if empty for N collections") orelse true;
@@ -351,6 +352,23 @@ pub fn build(b: *std.Build) void {
 
     if (heap_growth_divisor != 0) {
         flags.append(b.allocator, b.fmt("-D GC_HEAP_GROWTH_DIVISOR={d}", .{heap_growth_divisor})) catch unreachable;
+    }
+
+    if (block_size != 0) {
+        if (block_size < 4096 or block_size > 65536 or !std.math.isPowerOfTwo(block_size)) {
+            @panic("block_size should be a power of two in range 4096..65536 (or 0 for the default)");
+        }
+        if (block_size > 32768 and enable_mark_bit_per_obj) {
+            @panic("block_size bigger than 32768 is not supported with enable_mark_bit_per_obj");
+        }
+        // Keep the minimum and maximum heap increments (which are set in
+        // heap blocks) in bytes the same as for 4 KB heap blocks, but make
+        // the minimum increment 4 blocks at least.
+        const min_incr_bytes = @as(u32, if (enable_large_config) 64 else 16) * 4096;
+        const max_incr_bytes = @as(u32, if (enable_large_config) 4096 else 2048) * 4096;
+        flags.append(b.allocator, b.fmt("-D HBLKSIZE={d}", .{block_size})) catch unreachable;
+        flags.append(b.allocator, b.fmt("-D MINHINCR={d}", .{@max(4, min_incr_bytes / block_size)})) catch unreachable;
+        flags.append(b.allocator, b.fmt("-D MAXHINCR={d}", .{max_incr_bytes / block_size})) catch unreachable;
     }
 
     if (enable_gc_assertions) {
