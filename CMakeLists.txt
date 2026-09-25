@@ -1194,6 +1194,13 @@ if(BUILD_TESTING)
         add_test(NAME threadleaktest COMMAND threadleaktest)
 
         if(NOT WIN32)
+            add_executable(forktest tests/fork.c ${NODIST_SRC})
+            target_link_libraries(
+                forktest
+                PRIVATE gc ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+            )
+            add_test(NAME forktest COMMAND forktest)
+
             add_executable(threadkeytest tests/threadkey.c ${NODIST_SRC})
             target_link_libraries(threadkeytest PRIVATE gc ${THREADDLLIBS_LIST})
             add_test(NAME threadkeytest COMMAND threadkeytest)

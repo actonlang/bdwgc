@@ -127,6 +127,15 @@ atomicopstest_SOURCES = tests/atomicops.c
 atomicopstest_LDADD = $(nodist_libgc_la_OBJECTS) $(EXTRA_TEST_LIBS) \
                 $(ATOMIC_OPS_LIBS) $(THREADDLLIBS)
 
+TESTS += forktest$(EXEEXT)
+check_PROGRAMS += forktest
+forktest_SOURCES = tests/fork.c
+forktest_LDADD = $(test_ldadd)
+if ENABLE_SHARED
+forktest_LDADD += $(ATOMIC_OPS_LIBS)
+endif
+forktest_LDADD += $(THREADDLLIBS)
+
 TESTS += initfromthreadtest$(EXEEXT)
 check_PROGRAMS += initfromthreadtest
 initfromthreadtest_SOURCES = tests/initfromthread.c
@@ -236,6 +245,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f cpptest$(EXEEXT) || ./cpptest$(EXEEXT)
 	test ! -f disclaim_bench$(EXEEXT) || ./disclaim_bench$(EXEEXT)
 	test ! -f disclaimtest$(EXEEXT) || ./disclaimtest$(EXEEXT)
+	test ! -f forktest$(EXEEXT) || ./forktest$(EXEEXT)
 	test ! -f initfromthreadtest$(EXEEXT) || ./initfromthreadtest$(EXEEXT)
 	test ! -f subthreadcreatetest$(EXEEXT) || ./subthreadcreatetest$(EXEEXT)
 	test ! -f threadkeytest$(EXEEXT) || ./threadkeytest$(EXEEXT)
