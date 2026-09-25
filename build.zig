@@ -462,6 +462,13 @@ pub fn build(b: *std.Build) void {
         flags.append(b.allocator, "-D HAVE_DLADDR") catch unreachable;
     }
 
+    if (t.os.tag.isDarwin()) {
+        // `clock_gettime` is available since macOS 10.12 and iOS 10, i.e.
+        // on all Darwin targets supported by zig; otherwise, `clock` (the
+        // processor time of all threads) is used to measure the elapsed time.
+        flags.append(b.allocator, "-D HAVE_CLOCK_GETTIME") catch unreachable;
+    }
+
     // TODO: before zig 0.16, `exception.h` and `getsect.h` files were
     // not provided by zig itself for Darwin target.
     if (t.os.tag.isDarwin() and !target.query.isNative()) {
