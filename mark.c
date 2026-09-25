@@ -676,18 +676,22 @@ GC_invalidate_mark_state(void)
 }
 
 STATIC mse *
-GC_signal_mark_stack_overflow(mse *msp)
+GC_signal_mark_stack_overflow(mse *msp, const mse *mark_stack_limit)
 {
   GC_mark_state = MS_INVALID;
 #ifdef PARALLEL_MARK
   /*
-   * We are using a `local_mark_stack` in parallel mode, so do
-   * not signal the global mark stack to be resized.
-   * That will be done in `GC_return_mark_stack` if required.
+   * If a marker overflows its `local_mark_stack` in the parallel mode,
+   * then do not signal the global mark stack to be resized.  That will
+   * be done in `GC_return_mark_stack` if required.  But the global mark
+   * stack is still used by the serial marking even if `GC_parallel`,
+   * e.g. if the parallel marker is disabled because of a stop function or
+   * a time limit, or during the mark state recovery after an overflow.
    */
-  if (!GC_parallel)
+  if (!GC_parallel || mark_stack_limit == GC_mark_stack_limit)
     GC_mark_stack_too_small = TRUE;
 #else
+  UNUSED_ARG(mark_stack_limit);
   GC_mark_stack_too_small = TRUE;
 #endif
   GC_COND_LOG_PRINTF("Mark stack overflow; current size: %lu entries\n",
@@ -1515,7 +1519,8 @@ GC_ms_push_obj_descr(void *obj, GC_word descr,
 {
   mark_stack_top++;
   if (ADDR_GE((ptr_t)mark_stack_top, (ptr_t)mark_stack_limit)) {
-    mark_stack_top = GC_signal_mark_stack_overflow(mark_stack_top);
+    mark_stack_top
+        = GC_signal_mark_stack_overflow(mark_stack_top, mark_stack_limit);
   }
   mark_stack_top->mse_start = (ptr_t)obj;
   mark_stack_top->mse_descr = descr;

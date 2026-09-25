@@ -76,6 +76,11 @@ check_PROGRAMS += smashtest
 smashtest_SOURCES = tests/smash.c
 smashtest_LDADD = $(test_ldadd)
 
+TESTS += stopfunctest$(EXEEXT)
+check_PROGRAMS += stopfunctest
+stopfunctest_SOURCES = tests/stopfunc.c
+stopfunctest_LDADD = $(test_ldadd)
+
 TESTS += typedtest$(EXEEXT)
 check_PROGRAMS += typedtest
 typedtest_SOURCES = tests/typed.c
@@ -224,6 +229,7 @@ check-without-test-driver: $(TESTS)
 	./realloctest$(EXEEXT)
 	./smashtest$(EXEEXT)
 	./staticrootstest$(EXEEXT)
+	./stopfunctest$(EXEEXT)
 	./typedtest$(EXEEXT)
 	./unmaptest$(EXEEXT)
 	test ! -f atomicopstest$(EXEEXT) || ./atomicopstest$(EXEEXT)

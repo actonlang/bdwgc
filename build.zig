@@ -686,6 +686,7 @@ pub fn build(b: *std.Build) void {
     addTest(b, gc, test_step, flags, "middletest", "tests/middle.c");
     addTest(b, gc, test_step, flags, "realloctest", "tests/realloc.c");
     addTest(b, gc, test_step, flags, "smashtest", "tests/smash.c");
+    addTest(b, gc, test_step, flags, "stopfunctest", "tests/stopfunc.c");
     addTest(b, gc, test_step, flags, "typedtest", "tests/typed.c");
     // Likewise, `unmaptest` includes the collector source.
     addTestExt(b, gc, test_step, flags, "unmaptest", "tests/unmap.c", .{
