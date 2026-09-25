@@ -1039,11 +1039,13 @@ EXTERN_C_BEGIN
 /* Size parameters. */
 
 /*
- * Heap block size, in bytes.  Should be a power of two.  The incremental
- * collection mode with `MPROTECT_VDB` or `UFFDWP_VDB` currently requires
- * the page size to be a multiple of `HBLKSIZE`.  Since most modern
- * architectures support variable page sizes down to 4 KB, and i686 and
- * x86_64 are generally 4 KB, we now default to 4 KB, except for:
+ * Heap block size, in bytes.  Should be a power of two.  It may be
+ * smaller or bigger than the page size; in the latter case, the memory
+ * obtained from the OS is aligned by `HBLKSIZE` explicitly, and the
+ * virtual dirty bits are maintained per a heap block (not per a page).
+ * Since most modern architectures support variable page sizes down to
+ * 4 KB, and i686 and x86_64 are generally 4 KB, we now default to 4 KB,
+ * except for:
  *   - Alpha, Sunway: 8 KB pages by default;
  *   - `SMALL_CONFIG`: want less block-level fragmentation.
  */
@@ -1107,9 +1109,19 @@ EXTERN_C_BEGIN
   ((struct hblk *)PTR_ALIGN_DOWN((ptr_t)(objptr), HBLKSIZE))
 #define HBLKDISPL(objptr) modHBLKSZ((size_t)ADDR(objptr))
 
-/* Same as `HBLKPTR` but points to the first block in the page. */
+/*
+ * The largest of `HBLKSIZE` and `GC_page_size`.  This is the granularity
+ * of memory protection and the alignment of the heap sections.  Both
+ * values are powers of two, thus one is a multiple of the other.
+ */
+#define HBLK_PAGE_SIZE (GC_page_size > HBLKSIZE ? GC_page_size : HBLKSIZE)
+
+/*
+ * Same as `HBLKPTR` but points to the first block in the page.  If the
+ * page size is less than `HBLKSIZE`, then this is equivalent to `HBLKPTR`.
+ */
 #define HBLK_PAGE_ALIGNED(objptr) \
-  ((struct hblk *)PTR_ALIGN_DOWN((ptr_t)(objptr), GC_page_size))
+  ((struct hblk *)PTR_ALIGN_DOWN((ptr_t)(objptr), HBLK_PAGE_SIZE))
 
 /* Round up allocation size (in bytes) to a multiple of a granule. */
 #define ROUNDUP_GRANULE_SIZE(lb) /*< `lb` should have no side-effect */ \
