@@ -1134,6 +1134,10 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME unmaptest COMMAND unmaptest)
 
+    add_executable(untouchedtest tests/untouched.c ${NODIST_SRC})
+    target_link_libraries(untouchedtest PRIVATE gc)
+    add_test(NAME untouchedtest COMMAND untouchedtest)
+
     if(NOT (GC_BUILD_SHARED_LIBS AND WIN32))
         if(GC_BUILD_SHARED_LIBS)
             add_library(staticroots_lib_test SHARED tests/staticroots_lib.c)
