@@ -94,6 +94,7 @@ pub fn build(b: *std.Build) void {
     const enable_mprotect_vdb = b.option(bool, "enable_mprotect_vdb", "Build in the mprotect-based virtual dirty bits implementation") orelse true;
     const heap_growth_divisor = b.option(u32, "heap_growth_divisor", "Allow a heap expansion up to the heap size divided by this value (0 keeps the maximum heap increment fixed)") orelse 0;
     const block_size = b.option(u32, "block_size", "Heap block size in bytes, a power of two in range 4096..65536 (0 keeps the default)") orelse 0;
+    const alloc_budget_percent = b.option(u32, "alloc_budget_percent", "Collect after allocating this percentage of the live data size (0 keeps the policy based on the free space divisor)") orelse 0;
     const enable_gc_assertions = b.option(bool, "enable_gc_assertions", "Enable collector-internal assertion checking") orelse false;
     const enable_mmap = b.option(bool, "enable_mmap", "Use mmap instead of sbrk to expand the heap") orelse false;
     const enable_munmap = b.option(bool, "enable_munmap", "Return page to the OS if empty for N collections") orelse true;
@@ -369,6 +370,10 @@ pub fn build(b: *std.Build) void {
         flags.append(b.allocator, b.fmt("-D HBLKSIZE={d}", .{block_size})) catch unreachable;
         flags.append(b.allocator, b.fmt("-D MINHINCR={d}", .{@max(4, min_incr_bytes / block_size)})) catch unreachable;
         flags.append(b.allocator, b.fmt("-D MAXHINCR={d}", .{max_incr_bytes / block_size})) catch unreachable;
+    }
+
+    if (alloc_budget_percent != 0) {
+        flags.append(b.allocator, b.fmt("-D GC_ALLOC_BUDGET_PERCENT={d}", .{alloc_budget_percent})) catch unreachable;
     }
 
     if (enable_gc_assertions) {
