@@ -3557,8 +3557,15 @@ extern ptr_t GC_data_start;
 
 #if defined(PARALLEL_MARK) && !defined(DEFAULT_STACK_MAYBE_SMALL) \
     && (defined(DGUX) || defined(HPUX)                            \
-        || defined(NO_GETCONTEXT) /* e.g. musl */)
-/* TODO: Test default stack size in configure. */
+        || defined(NO_GETCONTEXT) /* e.g. musl */                 \
+        || (defined(HBLKSIZE) && HBLKSIZE > 8192))
+/*
+ * TODO: Test default stack size in configure.  Note: the local mark
+ * stack of a marker thread (which is allocated on the thread stack) has
+ * `HBLKSIZE` entries, e.g. it is 1 MB in size on a 64-bit target if
+ * `HBLKSIZE` is 64 KB, while the default thread stack size is 512 KB
+ * on macOS and 1 MB on Windows.
+ */
 #  define DEFAULT_STACK_MAYBE_SMALL
 #endif
 

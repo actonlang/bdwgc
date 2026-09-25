@@ -1427,7 +1427,10 @@ GC_help_marker(word my_mark_no)
    */
   mse my_id_mse;
   mse local_mark_stack[LOCAL_MARK_STACK_SIZE];
-  /* Note: `local_mark_stack` is quite big (up to 128 KiB). */
+  /*
+   * Note: `local_mark_stack` is quite big (128 KiB if `HBLKSIZE` is 8 KB,
+   * more if `HBLKSIZE` is bigger, see `DEFAULT_STACK_MAYBE_SMALL`).
+   */
 
   GC_ASSERT(I_DONT_HOLD_LOCK());
   GC_ASSERT(GC_parallel);

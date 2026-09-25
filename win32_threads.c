@@ -1351,8 +1351,12 @@ GC_get_next_stack(ptr_t start, ptr_t limit, ptr_t *plo, ptr_t *phi)
 #  if defined(PARALLEL_MARK) && !defined(GC_PTHREADS_PARAMARK)
 
 #    ifndef MARK_THREAD_STACK_SIZE
+#      ifdef DEFAULT_STACK_MAYBE_SMALL
+#        define MARK_THREAD_STACK_SIZE ((unsigned)MIN_STACK_SIZE)
+#      else
 /* The default size of the marker's thread stack. */
-#      define MARK_THREAD_STACK_SIZE 0
+#        define MARK_THREAD_STACK_SIZE 0
+#      endif
 #    endif
 
 /* Events with manual reset (one for each mark helper). */
