@@ -96,6 +96,7 @@ pub fn build(b: *std.Build) void {
     const block_size = b.option(u32, "block_size", "Heap block size in bytes, a power of two in range 4096..65536 (0 keeps the default)") orelse 0;
     const alloc_budget_percent = b.option(u32, "alloc_budget_percent", "Collect after allocating this percentage of the live data size (0 keeps the policy based on the free space divisor)") orelse 0;
     const enable_mark_range_stealing = b.option(bool, "enable_mark_range_stealing", "Let parallel markers claim ranges of the global mark stack by CAS") orelse false;
+    const enable_end_padding = b.option(bool, "enable_end_padding", "Pad objects so that a pointer just past the end of an object keeps it alive") orelse true;
     const enable_gc_assertions = b.option(bool, "enable_gc_assertions", "Enable collector-internal assertion checking") orelse false;
     const enable_mmap = b.option(bool, "enable_mmap", "Use mmap instead of sbrk to expand the heap") orelse false;
     const enable_munmap = b.option(bool, "enable_munmap", "Return page to the OS if empty for N collections") orelse true;
@@ -382,6 +383,10 @@ pub fn build(b: *std.Build) void {
             @panic("Mark stack range stealing assumes parallel marking support");
         }
         flags.append(b.allocator, "-D STEAL_MARK_STACK_RANGES") catch unreachable;
+    }
+
+    if (!enable_end_padding) {
+        flags.append(b.allocator, "-D DONT_ADD_BYTE_AT_END") catch unreachable;
     }
 
     if (enable_gc_assertions) {
