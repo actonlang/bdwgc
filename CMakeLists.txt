@@ -1145,6 +1145,20 @@ if(BUILD_TESTING)
     target_link_libraries(typedtest PRIVATE gc gc_build_flags)
     add_test(NAME typedtest COMMAND typedtest)
 
+    # The test includes the collector source instead of linking `gc`.
+    add_executable(unmaptest tests/unmap.c ${NODIST_SRC})
+    if(MSVC)
+        target_sources(unmaptest PRIVATE extra/msvc_dbg.c)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+        target_sources(unmaptest PRIVATE sparc_mach_dep.S)
+    endif()
+    target_link_libraries(
+        unmaptest
+        PRIVATE gc_build_flags ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+    )
+    add_test(NAME unmaptest COMMAND unmaptest)
+
     if(NOT (GC_BUILD_SHARED_LIBS AND WIN32))
         if(GC_BUILD_SHARED_LIBS)
             add_library(staticroots_lib_test SHARED tests/staticroots_lib.c)
