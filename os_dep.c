@@ -2469,6 +2469,7 @@ STATIC void *
 GC_unix_mmap_get_mem(size_t bytes)
 {
   void *result;
+  size_t map_len;
   static word last_addr = HEAP_START;
 
 #      ifndef USE_MMAP_ANON
@@ -2496,13 +2497,27 @@ GC_unix_mmap_get_mem(size_t bytes)
   GC_ASSERT(GC_page_size != 0);
   if (bytes & (GC_page_size - 1))
     ABORT("Bad GET_MEM arg");
+  map_len = bytes;
+  if (HBLKSIZE > GC_page_size) {
+    /*
+     * `mmap()` guarantees only the page alignment of the result.
+     * Map an extra space to be able to align the result by `HBLKSIZE`,
+     * the unneeded head and tail parts are unmapped below.
+     */
+#      ifdef USE_MMAP_FIXED
+    /* The result is at the hint address exactly. */
+    last_addr = (last_addr + HBLKSIZE - 1) & ~(word)(HBLKSIZE - 1);
+#      else
+    map_len = SIZET_SAT_ADD(bytes, HBLKSIZE - GC_page_size);
+#      endif
+  }
   /*
    * Note: it is essential for CHERI to have only address part in
    * `last_addr` without metadata (thus the variable is of `word` type
    * intentionally), otherwise `mmap()` fails setting `errno` to `EPROT`.
    */
   result
-      = mmap(MAKE_CPTR(last_addr), bytes,
+      = mmap(MAKE_CPTR(last_addr), map_len,
              (PROT_READ | PROT_WRITE) | (GC_pages_executable ? PROT_EXEC : 0),
              GC_MMAP_FLAGS | OPT_MAP_ANON, zero_fd, 0 /* `offset` */);
 #      undef IGNORE_PAGES_EXECUTABLE
@@ -2514,10 +2529,10 @@ GC_unix_mmap_get_mem(size_t bytes)
     return NULL;
   }
 #      ifdef LINUX
-  GC_ASSERT(ADDR(result) <= ~(word)(GC_page_size - 1) - bytes);
+  GC_ASSERT(ADDR(result) <= ~(word)(GC_page_size - 1) - map_len);
   /* The following `PTR_ALIGN_UP()` cannot overflow. */
 #      else
-  if (UNLIKELY(ADDR(result) > ~(word)(GC_page_size - 1) - bytes)) {
+  if (UNLIKELY(ADDR(result) > ~(word)(GC_page_size - 1) - map_len)) {
     /*
      * Oops.  We got the end of the address space.  This is not usable
      * by arbitrary C code, since one-past-end pointers do not work,
@@ -2528,6 +2543,19 @@ GC_unix_mmap_get_mem(size_t bytes)
     return GC_unix_mmap_get_mem(bytes);
   }
 #      endif
+  if (map_len > bytes) {
+    /* Unmap the parts before and after the aligned region. */
+    size_t head
+        = (size_t)(PTR_ALIGN_UP((ptr_t)result, HBLKSIZE) - (ptr_t)result);
+
+    GC_ASSERT(map_len - bytes == HBLKSIZE - GC_page_size);
+    GC_ASSERT(head <= map_len - bytes);
+    if (head != 0)
+      (void)munmap(result, head);
+    if (map_len - bytes > head)
+      (void)munmap((ptr_t)result + head + bytes, map_len - bytes - head);
+    result = (ptr_t)result + head;
+  }
   if ((ADDR(result) % HBLKSIZE) != 0)
     ABORT("Memory returned by mmap is not aligned to HBLKSIZE");
   last_addr = ADDR(result) + bytes;
@@ -2561,8 +2589,10 @@ GC_unix_sbrk_get_mem(size_t bytes)
   __LOCK_MALLOC();
 #    endif
   {
+    /* The result should be aligned both by `HBLKSIZE` and page size. */
+    size_t align = HBLK_PAGE_SIZE;
     ptr_t cur_brk = (ptr_t)sbrk(0);
-    SBRK_ARG_T ofs = ADDR(cur_brk) & (GC_page_size - 1);
+    SBRK_ARG_T ofs = ADDR(cur_brk) & (align - 1);
 
     GC_ASSERT(GC_page_size != 0);
     if (UNLIKELY((SBRK_ARG_T)bytes < 0)) {
@@ -2571,7 +2601,7 @@ GC_unix_sbrk_get_mem(size_t bytes)
       goto out;
     }
     if (ofs != 0) {
-      if (ADDR(sbrk((SBRK_ARG_T)GC_page_size - ofs)) == GC_WORD_MAX) {
+      if (ADDR(sbrk((SBRK_ARG_T)align - ofs)) == GC_WORD_MAX) {
         result = NULL;
         goto out;
       }
@@ -2582,8 +2612,8 @@ GC_unix_sbrk_get_mem(size_t bytes)
      * that span heap sections.  It should not otherwise be turned on.
      */
     {
-      ptr_t guard = (ptr_t)sbrk((SBRK_ARG_T)GC_page_size);
-      if (mprotect(guard, GC_page_size, PROT_NONE) != 0)
+      ptr_t guard = (ptr_t)sbrk((SBRK_ARG_T)align);
+      if (mprotect(guard, align, PROT_NONE) != 0)
         ABORT("ADD_HEAP_GUARD_PAGES: mprotect failed");
     }
 #    endif
@@ -2641,7 +2671,7 @@ GC_get_mem(size_t bytes)
   int retry;
 
   GC_ASSERT(GC_page_size != 0);
-  bytes = SIZET_SAT_ADD(bytes, GC_page_size - 1);
+  bytes = SIZET_SAT_ADD(bytes, HBLK_PAGE_SIZE - 1);
   for (retry = 0;; retry++) {
     if (DosAllocMem(&result, bytes,
                     (PAG_READ | PAG_WRITE | PAG_COMMIT)
@@ -2656,7 +2686,7 @@ GC_get_mem(size_t bytes)
     if (retry >= 1)
       return NULL;
   }
-  return PTR_ALIGN_UP((ptr_t)result, GC_page_size);
+  return PTR_ALIGN_UP((ptr_t)result, HBLK_PAGE_SIZE);
 }
 
 #elif defined(MSWINCE)
@@ -3512,8 +3542,8 @@ async_set_pht_entry_from_index(volatile page_hash_table db, size_t index)
  * do this is to ensure that system calls write at most to
  * pointer-free objects in the heap, and do even that only if we are
  * on a platform on which those are not protected (or the collector
- * is built with `DONT_PROTECT_PTRFREE` defined).  We assume the page
- * size is a multiple of `HBLKSIZE`.
+ * is built with `DONT_PROTECT_PTRFREE` defined).  The unit of protection
+ * is `HBLK_PAGE_SIZE`, i.e. a page or a heap block, whichever is bigger.
  */
 
 #  ifdef DARWIN
@@ -3701,7 +3731,7 @@ GC_write_fault_handler(struct _EXCEPTION_POINTERS *exc_info)
 #    ifdef SUNOS5SIGS
     /* Address is only within the correct physical page. */
     in_allocd_block = FALSE;
-    for (i = 0; i < divHBLKSZ(GC_page_size); i++) {
+    for (i = 0; i < divHBLKSZ(HBLK_PAGE_SIZE); i++) {
       if (is_header_found_async(&h[i])) {
         in_allocd_block = TRUE;
         break;
@@ -3760,7 +3790,7 @@ GC_write_fault_handler(struct _EXCEPTION_POINTERS *exc_info)
 #    endif
       }
     }
-    MP_PROTECT_INNER(h, GC_page_size, TRUE); /*< unprotect */
+    MP_PROTECT_INNER(h, HBLK_PAGE_SIZE, TRUE); /*< unprotect */
     /*
      * We need to make sure that no collection occurs between the
      * unprotect action and the setting of the dirty bit.
@@ -3773,7 +3803,7 @@ GC_write_fault_handler(struct _EXCEPTION_POINTERS *exc_info)
      * unprotected a page in the collector's thread structure, and then
      * to have the thread stopping code set the dirty flag, if necessary.
      */
-    for (i = 0; i < divHBLKSZ(GC_page_size); i++) {
+    for (i = 0; i < divHBLKSZ(HBLK_PAGE_SIZE); i++) {
       size_t index = PHT_HASH(h + i);
 
       async_set_pht_entry_from_index(GC_dirty_pages, index);
@@ -3829,9 +3859,6 @@ GC_dirty_init(void)
     return FALSE;
   }
 #    endif
-  if (GC_page_size % HBLKSIZE != 0) {
-    ABORT("Page size not multiple of HBLKSIZE");
-  }
 #    ifdef CHECK_SOFT_VDB
   if (mprotect_vdb_disallowed) /*< check before `soft_dirty_init` */
     return FALSE;
@@ -4493,7 +4520,8 @@ soft_set_grungy_pages(ptr_t start, ptr_t limit, ptr_t next_start_hint,
         if (is_static_root)
           GC_log_printf("static root dirty page at: %p\n", (void *)vaddr);
 #  endif
-        h = (struct hblk *)vaddr;
+        /* The page might be not the first one in the block. */
+        h = HBLKPTR(vaddr);
         if (UNLIKELY(ADDR_LT(vaddr, start))) {
           h = (struct hblk *)start;
         }
@@ -4760,8 +4788,8 @@ uffdwp_monitor_thread(void *arg)
 #  ifdef DEBUG_DIRTY_BITS
       GC_log_printf("dirty page at: %p\n", (void *)h);
 #  endif
-      /* Mark all sub-blocks in the page as dirty. */
-      for (j = 0; j < divHBLKSZ(GC_page_size); j++) {
+      /* Mark all sub-blocks in the page (or the whole block) as dirty. */
+      for (j = 0; j < divHBLKSZ(HBLK_PAGE_SIZE); j++) {
         size_t index = PHT_HASH(h + j);
 
         async_set_pht_entry_from_index(GC_dirty_pages, index);
@@ -4770,7 +4798,7 @@ uffdwp_monitor_thread(void *arg)
        * Unprotect the page; this also automatically resolves the fault and
        * wakes the blocked thread (thus, `UFFDIO_CONTINUE` is not needed).
        */
-      uffdwp_write_protect(h, GC_page_size, TRUE);
+      uffdwp_write_protect(h, HBLK_PAGE_SIZE, TRUE);
     }
     (void)pthread_mutex_unlock(&uffdwp_monitor_ml);
   }
@@ -4928,9 +4956,9 @@ GC_protect_heap(void)
 #  ifndef DONT_PROTECT_PTRFREE
     /*
      * We avoid protecting pointer-free objects unless the page size
-     * differs from `HBLKSIZE`.
+     * is bigger than `HBLKSIZE`.
      */
-    if (GC_page_size != HBLKSIZE) {
+    if (GC_page_size > HBLKSIZE) {
       PROTECT(start, len);
       continue;
     }
@@ -5597,9 +5625,6 @@ GC_dirty_init(void)
 #  ifdef BROKEN_EXCEPTION_HANDLING
   WARN("Enabling workarounds for various darwin exception handling bugs\n", 0);
 #  endif
-  if (GC_page_size % HBLKSIZE != 0) {
-    ABORT("Page size not multiple of HBLKSIZE");
-  }
 
   GC_task_self = me = mach_task_self();
   GC_ASSERT(me != 0);
@@ -5879,8 +5904,8 @@ catch_exception_raise(mach_port_t exception_port, mach_port_t thread,
 #  ifdef CHECKSUMS
     GC_record_fault(h);
 #  endif
-    UNPROTECT(h, GC_page_size);
-    for (i = 0; i < divHBLKSZ(GC_page_size); i++) {
+    UNPROTECT(h, HBLK_PAGE_SIZE);
+    for (i = 0; i < divHBLKSZ(HBLK_PAGE_SIZE); i++) {
       size_t index = PHT_HASH(h + i);
 
       async_set_pht_entry_from_index(GC_dirty_pages, index);
@@ -5923,7 +5948,7 @@ GC_incremental_protection_needs(void)
     return GC_PROTECTS_NONE;
 #  endif
 #  ifndef DONT_PROTECT_PTRFREE
-  if (GC_page_size != HBLKSIZE)
+  if (GC_page_size > HBLKSIZE)
     return GC_PROTECTS_POINTER_HEAP | GC_PROTECTS_PTRFREE_HEAP;
 #  endif
   return GC_PROTECTS_POINTER_HEAP;

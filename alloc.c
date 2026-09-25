@@ -1728,7 +1728,7 @@ word GC_max_retries = 0;
 GC_INNER void
 GC_scratch_recycle_inner(void *ptr, size_t sz)
 {
-  size_t page_offset;
+  size_t align, page_offset;
   size_t displ = 0;
   size_t recycled_bytes;
 
@@ -1738,11 +1738,16 @@ GC_scratch_recycle_inner(void *ptr, size_t sz)
 
   GC_ASSERT(sz != 0);
   GC_ASSERT(GC_page_size != 0);
+  /*
+   * The recycled region should be aligned both by `HBLKSIZE` and page
+   * size, and its size should be a multiple of both.
+   */
+  align = HBLK_PAGE_SIZE;
   /* TODO: Assert correct memory flags if `GWW_VDB`. */
-  page_offset = ADDR(ptr) & (GC_page_size - 1);
+  page_offset = ADDR(ptr) & (align - 1);
   if (page_offset != 0)
-    displ = GC_page_size - page_offset;
-  recycled_bytes = sz > displ ? (sz - displ) & ~(GC_page_size - 1) : 0;
+    displ = align - page_offset;
+  recycled_bytes = sz > displ ? (sz - displ) & ~(align - 1) : 0;
   GC_COND_LOG_PRINTF("Recycle %lu/%lu scratch-allocated bytes at %p\n",
                      (unsigned long)recycled_bytes, (unsigned long)sz, ptr);
   if (recycled_bytes > 0)

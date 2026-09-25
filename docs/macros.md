@@ -292,7 +292,10 @@ often improves speed, possibly at some cost in space and/or cache footprint.
 of two between 512 and 65536).  Each heap block is devoted to a single size
 and kind of object.  For the incremental collector it makes sense to match
 the most likely page size.  Otherwise large values result in more
-fragmentation, but generally better performance for large heaps.
+fragmentation, but generally better performance for large heaps.  If the
+value is bigger than the page size, then the memory is obtained from the OS
+with the explicit alignment, and the virtual dirty bits (if any) are
+maintained per a heap block.
 
 `USE_MMAP` - Forces to use `mmap()` instead of `sbrk()` to get new memory from
 the OS.  Works for Linux, FreeBSD, Cygwin, Solaris and Irix, at least.
