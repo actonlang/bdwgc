@@ -46,6 +46,17 @@ comptime {
     }
 }
 
+// The virtual dirty bits implementation used by the incremental and
+// generational collection modes.
+const DirtyTrackingBackend = enum {
+    // Any of the implementations available for the target.
+    auto,
+    // Only the soft-dirty bits of Linux `/proc` (`SOFT_VDB`).
+    soft_dirty,
+    // Only Linux `userfaultfd` in the write-protect mode (`UFFDWP_VDB`).
+    userfaultfd,
+};
+
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const target = b.standardTargetOptions(.{});
@@ -79,6 +90,7 @@ pub fn build(b: *std.Build) void {
     const enable_mark_bits = b.option(bool, "enable_mark_bits", "Use mark bits instead of mark bytes even if parallel marking") orelse false;
     const enable_mark_bit_per_obj = b.option(bool, "enable_mark_bit_per_obj", "Allocate a mark bit (or byte) per object instead of per granule") orelse false;
     const page_hash_table_log2 = b.option(u8, "page_hash_table_log2", "Log2 of the number of page hash table entries (0 keeps the default)") orelse 0;
+    const dirty_tracking_backend = b.option(DirtyTrackingBackend, "dirty_tracking_backend", "Virtual dirty bits implementation used by incremental collection") orelse .auto;
     const enable_gc_assertions = b.option(bool, "enable_gc_assertions", "Enable collector-internal assertion checking") orelse false;
     const enable_mmap = b.option(bool, "enable_mmap", "Use mmap instead of sbrk to expand the heap") orelse false;
     const enable_munmap = b.option(bool, "enable_munmap", "Return page to the OS if empty for N collections") orelse true;
@@ -293,6 +305,42 @@ pub fn build(b: *std.Build) void {
             @panic("page_hash_table_log2 should be in range 1..30 (or 0 for the default)");
         }
         flags.append(b.allocator, b.fmt("-D LOG_PHT_ENTRIES={d}", .{page_hash_table_log2})) catch unreachable;
+    }
+
+    switch (dirty_tracking_backend) {
+        .auto => {},
+        .soft_dirty => {
+            if (t.os.tag != .linux) {
+                @panic("Soft-dirty bits are supported only on Linux");
+            }
+            // Exclude the other implementations, so that the collector does
+            // not fall back to any of them silently.
+            flags.append(b.allocator, "-D NO_MPROTECT_VDB") catch unreachable;
+            flags.append(b.allocator, "-D NO_UFFDWP_VDB") catch unreachable;
+            flags.append(b.allocator, "-D SOFT_VDB") catch unreachable;
+        },
+        .userfaultfd => {
+            const glibc_version = if (t.os.tag == .linux and t.abi.isGnu())
+                t.os.versionRange().gnuLibCVersion()
+            else
+                null;
+            const supported_arch = switch (t.cpu.arch) {
+                .aarch64, .x86, .x86_64 => true,
+                else => false,
+            };
+            if (!supported_arch or glibc_version == null or glibc_version.?.order(.{ .major = 2, .minor = 34, .patch = 0 }) == .lt) {
+                @panic("Userfaultfd write-protect mode is supported only on Linux/aarch64, x86 and x86_64 with glibc 2.34 or later");
+            }
+            if (!enable_threads) {
+                @panic("Userfaultfd write-protect mode assumes multi-threading support");
+            }
+            if (enable_redirect_malloc) {
+                @panic("Userfaultfd write-protect mode is incompatible with redirection of malloc");
+            }
+            // `UFFDWP_VDB` is defined by default for such targets, it takes
+            // precedence over `SOFT_VDB`; exclude only the fallback.
+            flags.append(b.allocator, "-D NO_MPROTECT_VDB") catch unreachable;
+        },
     }
 
     if (enable_gc_assertions) {
