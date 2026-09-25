@@ -2697,7 +2697,13 @@ GC_get_mem(size_t bytes)
   size_t i;
 
   GC_ASSERT(GC_page_size != 0);
-  bytes = ROUNDUP_PAGESIZE(bytes);
+  /*
+   * The pages are committed at the end of the already committed part of
+   * a reserved region, thus the size should be rounded up to a multiple
+   * of `HBLKSIZE` too (in case it is bigger than the page size) to keep
+   * the next chunk aligned.
+   */
+  bytes = SIZET_SAT_ADD(bytes, HBLK_PAGE_SIZE - 1) & ~(HBLK_PAGE_SIZE - 1);
 
   /* Try to find reserved, uncommitted pages. */
   for (i = 0; i < GC_n_heap_bases; i++) {
