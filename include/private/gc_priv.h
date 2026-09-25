@@ -3905,6 +3905,8 @@ GC_INNER GC_bool GC_page_was_dirty(const struct hblk *h);
  * implementation).  I.e., this is a call that:
  *   - hints that [`h`, `h + nblocks`) is about to be written;
  *   - guarantees that protection is removed;
+ *   - populates the pages of a pointer-containing block if the virtual
+ *     dirty bit implementation cannot detect the first write otherwise;
  *   - may speed up some virtual dirty bit implementations;
  *   - may be essential if we need to ensure that pointer-free system
  *     call buffers in the heap are not protected.
