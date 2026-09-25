@@ -97,6 +97,7 @@ pub fn build(b: *std.Build) void {
     const alloc_budget_percent = b.option(u32, "alloc_budget_percent", "Collect after allocating this percentage of the live data size (0 keeps the policy based on the free space divisor)") orelse 0;
     const enable_mark_range_stealing = b.option(bool, "enable_mark_range_stealing", "Let parallel markers claim ranges of the global mark stack by CAS") orelse false;
     const enable_end_padding = b.option(bool, "enable_end_padding", "Pad objects so that a pointer just past the end of an object keeps it alive") orelse true;
+    const initial_mark_stack_size = b.option(u32, "initial_mark_stack_size", "Initial number of entries in the global mark stack, a power of two, 4096 at least (0 keeps the default of HBLKSIZE entries)") orelse 0;
     const enable_gc_assertions = b.option(bool, "enable_gc_assertions", "Enable collector-internal assertion checking") orelse false;
     const enable_mmap = b.option(bool, "enable_mmap", "Use mmap instead of sbrk to expand the heap") orelse false;
     const enable_munmap = b.option(bool, "enable_munmap", "Return page to the OS if empty for N collections") orelse true;
@@ -387,6 +388,20 @@ pub fn build(b: *std.Build) void {
 
     if (!enable_end_padding) {
         flags.append(b.allocator, "-D DONT_ADD_BYTE_AT_END") catch unreachable;
+    }
+
+    if (initial_mark_stack_size != 0) {
+        // A mark stack entry consists of two pointers; the size of the
+        // mark stack in bytes should be a multiple of `HBLKSIZE`.
+        const mark_stack_bytes = @as(u64, initial_mark_stack_size) * 2 * (t.ptrBitWidth() / 8);
+        if (initial_mark_stack_size < 4096 or !std.math.isPowerOfTwo(initial_mark_stack_size) or mark_stack_bytes % (if (block_size != 0) block_size else 4096) != 0) {
+            @panic("initial_mark_stack_size should be a power of two, 4096 at least, and the mark stack size in bytes should be a multiple of the heap block size (or 0 for the default)");
+        }
+        // The mark stack size in bytes should fit in `size_t` of the target.
+        if (mark_stack_bytes > std.math.shl(u64, 1, t.ptrBitWidth()) -% 1) {
+            @panic("initial_mark_stack_size is too big for the target: the mark stack size in bytes should fit in size_t");
+        }
+        flags.append(b.allocator, b.fmt("-D INITIAL_MARK_STACK_SIZE={d}", .{initial_mark_stack_size})) catch unreachable;
     }
 
     if (enable_gc_assertions) {
