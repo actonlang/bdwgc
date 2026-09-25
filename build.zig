@@ -694,6 +694,7 @@ pub fn build(b: *std.Build) void {
         .filename2 = if (t.abi == .msvc) "extra/msvc_dbg.c" else null,
         .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
     });
+    addTest(b, gc, test_step, flags, "untouchedtest", "tests/untouched.c");
     // TODO: build `staticrootstest` with `-D STATICROOTSLIB2`.
     addTestExt(b, gc, test_step, flags, "staticrootstest", "tests/staticroots.c", .{
         .filename2 = "tests/staticroots_lib.c",
