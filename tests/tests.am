@@ -39,6 +39,13 @@ check_PROGRAMS += dbgfunctest
 dbgfunctest_SOURCES = tests/dbgfunc.c
 dbgfunctest_LDADD = $(test_ldadd)
 
+# The test includes the collector source instead of linking `libgc`.
+TESTS += expandfailtest$(EXEEXT)
+check_PROGRAMS += expandfailtest
+expandfailtest_SOURCES = tests/expandfail.c
+expandfailtest_LDADD = $(nodist_libgc_la_OBJECTS) $(EXTRA_TEST_LIBS) \
+                       @addobjs@ $(THREADDLLIBS) $(UNWINDLIBS) $(ATOMIC_OPS_LIBS)
+
 TESTS += heapgrowthtest$(EXEEXT)
 check_PROGRAMS += heapgrowthtest
 heapgrowthtest_SOURCES = tests/heapgrowth.c
@@ -202,6 +209,7 @@ check-without-test-driver: export GC_PROMPT_DISABLED=1
 check-without-test-driver: $(TESTS)
 	./gctest$(EXEEXT)
 	./dbgfunctest$(EXEEXT)
+	./expandfailtest$(EXEEXT)
 	./heapgrowthtest$(EXEEXT)
 	./hugetest$(EXEEXT)
 	./leaktest$(EXEEXT)
