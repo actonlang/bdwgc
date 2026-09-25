@@ -4133,6 +4133,13 @@ GC_INNER void GC_err_puts(const char *s);
  */
 #define TO_KiB_UL(v) ((unsigned long)(((v) + ((1 << 9) - 1)) >> 10))
 
+/*
+ * If nonzero, then the allocation volume between collections is this
+ * percentage of the data live at the latest collection (instead of being
+ * derived from `GC_free_space_divisor`).  Defined in `alloc.c` file.
+ */
+GC_EXTERN word GC_alloc_budget_percent;
+
 #ifdef USE_MUNMAP
 GC_EXTERN unsigned GC_unmap_threshold; /*< defined in `alloc.c` file */
 

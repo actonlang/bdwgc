@@ -336,6 +336,40 @@ GC_INNER word GC_total_stacksize = 0;
 /* The lowest value returned by `min_bytes_allocd()`. */
 static size_t min_bytes_allocd_minimum = 1;
 
+#ifndef GC_ALLOC_BUDGET_PERCENT
+#  define GC_ALLOC_BUDGET_PERCENT 0
+#endif
+
+GC_INNER word GC_alloc_budget_percent = GC_ALLOC_BUDGET_PERCENT;
+
+GC_API void GC_CALL
+GC_set_alloc_budget_percent(GC_word value)
+{
+  GC_alloc_budget_percent = value;
+}
+
+GC_API GC_word GC_CALL
+GC_get_alloc_budget_percent(void)
+{
+  return GC_alloc_budget_percent;
+}
+
+/* Return `v * percent / 100` (approximately), saturated on overflow. */
+static word
+percent_of(word v, word percent)
+{
+  word q = v / 100;
+  word r = v % 100;
+  word result, rest;
+
+  if (q > 0 && percent > GC_WORD_MAX / q)
+    return GC_WORD_MAX;
+  result = q * percent;
+  /* `r` is less than 100, thus the following does not overflow. */
+  rest = r * (percent / 100) + r * (percent % 100) / 100;
+  return result > GC_WORD_MAX - rest ? GC_WORD_MAX : result + rest;
+}
+
 GC_API void GC_CALL
 GC_set_min_bytes_allocd(size_t value)
 {
@@ -358,13 +392,6 @@ min_bytes_allocd(void)
 {
   word result;
   word stack_size;
-  /*
-   * Total size of roots, it includes double stack size, since the stack
-   * is expensive to scan.
-   */
-  word total_root_size;
-  /* Estimate of memory to be scanned during normal collection. */
-  word scan_size;
 
   GC_ASSERT(I_HOLD_LOCK());
 #ifdef THREADS
@@ -390,9 +417,27 @@ min_bytes_allocd(void)
 #endif
   }
 
-  total_root_size = 2 * stack_size + GC_root_size;
-  scan_size = 2 * GC_composite_in_use + GC_atomic_in_use / 4 + total_root_size;
-  result = scan_size / GC_free_space_divisor;
+  if (GC_alloc_budget_percent != 0) {
+    /*
+     * The volume is proportional to the size of the data live at the
+     * latest collection (including the roots), independently of how
+     * expensive the data is to trace.
+     */
+    result = percent_of(GC_composite_in_use + GC_atomic_in_use + stack_size
+                            + GC_root_size,
+                        GC_alloc_budget_percent);
+  } else {
+    /*
+     * Total size of roots, it includes double stack size, since the stack
+     * is expensive to scan.
+     */
+    word total_root_size = 2 * stack_size + GC_root_size;
+    /* Estimate of memory to be scanned during normal collection. */
+    word scan_size
+        = 2 * GC_composite_in_use + GC_atomic_in_use / 4 + total_root_size;
+
+    result = scan_size / GC_free_space_divisor;
+  }
   if (GC_incremental) {
     result /= 2;
   }
@@ -1389,8 +1434,11 @@ GC_finish_collection(void)
     GC_used_heap_size_after_full = GC_heapsize - GC_large_free_bytes;
     GC_need_full_gc = FALSE;
   } else {
+    /* The sum may overflow if `GC_alloc_budget_percent` is huge. */
+    word min_allocd = min_bytes_allocd();
+
     GC_need_full_gc = GC_heapsize - GC_used_heap_size_after_full
-                      > min_bytes_allocd() + GC_large_free_bytes;
+                      > SIZET_SAT_ADD(min_allocd, GC_large_free_bytes);
   }
 
   /* Reset or increment counters for next cycle. */

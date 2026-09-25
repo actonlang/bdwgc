@@ -1060,6 +1060,10 @@ if(BUILD_TESTING)
         target_compile_options(gctest PRIVATE /wcd=201)
     endif()
 
+    add_executable(allocbudgettest tests/allocbudget.c ${NODIST_SRC})
+    target_link_libraries(allocbudgettest PRIVATE gc)
+    add_test(NAME allocbudgettest COMMAND allocbudgettest)
+
     add_executable(dbgfunctest tests/dbgfunc.c ${NODIST_SRC})
     target_link_libraries(dbgfunctest PRIVATE gc)
     add_test(NAME dbgfunctest COMMAND dbgfunctest)
