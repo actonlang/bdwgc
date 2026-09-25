@@ -1141,6 +1141,10 @@ if(BUILD_TESTING)
     target_link_libraries(smashtest PRIVATE gc gc_build_flags)
     add_test(NAME smashtest COMMAND smashtest)
 
+    add_executable(stopfunctest tests/stopfunc.c ${NODIST_SRC})
+    target_link_libraries(stopfunctest PRIVATE gc gc_build_flags)
+    add_test(NAME stopfunctest COMMAND stopfunctest)
+
     add_executable(typedtest tests/typed.c ${NODIST_SRC})
     target_link_libraries(typedtest PRIVATE gc gc_build_flags)
     add_test(NAME typedtest COMMAND typedtest)
