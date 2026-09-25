@@ -462,6 +462,13 @@ pub fn build(b: *std.Build) void {
         flags.append(b.allocator, "-D HAVE_DLADDR") catch unreachable;
     }
 
+    if (t.os.tag.isDarwin()) {
+        // `clock_gettime` is available since macOS 10.12 and iOS 10, i.e.
+        // on all Darwin targets supported by zig; otherwise, `clock` (the
+        // processor time of all threads) is used to measure the elapsed time.
+        flags.append(b.allocator, "-D HAVE_CLOCK_GETTIME") catch unreachable;
+    }
+
     if (enable_cplusplus and enable_werror) {
         if (linkage == .dynamic and t.os.tag == .windows or t.abi == .msvc) {
             // Avoid "replacement operator new[] cannot be declared inline"
