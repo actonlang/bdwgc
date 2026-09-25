@@ -138,6 +138,7 @@
     "gettagd",
     "GETWRITEWATCH",
     "GNUC",
+    "GOGC",
     "HACCEL",
     "Hauser",
     "hblk",

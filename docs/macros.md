@@ -630,6 +630,10 @@ in bytes.
 divisor (see `GC_set_heap_growth_divisor()`); zero (the default) keeps the
 maximum heap increment independent of the heap size.
 
+`GC_ALLOC_BUDGET_PERCENT=<value>` - Sets the default value of the allocation
+budget percentage (see `GC_set_alloc_budget_percent()`); zero (the default)
+selects the policy based on `GC_free_space_divisor`.
+
 `GC_ALLOCD_BYTES_PER_FINALIZER=<value>` - Sets the alternate default value of
 `GC_allocd_bytes_per_finalizer` variable.
 
