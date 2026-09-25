@@ -1755,7 +1755,7 @@ GC_expand_hp_inner(word n)
   size_t sz;
   struct hblk *space;
   /* Number of bytes by which we expect the heap to expand soon. */
-  word expansion_slop;
+  word expansion_slop, min_allocd;
 
   GC_ASSERT(I_HOLD_LOCK());
   GC_ASSERT(GC_page_size != 0);
@@ -1783,11 +1783,13 @@ GC_expand_hp_inner(word n)
    * Adjust heap limits generously for black-listing to work better.
    * `GC_add_to_heap()` performs minimal adjustment needed for correctness.
    */
-  expansion_slop = min_bytes_allocd() + 4 * MAXHINCR * HBLKSIZE;
+  min_allocd = min_bytes_allocd();
+  expansion_slop = SIZET_SAT_ADD(min_allocd, 4 * MAXHINCR * HBLKSIZE);
   if ((0 == GC_last_heap_addr && (ADDR(space) & SIGNB) == 0)
       || (GC_last_heap_addr != 0 && GC_last_heap_addr < ADDR(space))) {
     /* Assume the heap is growing up. */
-    if (LIKELY(ADDR(space) < GC_WORD_MAX - (sz + expansion_slop))) {
+    if (LIKELY(expansion_slop < GC_WORD_MAX - sz)
+        && LIKELY(ADDR(space) < GC_WORD_MAX - sz - expansion_slop)) {
       ptr_t new_limit = (ptr_t)space + sz + expansion_slop;
 
       if (ADDR_LT((ptr_t)GC_greatest_plausible_heap_addr, new_limit))
@@ -1795,7 +1797,7 @@ GC_expand_hp_inner(word n)
     }
   } else {
     /* Heap is growing down. */
-    if (LIKELY(ADDR(space) > expansion_slop + sizeof(ptr_t))) {
+    if (LIKELY(ADDR(space) > SIZET_SAT_ADD(expansion_slop, sizeof(ptr_t)))) {
       ptr_t new_limit = (ptr_t)space - expansion_slop - sizeof(ptr_t);
 
       if (ADDR_LT(new_limit, (ptr_t)GC_least_plausible_heap_addr))
@@ -1910,8 +1912,9 @@ GC_collect_or_expand(word needed_blocks, unsigned flags, GC_bool retry)
     }
   }
 
-  blocks_to_get = (GC_heapsize - GC_heapsize_at_forced_unmap)
-                      / (HBLKSIZE * GC_free_space_divisor)
+  /* Divide separately to avoid overflow for a huge free-space divisor. */
+  blocks_to_get = divHBLKSZ(GC_heapsize - GC_heapsize_at_forced_unmap)
+                      / GC_free_space_divisor
                   + needed_blocks;
   if (blocks_to_get > MAXHINCR) {
 #ifdef NO_BLACK_LISTING
