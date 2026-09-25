@@ -1361,6 +1361,19 @@ GC_init(void)
       }
     }
   }
+  {
+    const char *str = GETENV("GC_MIN_BYTES_ALLOCD");
+
+    if (str != NULL) {
+      word value = GC_parse_mem_size_arg(str);
+
+      if (0 == value || GC_WORD_MAX == value) {
+        WARN("Bad GC_MIN_BYTES_ALLOCD value %s - ignoring\n", str);
+      } else {
+        GC_set_min_bytes_allocd((size_t)value);
+      }
+    }
+  }
 #ifdef USE_MUNMAP
   {
     const char *str = GETENV("GC_UNMAP_THRESHOLD");
