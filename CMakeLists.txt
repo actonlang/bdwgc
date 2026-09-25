@@ -1103,6 +1103,20 @@ if(BUILD_TESTING)
     target_link_libraries(dbgfunctest PRIVATE gc gc_build_flags)
     add_test(NAME dbgfunctest COMMAND dbgfunctest)
 
+    # The test includes the collector source instead of linking `gc`.
+    add_executable(expandfailtest tests/expandfail.c ${NODIST_SRC})
+    if(MSVC)
+        target_sources(expandfailtest PRIVATE extra/msvc_dbg.c)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+        target_sources(expandfailtest PRIVATE sparc_mach_dep.S)
+    endif()
+    target_link_libraries(
+        expandfailtest
+        PRIVATE gc_build_flags ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+    )
+    add_test(NAME expandfailtest COMMAND expandfailtest)
+
     add_executable(heapgrowthtest tests/heapgrowth.c ${NODIST_SRC})
     target_link_libraries(heapgrowthtest PRIVATE gc gc_build_flags)
     add_test(NAME heapgrowthtest COMMAND heapgrowthtest)
