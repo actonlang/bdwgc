@@ -1604,6 +1604,9 @@ fork_prepare_proc(void)
 #      endif
   }
 #    endif
+#    ifndef GC_DISABLE_INCREMENTAL
+  GC_dirty_prepare_fork();
+#    endif
   GC_acquire_dirty_lock();
 }
 
@@ -1618,6 +1621,9 @@ static void
 fork_parent_proc(void)
 {
   GC_release_dirty_lock();
+#    ifndef GC_DISABLE_INCREMENTAL
+  GC_dirty_update_parent();
+#    endif
 #    ifdef PARALLEL_MARK
   if (GC_parallel) {
 #      if defined(THREAD_SANITIZER) && defined(GC_ASSERTIONS) \
