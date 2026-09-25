@@ -93,6 +93,11 @@ unmaptest_SOURCES = tests/unmap.c
 unmaptest_LDADD = $(nodist_libgc_la_OBJECTS) $(EXTRA_TEST_LIBS) \
                   @addobjs@ $(THREADDLLIBS) $(UNWINDLIBS) $(ATOMIC_OPS_LIBS)
 
+TESTS += untouchedtest$(EXEEXT)
+check_PROGRAMS += untouchedtest
+untouchedtest_SOURCES = tests/untouched.c
+untouchedtest_LDADD = $(test_ldadd)
+
 TESTS += staticrootstest$(EXEEXT)
 check_PROGRAMS += staticrootstest
 staticrootstest_SOURCES = tests/staticroots.c
@@ -241,6 +246,7 @@ check-without-test-driver: $(TESTS)
 	./stopfunctest$(EXEEXT)
 	./typedtest$(EXEEXT)
 	./unmaptest$(EXEEXT)
+	./untouchedtest$(EXEEXT)
 	test ! -f atomicopstest$(EXEEXT) || ./atomicopstest$(EXEEXT)
 	test ! -f cpptest$(EXEEXT) || ./cpptest$(EXEEXT)
 	test ! -f disclaim_bench$(EXEEXT) || ./disclaim_bench$(EXEEXT)
