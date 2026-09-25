@@ -51,6 +51,11 @@ check_PROGRAMS += heapgrowthtest
 heapgrowthtest_SOURCES = tests/heapgrowth.c
 heapgrowthtest_LDADD = $(test_ldadd)
 
+TESTS += heaplimittest$(EXEEXT)
+check_PROGRAMS += heaplimittest
+heaplimittest_SOURCES = tests/heaplimit.c
+heaplimittest_LDADD = $(test_ldadd)
+
 TESTS += hugetest$(EXEEXT)
 check_PROGRAMS += hugetest
 hugetest_SOURCES = tests/huge.c
@@ -237,6 +242,7 @@ check-without-test-driver: $(TESTS)
 	./dbgfunctest$(EXEEXT)
 	./expandfailtest$(EXEEXT)
 	./heapgrowthtest$(EXEEXT)
+	./heaplimittest$(EXEEXT)
 	./hugetest$(EXEEXT)
 	./leaktest$(EXEEXT)
 	./middletest$(EXEEXT)

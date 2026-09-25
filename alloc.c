@@ -2042,6 +2042,18 @@ GC_collect_or_expand(word needed_blocks, unsigned flags, GC_bool retry)
       /* Do not increment `GC_alloc_fail_count` here (and no warning). */
       GC_gcollect_inner();
       GC_ASSERT(0 == GC_bytes_allocd);
+    } else if (GC_bytes_allocd > 0 && !GC_dont_gc
+               && !GC_disable_automatic_collection) {
+      /*
+       * The heap cannot grow (e.g. because of `GC_max_heapsize`), but no
+       * collection has been attempted above (because the allocation
+       * volume which triggers the next one has not been reached yet, or
+       * in the incremental mode).  Collect now rather than fail (or count
+       * it as a failure).  The next attempt (if any) proceeds as before
+       * unless something is allocated in between.
+       */
+      GC_gcollect_inner();
+      GC_ASSERT(0 == GC_bytes_allocd);
     } else if (GC_alloc_fail_count++ < GC_max_retries) {
       WARN("Out of Memory!  Trying to continue...\n", 0);
       GC_gcollect_inner();
