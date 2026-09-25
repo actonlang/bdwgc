@@ -4677,6 +4677,39 @@ uffdwp_write_protect(void *start, size_t len, GC_bool allow_write)
   }
 }
 
+/*
+ * Populate every page of the heap range [`start`, `end`) by reading
+ * a byte of it (this maps the zero page if the page has never been
+ * touched or its content has been discarded).  `UFFDIO_WRITEPROTECT`
+ * does not write-protect a page which is not populated (unless
+ * `UFFD_FEATURE_WP_UNPOPULATED` is used, which is available since
+ * Linux 6.4), thus the first write to such a page would not cause
+ * a fault, i.e. the page would not be recorded as dirty.  The range
+ * might be in use, thus a read might race with a client write.
+ */
+GC_ATTR_NO_SANITIZE_ADDR_MEM_THREAD
+static void
+uffdwp_populate(ptr_t start, ptr_t end)
+{
+  ptr_t p;
+
+  GC_ASSERT(GC_page_size != 0);
+  for (p = start; ADDR_LT(p, end);
+       p = PTR_ALIGN_DOWN(p, GC_page_size) + GC_page_size) {
+    GC_noop1((word)(*(volatile unsigned char *)p));
+  }
+}
+
+static void GC_CALLBACK
+uffdwp_populate_block(struct hblk *h, void *client_data)
+{
+  const hdr *hhdr = HDR(h);
+
+  UNUSED_ARG(client_data);
+  if (!IS_PTRFREE(hhdr))
+    uffdwp_populate((ptr_t)h, (ptr_t)(h + OBJ_SZ_TO_BLOCKS(hhdr->hb_sz)));
+}
+
 #  ifndef UFFDWP_MSG_BATCH_SIZE
 #    define UFFDWP_MSG_BATCH_SIZE 8
 #  endif
@@ -4814,6 +4847,12 @@ GC_dirty_init(void)
     close(uffdwp_fd);
     return FALSE;
   }
+  /*
+   * The blocks allocated so far might have pages not populated yet
+   * (e.g. never written after being obtained from the OS); new blocks
+   * are populated by `GC_remove_protection()`.
+   */
+  GC_apply_to_all_blocks(uffdwp_populate_block, NULL);
   return TRUE; /*< success */
 }
 
@@ -5135,6 +5174,12 @@ GC_remove_protection(struct hblk *h, size_t nblocks, GC_bool is_ptrfree)
       }
     }
     UNPROTECT(h_trunc, h_end - (ptr_t)h_trunc);
+#    ifdef UFFDWP_VDB
+    if (!is_ptrfree && IS_NON_MPROTECT_VDB()) {
+      /* Let the next protection of the heap cover all the pages. */
+      uffdwp_populate((ptr_t)h, (ptr_t)(h + nblocks));
+    }
+#    endif
   }
 #  else
   /* Ignore write hints.  They do not help us here. */
