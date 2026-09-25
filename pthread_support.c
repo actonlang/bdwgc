@@ -1550,6 +1550,8 @@ GC_ATTR_NO_SANITIZE_THREAD
 static void
 fork_prepare_proc(void)
 {
+  IF_CANCEL(int cancel_state;)
+
 #    if defined(GC_EXPLICIT_SIGNALS_UNBLOCK) && defined(CAN_CALL_ATFORK)
   /*
    * The signals might be blocked by `fork()` implementation when the
@@ -1569,13 +1571,20 @@ fork_prepare_proc(void)
    */
 
   LOCK();
-  DISABLE_CANCEL(fork_cancel_state);
-  GC_parent_pthread_self = pthread_self();
+  DISABLE_CANCEL(cancel_state);
   /* The following waits may include cancellation points. */
   if (is_thread_registered_inner()) {
     /* `fork()` is called from a thread registered in the collector. */
     GC_wait_for_gc_completion(TRUE);
   }
+  /*
+   * `GC_wait_for_gc_completion()` might release the allocator lock
+   * temporarily, thus letting another thread perform `fork()` (and
+   * update the following variables).  The allocator lock is held from
+   * now on till `fork()`, so these variables are set only here.
+   */
+  IF_CANCEL(fork_cancel_state = cancel_state;)
+  GC_parent_pthread_self = pthread_self();
 #    ifdef PARALLEL_MARK
   if (GC_parallel) {
     /*
