@@ -1087,6 +1087,10 @@ if(BUILD_TESTING)
     target_link_libraries(heapgrowthtest PRIVATE gc)
     add_test(NAME heapgrowthtest COMMAND heapgrowthtest)
 
+    add_executable(heaplimittest tests/heaplimit.c ${NODIST_SRC})
+    target_link_libraries(heaplimittest PRIVATE gc)
+    add_test(NAME heaplimittest COMMAND heaplimittest)
+
     add_executable(hugetest tests/huge.c ${NODIST_SRC})
     target_link_libraries(hugetest PRIVATE gc)
     add_test(NAME hugetest COMMAND hugetest)

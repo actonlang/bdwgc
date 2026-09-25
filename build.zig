@@ -681,6 +681,7 @@ pub fn build(b: *std.Build) void {
         .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
     });
     addTest(b, gc, test_step, flags, "heapgrowthtest", "tests/heapgrowth.c");
+    addTest(b, gc, test_step, flags, "heaplimittest", "tests/heaplimit.c");
     addTest(b, gc, test_step, flags, "hugetest", "tests/huge.c");
     addTest(b, gc, test_step, flags, "leaktest", "tests/leak.c");
     addTest(b, gc, test_step, flags, "middletest", "tests/middle.c");
