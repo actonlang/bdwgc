@@ -76,6 +76,8 @@ pub fn build(b: *std.Build) void {
     const enable_disclaim = b.option(bool, "enable_disclaim", "Support alternative finalization interface") orelse true;
     const enable_dynamic_pointer_mask = b.option(bool, "enable_dynamic_pointer_mask", "Support pointer mask/shift set at runtime") orelse false;
     const enable_large_config = b.option(bool, "enable_large_config", "Optimize for large heap or root set") orelse false;
+    const enable_mark_bits = b.option(bool, "enable_mark_bits", "Use mark bits instead of mark bytes even if parallel marking") orelse false;
+    const enable_mark_bit_per_obj = b.option(bool, "enable_mark_bit_per_obj", "Allocate a mark bit (or byte) per object instead of per granule") orelse false;
     const enable_gc_assertions = b.option(bool, "enable_gc_assertions", "Enable collector-internal assertion checking") orelse false;
     const enable_mmap = b.option(bool, "enable_mmap", "Use mmap instead of sbrk to expand the heap") orelse false;
     const enable_munmap = b.option(bool, "enable_munmap", "Return page to the OS if empty for N collections") orelse true;
@@ -275,6 +277,14 @@ pub fn build(b: *std.Build) void {
 
     if (enable_large_config) {
         flags.append(b.allocator, "-D LARGE_CONFIG") catch unreachable;
+    }
+
+    if (enable_mark_bits) {
+        flags.append(b.allocator, "-D USE_MARK_BITS") catch unreachable;
+    }
+
+    if (enable_mark_bit_per_obj) {
+        flags.append(b.allocator, "-D MARK_BIT_PER_OBJ") catch unreachable;
     }
 
     if (enable_gc_assertions) {
