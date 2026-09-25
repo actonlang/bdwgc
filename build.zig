@@ -91,6 +91,7 @@ pub fn build(b: *std.Build) void {
     const enable_mark_bit_per_obj = b.option(bool, "enable_mark_bit_per_obj", "Allocate a mark bit (or byte) per object instead of per granule") orelse false;
     const page_hash_table_log2 = b.option(u8, "page_hash_table_log2", "Log2 of the number of page hash table entries (0 keeps the default)") orelse 0;
     const dirty_tracking_backend = b.option(DirtyTrackingBackend, "dirty_tracking_backend", "Virtual dirty bits implementation used by incremental collection") orelse .auto;
+    const enable_mprotect_vdb = b.option(bool, "enable_mprotect_vdb", "Build in the mprotect-based virtual dirty bits implementation") orelse true;
     const enable_gc_assertions = b.option(bool, "enable_gc_assertions", "Enable collector-internal assertion checking") orelse false;
     const enable_mmap = b.option(bool, "enable_mmap", "Use mmap instead of sbrk to expand the heap") orelse false;
     const enable_munmap = b.option(bool, "enable_munmap", "Return page to the OS if empty for N collections") orelse true;
@@ -341,6 +342,10 @@ pub fn build(b: *std.Build) void {
             // precedence over `SOFT_VDB`; exclude only the fallback.
             flags.append(b.allocator, "-D NO_MPROTECT_VDB") catch unreachable;
         },
+    }
+    if (!enable_mprotect_vdb and dirty_tracking_backend == .auto) {
+        // The other choices of the backend exclude it already.
+        flags.append(b.allocator, "-D NO_MPROTECT_VDB") catch unreachable;
     }
 
     if (enable_gc_assertions) {
