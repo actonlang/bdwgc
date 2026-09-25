@@ -565,7 +565,7 @@ calc_num_unmapped_regions_delta(struct hblk *h, const hdr *hhdr)
 
   next = GC_next_block((struct hblk *)((ptr_t)h + hhdr->hb_sz), TRUE);
   /* Ensure next is contiguous with `h`. */
-  if (next != HBLK_PAGE_ALIGNED((ptr_t)h + hhdr->hb_sz)) {
+  if (next != (struct hblk *)((ptr_t)h + hhdr->hb_sz)) {
     next = NULL;
   }
   if (prev != NULL) {
