@@ -436,6 +436,15 @@ default in HP/UX.  It may help performance on recent Linux installations.
 `PARALLEL_MARK` - Allows the marker to run in multiple threads.  Recommended
 for multiprocessors.
 
+`STEAL_MARK_STACK_RANGES` - Causes the parallel markers to take entries of
+the global mark stack by claiming a range of them with a single CAS, and to
+take a fair share of a big global mark stack (up to `MAX_ENTRIES_TO_GET`
+entries at once, a big object is counted as several entries).  Greatly
+reduces the marking cost if the global mark stack holds lots of small
+entries, e.g. in the generational mode (after pushing the marked objects of
+the dirty pages), but the full collection of some heap shapes might be
+slightly slower.  Ignored unless `PARALLEL_MARK` is defined.
+
 `GC_BUILTIN_ATOMIC` - Uses GCC atomic intrinsics instead of `libatomic_ops`
 primitives.
 
