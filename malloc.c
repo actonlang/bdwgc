@@ -322,9 +322,19 @@ GC_generic_malloc_aligned(size_t lb, int kind, unsigned flags, size_t align_m1)
     UNLOCK();
 #ifdef THREADS
     if (init && !GC_debugging_started && result != NULL) {
+      /*
+       * A small object (it is allocated here only if aligned) does not
+       * own its block: once the allocator lock is released, a collection
+       * started by another thread may reclaim the other objects of the
+       * block, and they may be allocated then.  Thus, only the object
+       * itself is cleared in this case.
+       */
+      size_t clear_sz = lb_adjusted > MAXOBJBYTES
+                            ? HBLKSIZE * OBJ_SZ_TO_BLOCKS(lb_adjusted)
+                            : lb_adjusted;
+
       /* Clear the rest (i.e. excluding the initial 2 words). */
-      BZERO((ptr_t *)result + 2,
-            HBLKSIZE * OBJ_SZ_TO_BLOCKS(lb_adjusted) - 2 * sizeof(ptr_t));
+      BZERO((ptr_t *)result + 2, clear_sz - 2 * sizeof(ptr_t));
     }
 #endif
   }
