@@ -91,6 +91,11 @@ check_PROGRAMS += realloctest
 realloctest_SOURCES = tests/realloc.c
 realloctest_LDADD = $(test_ldadd)
 
+TESTS += reallocfreetest$(EXEEXT)
+check_PROGRAMS += reallocfreetest
+reallocfreetest_SOURCES = tests/reallocfree.c
+reallocfreetest_LDADD = $(test_ldadd)
+
 TESTS += sizemaptest$(EXEEXT)
 check_PROGRAMS += sizemaptest
 sizemaptest_SOURCES = tests/sizemap.c
@@ -270,6 +275,7 @@ check-without-test-driver: $(TESTS)
 	./memaligntest$(EXEEXT)
 	./middletest$(EXEEXT)
 	./realloctest$(EXEEXT)
+	./reallocfreetest$(EXEEXT)
 	./sizemaptest$(EXEEXT)
 	./smashtest$(EXEEXT)
 	./staticrootstest$(EXEEXT)
