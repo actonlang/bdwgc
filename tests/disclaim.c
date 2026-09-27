@@ -106,6 +106,130 @@ test_misc_sizes(void)
   }
 }
 
+/*
+ * The number of objects not yet disclaimed ("parents"), and the length
+ * of a list reachable from each of them.  Both should be big enough
+ * for the collector to overflow the initial mark stack (of `HBLKSIZE`
+ * entries by default, with heap blocks of up to 64 KB) while it pushes
+ * the parents at the start of a full collection.
+ */
+#define OVF_PARENTS_CNT (32 * 1024)
+#define OVF_LIST_LEN (64 * 1024)
+
+#define OVF_CHILD_MAGIC 0x5a17
+
+struct ovf_child_s {
+  GC_word magic;
+  /* The number of completed mark phases at the parent disclaim, plus one. */
+  GC_word parent_disclaimed_at;
+};
+
+struct ovf_parent_s {
+  void *list;
+  struct ovf_child_s *child;
+};
+
+/* These are updated with the allocator lock held. */
+static GC_word ovf_marks_done;
+static unsigned ovf_parents_disclaimed;
+static unsigned ovf_children_disclaimed;
+
+static void GC_CALLBACK
+ovf_on_collection_event(GC_EventType e)
+{
+  if (GC_EVENT_MARK_END == e)
+    ovf_marks_done++;
+}
+
+static void GC_CALLBACK
+ovf_parent_dct(void *obj, void *cd)
+{
+  struct ovf_child_s *q = ((struct ovf_parent_s *)obj)->child;
+
+  /* The child is reachable only from `obj`. */
+  TEST_ASSERT(q->magic == OVF_CHILD_MAGIC);
+  TEST_ASSERT(0 == q->parent_disclaimed_at);
+  q->parent_disclaimed_at = ovf_marks_done + 1;
+  ovf_parents_disclaimed++;
+  UNUSED_ARG(cd);
+}
+
+static void GC_CALLBACK
+ovf_child_dct(void *obj, void *cd)
+{
+  struct ovf_child_s *q = (struct ovf_child_s *)obj;
+
+  /*
+   * The parent keeps the child marked until the collection that finds
+   * the parent unreachable, thus the child may be disclaimed only after
+   * a later mark phase.
+   */
+  TEST_ASSERT(q->magic == OVF_CHILD_MAGIC);
+  TEST_ASSERT(q->parent_disclaimed_at != 0
+              && q->parent_disclaimed_at - 1 < ovf_marks_done);
+  q->magic = 0;
+  ovf_children_disclaimed++;
+  UNUSED_ARG(cd);
+}
+
+/*
+ * Test that a mark stack overflow while the collector pushes the objects
+ * not yet disclaimed does not let it reclaim objects reachable from them.
+ */
+static void
+test_mark_stack_overflow(void)
+{
+  static const struct GC_finalizer_closure parent_fc
+      = { ovf_parent_dct, NULL };
+  static const struct GC_finalizer_closure child_fc = { ovf_child_dct, NULL };
+  const void *list = NULL;
+  int i;
+
+  if (GC_get_find_leak())
+    return;
+  /* Note: the callback is kept for the objects disclaimed later. */
+  GC_set_on_collection_event(ovf_on_collection_event);
+
+  /* Allocate all the objects before the collection. */
+  GC_disable();
+
+  /*
+   * Each list node refers to a leaf ahead of the next node, so marking
+   * the list leaves an entry on the mark stack per node.
+   */
+  for (i = 0; i < OVF_LIST_LEN; ++i) {
+    void **node = (void **)GC_MALLOC(2 * sizeof(void *));
+    const void *leaf = GC_MALLOC(sizeof(void *));
+
+    CHECK_OUT_OF_MEMORY(node);
+    CHECK_OUT_OF_MEMORY(leaf);
+    GC_ptr_store_and_dirty(&node[0], leaf);
+    GC_ptr_store_and_dirty(&node[1], list);
+    list = node;
+  }
+
+  for (i = 0; i < OVF_PARENTS_CNT; ++i) {
+    struct ovf_child_s *q = (struct ovf_child_s *)GC_finalized_malloc(
+        sizeof(struct ovf_child_s), &child_fc);
+    struct ovf_parent_s *p;
+
+    CHECK_OUT_OF_MEMORY(q);
+    q->magic = OVF_CHILD_MAGIC;
+    p = (struct ovf_parent_s *)GC_finalized_malloc(sizeof(struct ovf_parent_s),
+                                                   &parent_fc);
+    CHECK_OUT_OF_MEMORY(p);
+    GC_ptr_store_and_dirty(&p->list, list);
+    GC_ptr_store_and_dirty(&p->child, q);
+  }
+  GC_enable();
+
+  /* The parents, then the children, become disclaimed. */
+  for (i = 0; i < 4; ++i)
+    GC_gcollect();
+  TEST_ASSERT(ovf_parents_disclaimed >= OVF_PARENTS_CNT / 2);
+  TEST_ASSERT(ovf_children_disclaimed >= OVF_PARENTS_CNT / 2);
+}
+
 typedef struct pair_s *pair_t;
 
 struct pair_s {
@@ -271,6 +395,8 @@ main(void)
 #endif
   GC_INIT();
   GC_init_finalized_malloc();
+  /* This should go first, while the mark stack is of the initial size. */
+  test_mark_stack_overflow();
 #ifndef NO_INCREMENTAL
   GC_enable_incremental();
 #endif
