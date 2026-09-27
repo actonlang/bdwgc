@@ -18,8 +18,7 @@
 
 #include <string.h>
 
-/* Allocate reclaim list for the kind.  Returns `TRUE` on success. */
-STATIC GC_bool
+GC_INNER GC_bool
 GC_alloc_reclaim_list(struct obj_kind *ok)
 {
   struct hblk **result;

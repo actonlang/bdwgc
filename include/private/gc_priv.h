@@ -3539,6 +3539,15 @@ GC_INNER void *GC_generic_malloc_aligned(size_t lb, int kind, unsigned flags,
 GC_INNER void *GC_generic_malloc_inner(size_t lb, int kind, unsigned flags);
 
 /*
+ * Allocate the reclaim list of the given kind.  Returns `TRUE` on success.
+ * Should be called before the first block of small objects of the kind is
+ * allocated, as the collector clears the free lists, and sweeps the blocks,
+ * only of the kinds having the reclaim list.  The caller should hold the
+ * allocator lock.
+ */
+GC_INNER GC_bool GC_alloc_reclaim_list(struct obj_kind *ok);
+
+/*
  * Collect or expand heap in an attempt make the indicated number of
  * free blocks available.  Should be called until the blocks are
  * available (setting `retry` value to `TRUE` unless this is the first

@@ -463,9 +463,15 @@ GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
 
   } else {
     /* Next try to allocate a new block worth of objects of this size. */
-    struct hblk *h
-        = GC_allochblk(lb_adjusted, kind, 0 /* `flags` */, 0 /* `align_m1` */);
+    struct hblk *h = NULL;
 
+    /*
+     * The collector clears the free lists, and sweeps the blocks, only of
+     * the kinds having the reclaim list, thus allocate the latter before
+     * the first block of the kind.
+     */
+    if (LIKELY(ok->ok_reclaim_list != NULL) || GC_alloc_reclaim_list(ok))
+      h = GC_allochblk(lb_adjusted, kind, 0 /* `flags` */, 0 /* `align_m1` */);
     if (h != NULL) {
       if (IS_UNCOLLECTABLE(kind))
         GC_set_hdr_marks(HDR(h));
