@@ -66,6 +66,11 @@ check_PROGRAMS += leaktest
 leaktest_SOURCES = tests/leak.c
 leaktest_LDADD = $(test_ldadd)
 
+TESTS += mallocmanytest$(EXEEXT)
+check_PROGRAMS += mallocmanytest
+mallocmanytest_SOURCES = tests/mallocmany.c
+mallocmanytest_LDADD = $(test_ldadd)
+
 TESTS += middletest$(EXEEXT)
 check_PROGRAMS += middletest
 middletest_SOURCES = tests/middle.c
@@ -245,6 +250,7 @@ check-without-test-driver: $(TESTS)
 	./heaplimittest$(EXEEXT)
 	./hugetest$(EXEEXT)
 	./leaktest$(EXEEXT)
+	./mallocmanytest$(EXEEXT)
 	./middletest$(EXEEXT)
 	./realloctest$(EXEEXT)
 	./smashtest$(EXEEXT)

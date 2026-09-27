@@ -1099,6 +1099,10 @@ if(BUILD_TESTING)
     target_link_libraries(leaktest PRIVATE gc)
     add_test(NAME leaktest COMMAND leaktest)
 
+    add_executable(mallocmanytest tests/mallocmany.c ${NODIST_SRC})
+    target_link_libraries(mallocmanytest PRIVATE gc)
+    add_test(NAME mallocmanytest COMMAND mallocmanytest)
+
     add_executable(middletest tests/middle.c ${NODIST_SRC})
     target_link_libraries(middletest PRIVATE gc)
     add_test(NAME middletest COMMAND middletest)
