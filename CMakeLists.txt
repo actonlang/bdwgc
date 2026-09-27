@@ -1119,6 +1119,10 @@ if(BUILD_TESTING)
     target_link_libraries(realloctest PRIVATE gc)
     add_test(NAME realloctest COMMAND realloctest)
 
+    add_executable(reallocfreetest tests/reallocfree.c ${NODIST_SRC})
+    target_link_libraries(reallocfreetest PRIVATE gc)
+    add_test(NAME reallocfreetest COMMAND reallocfreetest)
+
     add_executable(sizemaptest tests/sizemap.c ${NODIST_SRC})
     target_link_libraries(sizemaptest PRIVATE gc)
     add_test(NAME sizemaptest COMMAND sizemaptest)

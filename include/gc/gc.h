@@ -908,7 +908,8 @@ GC_API size_t GC_CALL GC_size(const void * /* `obj` */);
  * `GC_reallocf` and its debug variant is different - they free memory
  * pointed by `old_object` if the allocation has failed.  If the returned
  * pointer is not the same as `old_object` and both of them are non-`NULL`,
- * then `old_object` is freed.  Returns either `NULL` (in case of the
+ * then `old_object` is freed (unless it is left to the collector, see
+ * `GC_set_realloc_no_free()`).  Returns either `NULL` (in case of the
  * allocation failure or zero `new_size_in_bytes`) or pointer to the
  * allocated memory.  For a nonzero `new_size_in_bytes`, the functions
  * are guaranteed never to return `NULL` unless `GC_oom_fn()` returns `NULL`.
@@ -927,6 +928,33 @@ GC_API void *GC_CALL GC_debug_reallocf(void * /* `old_object` */,
                                        size_t /* `new_size_in_bytes` */,
                                        GC_EXTRA_PARAMS)
     /* `realloc` attribute */ GC_ATTR_ALLOC_SIZE(2);
+
+/**
+ * The setter and the getter for switching "no free on realloc" mode on
+ * (1) and off (0).  In this mode, `GC_realloc` (and `GC_reallocf`) does
+ * not free the original object after moving its contents to a new object
+ * if the original one is small (i.e. not bigger than a half of a heap
+ * block) and collectable, but leaves it to the collector, since the
+ * explicit deallocation acquires the allocator lock (while an allocation
+ * of a small object usually does not, if thread-local allocation is on).
+ * The collector reclaims the object once it is unreachable, as any other
+ * garbage, thus a correct client cannot observe the difference (a stale
+ * pointer to the original object keeps it alive instead of pointing to
+ * a deallocated one).  An uncollectable object, a big one (it occupies
+ * whole heap blocks, which freeing returns to the heap at once, at the
+ * cost of one acquisition of the allocator lock), an object of a kind
+ * with a disclaim procedure, and any object in the leak detection mode
+ * are still freed.  So is `old_object` if `new_size_in_bytes` is zero.
+ * Has no effect on `GC_debug_realloc` and `GC_debug_reallocf`.  Note:
+ * the memory of an object which is not freed is not reused until the next
+ * collection, and it counts toward the amount of allocation triggering
+ * the collection, thus a client which moves many small objects might
+ * collect more often in this mode.  The initial value is controlled by
+ * `GC_REALLOC_NO_FREE` macro and environment variable.  The setter and
+ * the getter are unsynchronized.
+ */
+GC_API void GC_CALL GC_set_realloc_no_free(int);
+GC_API int GC_CALL GC_get_realloc_no_free(void);
 
 /**
  * Increase the heap size explicitly.  The performed increase is at

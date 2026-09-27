@@ -1386,6 +1386,18 @@ GC_init(void)
       }
     }
   }
+  {
+    const char *str = GETENV("GC_REALLOC_NO_FREE");
+
+    if (str != NULL) {
+      if (str[0] == '0' && str[1] == '\0') {
+        /* "0" is used to turn off the mode. */
+        GC_realloc_no_free = FALSE;
+      } else {
+        GC_realloc_no_free = TRUE;
+      }
+    }
+  }
 #ifdef USE_MUNMAP
   {
     const char *str = GETENV("GC_UNMAP_THRESHOLD");
