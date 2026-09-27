@@ -99,6 +99,7 @@ pub fn build(b: *std.Build) void {
     const enable_end_padding = b.option(bool, "enable_end_padding", "Pad objects so that a pointer just past the end of an object keeps it alive") orelse true;
     const initial_mark_stack_size = b.option(u32, "initial_mark_stack_size", "Initial number of entries in the global mark stack, a power of two, 4096 at least (0 keeps the default of HBLKSIZE entries)") orelse 0;
     const tiny_freelists = b.option(u32, "tiny_freelists", "Number of tiny (thread-local) free lists per kind, i.e. objects of up to this number minus one granules use them (0 keeps the default)") orelse 0;
+    const disable_realloc_free = b.option(bool, "disable_realloc_free", "Leave a small collectable object moved by GC_realloc to the collector instead of freeing it") orelse false;
     const enable_gc_assertions = b.option(bool, "enable_gc_assertions", "Enable collector-internal assertion checking") orelse false;
     const enable_mmap = b.option(bool, "enable_mmap", "Use mmap instead of sbrk to expand the heap") orelse false;
     const enable_munmap = b.option(bool, "enable_munmap", "Return page to the OS if empty for N collections") orelse true;
@@ -414,6 +415,10 @@ pub fn build(b: *std.Build) void {
             std.debug.panic("tiny_freelists should be in range 2..{d} (or 0 for the default)", .{max_tiny_freelists});
         }
         flags.append(b.allocator, b.fmt("-D GC_TINY_FREELISTS={d}", .{tiny_freelists})) catch unreachable;
+    }
+
+    if (disable_realloc_free) {
+        flags.append(b.allocator, "-D GC_REALLOC_NO_FREE") catch unreachable;
     }
 
     if (enable_gc_assertions) {
