@@ -195,6 +195,11 @@ check_PROGRAMS += threadleaktest
 threadleaktest_SOURCES = tests/threadleak.c
 threadleaktest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
+TESTS += threadwarmuptest$(EXEEXT)
+check_PROGRAMS += threadwarmuptest
+threadwarmuptest_SOURCES = tests/threadwarmup.c
+threadwarmuptest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+
 endif
 
 if CPLUSPLUS
@@ -292,6 +297,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f subthreadcreatetest$(EXEEXT) || ./subthreadcreatetest$(EXEEXT)
 	test ! -f threadkeytest$(EXEEXT) || ./threadkeytest$(EXEEXT)
 	test ! -f threadleaktest$(EXEEXT) || ./threadleaktest$(EXEEXT)
+	test ! -f threadwarmuptest$(EXEEXT) || ./threadwarmuptest$(EXEEXT)
 	test ! -f tracetest$(EXEEXT) || ./tracetest$(EXEEXT)
 	test ! -f treetest$(EXEEXT) || ./treetest$(EXEEXT)
 	test ! -f weakmaptest$(EXEEXT) || ./weakmaptest$(EXEEXT)

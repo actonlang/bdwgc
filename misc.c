@@ -154,6 +154,12 @@ GC_INNER GC_bool GC_force_unmap_on_gcollect = TRUE;
 GC_INNER GC_bool GC_force_unmap_on_gcollect = FALSE;
 #endif
 
+#ifdef GC_NO_THREAD_LOCAL_WARMUP
+GC_INNER GC_bool GC_no_thread_local_warmup = TRUE;
+#else
+GC_INNER GC_bool GC_no_thread_local_warmup = FALSE;
+#endif
+
 #ifndef GC_LARGE_ALLOC_WARN_INTERVAL
 #  define GC_LARGE_ALLOC_WARN_INTERVAL 5
 #endif
@@ -1395,6 +1401,18 @@ GC_init(void)
         GC_realloc_no_free = FALSE;
       } else {
         GC_realloc_no_free = TRUE;
+      }
+    }
+  }
+  {
+    const char *str = GETENV("GC_NO_THREAD_LOCAL_WARMUP");
+
+    if (str != NULL) {
+      if (str[0] == '0' && str[1] == '\0') {
+        /* "0" is used to turn off the mode. */
+        GC_no_thread_local_warmup = FALSE;
+      } else {
+        GC_no_thread_local_warmup = TRUE;
       }
     }
   }
@@ -3112,6 +3130,18 @@ GC_API int GC_CALL
 GC_get_force_unmap_on_gcollect(void)
 {
   return (int)GC_force_unmap_on_gcollect;
+}
+
+GC_API void GC_CALL
+GC_set_no_thread_local_warmup(int value)
+{
+  GC_no_thread_local_warmup = value != 0;
+}
+
+GC_API int GC_CALL
+GC_get_no_thread_local_warmup(void)
+{
+  return (int)GC_no_thread_local_warmup;
 }
 
 GC_API GC_OOM_ABORT_THROW_ATTRIBUTE void GC_CALL

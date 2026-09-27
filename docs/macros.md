@@ -648,6 +648,13 @@ selects the policy based on `GC_free_space_divisor`.
 freeing it after moving its contents to a new object (see
 `GC_set_realloc_no_free()`).  The mode could be changed at run-time.
 
+`GC_NO_THREAD_LOCAL_WARMUP` - Sets "no thread-local warm-up" mode on by
+default, i.e. a thread uses its thread-local free list of each small object
+size starting from its first allocation of that size (see
+`GC_set_no_thread_local_warmup()`).  The mode could be changed at run-time
+(for the threads registered afterwards).  Has no effect unless
+`THREAD_LOCAL_ALLOC` is defined.
+
 `GC_ALLOCD_BYTES_PER_FINALIZER=<value>` - Sets the alternate default value of
 `GC_allocd_bytes_per_finalizer` variable.
 
