@@ -4140,6 +4140,13 @@ GC_INNER void GC_err_puts(const char *s);
  */
 GC_EXTERN word GC_alloc_budget_percent;
 
+/*
+ * If set, then `GC_realloc` leaves a small collectable object to the
+ * collector (instead of freeing it) after moving the object contents to
+ * a new location.  Defined in `mallocx.c` file.
+ */
+GC_EXTERN GC_bool GC_realloc_no_free;
+
 #ifdef USE_MUNMAP
 GC_EXTERN unsigned GC_unmap_threshold; /*< defined in `alloc.c` file */
 

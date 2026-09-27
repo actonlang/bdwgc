@@ -689,6 +689,7 @@ pub fn build(b: *std.Build) void {
     addTest(b, gc, test_step, flags, "memaligntest", "tests/memalign.c");
     addTest(b, gc, test_step, flags, "middletest", "tests/middle.c");
     addTest(b, gc, test_step, flags, "realloctest", "tests/realloc.c");
+    addTest(b, gc, test_step, flags, "reallocfreetest", "tests/reallocfree.c");
     addTest(b, gc, test_step, flags, "sizemaptest", "tests/sizemap.c");
     addTest(b, gc, test_step, flags, "smashtest", "tests/smash.c");
     addTest(b, gc, test_step, flags, "stopfunctest", "tests/stopfunc.c");
