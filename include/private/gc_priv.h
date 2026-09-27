@@ -3651,6 +3651,14 @@ struct collect_expand_retry_s {
 };
 
 /*
+ * Allocate the reclaim list of the given kind.  Returns `TRUE` on success.
+ * Should be called before the first block of small objects of the kind is
+ * allocated, as the collector sweeps the blocks only of the kinds having
+ * the reclaim list.  The caller should hold the allocator lock.
+ */
+GC_INNER GC_bool GC_alloc_reclaim_list(struct obj_kind *ok);
+
+/*
  * Collect or expand heap in an attempt make the indicated number of
  * free blocks available.  Should be called until the blocks are
  * available or until it fails by returning `FALSE`.  The `flags` argument
