@@ -167,6 +167,14 @@ default value): `GC_realloc` leaves a small collectable object to the
 collector instead of freeing it after moving its contents to a new object
 (see `GC_set_realloc_no_free()`).  The special value "0" turns the mode off.
 
+`GC_NO_THREAD_LOCAL_WARMUP` - Turns "no thread-local warm-up" mode on
+(overrides the default value): a thread uses its thread-local free list of
+each small object size starting from its first allocation of that size,
+instead of allocating about a heap block worth of such objects from the global
+free lists (acquiring the allocator lock for each) first (see
+`GC_set_no_thread_local_warmup()`).  The special value "0" turns the mode off.
+Has no effect unless thread-local allocation is supported.
+
 `GC_UNMAP_THRESHOLD` - Sets the desired threshold of memory blocks unmapping
 (the number of sequential garbage collections during those a candidate block
 for unmapping should be marked as free).  The special value "0" completely

@@ -2184,6 +2184,28 @@ GC_API void *GC_CALL GC_call_with_stack_base(GC_stack_base_func /* fn */,
  */
 GC_API void GC_CALL GC_start_mark_threads(void);
 
+/**
+ * The setter and the getter for switching "no thread-local warm-up" mode
+ * on (1) and off (0).  With thread-local allocation, a thread normally
+ * allocates its first objects of each small size (and kind), about
+ * a heap block worth of them, from the global free lists, acquiring the
+ * allocator lock for each object, so that a thread which allocates only
+ * a few objects of a size does not hold a thread-local free list of them.
+ * In this mode, a thread uses (and refills, which acquires the lock once
+ * per refill) its thread-local free list starting from its first
+ * allocation of each size.  This reduces the lock contention of new
+ * threads (e.g., of many threads which start allocating at the same
+ * time) at the expense of holding up to a heap block of objects of each
+ * size (and kind) the thread has allocated at least once.  Affects only
+ * the threads registered after the mode is changed (the main thread is
+ * registered by `GC_INIT()`).  Has no effect unless the collector is
+ * built with thread-local allocation support.  The initial value is
+ * controlled by `GC_NO_THREAD_LOCAL_WARMUP` macro and environment
+ * variable.  The setter and the getter are unsynchronized.
+ */
+GC_API void GC_CALL GC_set_no_thread_local_warmup(int);
+GC_API int GC_CALL GC_get_no_thread_local_warmup(void);
+
 #ifdef GC_WIN32_THREADS
 /**
  * Use implicit threads registration and processing on Win32 via `DllMain`.

@@ -4147,6 +4147,14 @@ GC_EXTERN word GC_alloc_budget_percent;
  */
 GC_EXTERN GC_bool GC_realloc_no_free;
 
+/*
+ * If set, then a thread registered afterwards uses its thread-local free
+ * lists starting from its first allocation of each size (instead of
+ * allocating the first objects of each size globally).  Defined in
+ * `misc.c` file.
+ */
+GC_EXTERN GC_bool GC_no_thread_local_warmup;
+
 #ifdef USE_MUNMAP
 GC_EXTERN unsigned GC_unmap_threshold; /*< defined in `alloc.c` file */
 

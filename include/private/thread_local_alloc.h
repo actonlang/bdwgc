@@ -76,7 +76,10 @@ struct thread_local_freelists {
 #    define ERROR_FL GC_WORD_MAX
 #  endif
 
-  /* Do not use local free lists for up to this much allocation. */
+  /*
+   * Do not use local free lists for up to this much allocation (unless
+   * `GC_no_thread_local_warmup`).
+   */
 #  define DIRECT_GRANULES (HBLKSIZE / GC_GRANULE_BYTES)
 };
 typedef struct thread_local_freelists *GC_tlfs;

@@ -48,14 +48,20 @@ GC_reset_thread_local_initialization(void)
 static void
 init_freelists(GC_tlfs p)
 {
+  /*
+   * A small counter makes the thread allocate the first objects of each
+   * size globally (a warm-up), while `NULL` (an empty thread-local free
+   * list) makes it refill the free list on its first allocation.
+   */
+  void *fl_init = GC_no_thread_local_warmup ? NULL : NUMERIC_TO_VPTR(1);
   int kind, j;
 
   for (j = 0; j < GC_TINY_FREELISTS; ++j) {
     for (kind = 0; kind < THREAD_FREELISTS_KINDS; ++kind) {
-      p->_freelists[kind][j] = NUMERIC_TO_VPTR(1);
+      p->_freelists[kind][j] = fl_init;
     }
 #  ifdef THREAD_GCJ_FREELISTS
-    p->gcj_freelists[j] = NUMERIC_TO_VPTR(1);
+    p->gcj_freelists[j] = fl_init;
 #  endif
   }
   /*
