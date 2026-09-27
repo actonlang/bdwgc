@@ -71,6 +71,24 @@ GC_generic_or_special_malloc(size_t lb, int kind)
   }
 }
 
+#ifdef GC_REALLOC_NO_FREE
+GC_INNER GC_bool GC_realloc_no_free = TRUE;
+#else
+GC_INNER GC_bool GC_realloc_no_free = FALSE;
+#endif
+
+GC_API void GC_CALL
+GC_set_realloc_no_free(int value)
+{
+  GC_realloc_no_free = value != 0;
+}
+
+GC_API int GC_CALL
+GC_get_realloc_no_free(void)
+{
+  return (int)GC_realloc_no_free;
+}
+
 GC_API void *GC_CALL
 GC_realloc(void *p, size_t lb)
 {
@@ -184,7 +202,24 @@ GC_realloc(void *p, size_t lb)
      */
     BCOPY(p, result, sz);
 #ifndef IGNORE_FREE
-    GC_free((ptr_t)cleared_p);
+    /*
+     * In the "no free on realloc" mode, a small collectable object is
+     * left to the collector, as `GC_free` acquires the allocator lock
+     * (while the allocation of the new object usually does not).
+     * A big object is still freed: it occupies whole heap blocks, which
+     * freeing returns to the heap at once, at the cost of one acquisition
+     * of the allocator lock.  An object of a kind with a disclaim
+     * procedure is freed too (otherwise the procedure would be called for
+     * the old object), as well as any object in the leak detection mode
+     * (where the collector does not reclaim unreachable objects).
+     */
+    if (!GC_realloc_no_free || orig_sz > MAXOBJBYTES
+        || IS_UNCOLLECTABLE(obj_kind)
+#  ifdef ENABLE_DISCLAIM
+        || GC_obj_kinds[obj_kind].ok_disclaim_proc != 0
+#  endif
+        || GC_find_leak_inner)
+      GC_free((ptr_t)cleared_p);
 #endif
   }
   return result;

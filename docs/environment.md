@@ -162,6 +162,11 @@ collection frequency of programs with a small live heap at the expense of
 space.  Optionally, may be specified with a multiplier suffix.  Zero and
 malformed values are ignored (with a warning).
 
+`GC_REALLOC_NO_FREE` - Turns "no free on realloc" mode on (overrides the
+default value): `GC_realloc` leaves a small collectable object to the
+collector instead of freeing it after moving its contents to a new object
+(see `GC_set_realloc_no_free()`).  The special value "0" turns the mode off.
+
 `GC_UNMAP_THRESHOLD` - Sets the desired threshold of memory blocks unmapping
 (the number of sequential garbage collections during those a candidate block
 for unmapping should be marked as free).  The special value "0" completely

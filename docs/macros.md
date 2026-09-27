@@ -643,6 +643,11 @@ maximum heap increment independent of the heap size.
 budget percentage (see `GC_set_alloc_budget_percent()`); zero (the default)
 selects the policy based on `GC_free_space_divisor`.
 
+`GC_REALLOC_NO_FREE` - Sets "no free on realloc" mode on by default, i.e.
+`GC_realloc` leaves a small collectable object to the collector instead of
+freeing it after moving its contents to a new object (see
+`GC_set_realloc_no_free()`).  The mode could be changed at run-time.
+
 `GC_ALLOCD_BYTES_PER_FINALIZER=<value>` - Sets the alternate default value of
 `GC_allocd_bytes_per_finalizer` variable.
 
