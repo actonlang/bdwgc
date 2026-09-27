@@ -2261,7 +2261,20 @@ GC_push_next_marked(struct hblk *h)
       ABORT("Bad HDR() definition");
 #endif
   }
-  GC_push_marked(h, hhdr);
+#ifdef ENABLE_DISCLAIM
+  if ((hhdr->hb_flags & MARK_UNCONDITIONALLY) != 0) {
+    /*
+     * The recovery from a mark stack overflow pushes the marked objects
+     * again by this function, but the entries dropped on the overflow
+     * might include ones pushed by `GC_push_unconditionally()` for the
+     * objects which are not marked (thus not pushed by `GC_push_marked`).
+     */
+    GC_push_unconditionally(h, hhdr);
+  } else
+#endif
+  /* else */ {
+    GC_push_marked(h, hhdr);
+  }
   return h + OBJ_SZ_TO_BLOCKS(hhdr->hb_sz);
 }
 
@@ -2294,15 +2307,6 @@ GC_push_next_marked_dirty(struct hblk *h)
 #  ifdef ENABLE_DISCLAIM
   if ((hhdr->hb_flags & MARK_UNCONDITIONALLY) != 0) {
     GC_push_unconditionally(h, hhdr);
-
-    /*
-     * Then we may ask, why not also add the `MARK_UNCONDITIONALLY`
-     * case to `GC_push_next_marked`, which is also applied to
-     * uncollectible blocks?  But it seems to me that the function
-     * does not need to scan uncollectible (and unconditionally
-     * marked) blocks since those are already handled in the
-     * `MS_PUSH_UNCOLLECTABLE` phase.
-     */
   } else
 #  endif
   /* else */ {
