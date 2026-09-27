@@ -100,6 +100,7 @@ pub fn build(b: *std.Build) void {
     const initial_mark_stack_size = b.option(u32, "initial_mark_stack_size", "Initial number of entries in the global mark stack, a power of two, 4096 at least (0 keeps the default of HBLKSIZE entries)") orelse 0;
     const tiny_freelists = b.option(u32, "tiny_freelists", "Number of tiny (thread-local) free lists per kind, i.e. objects of up to this number minus one granules use them (0 keeps the default)") orelse 0;
     const disable_realloc_free = b.option(bool, "disable_realloc_free", "Leave a small collectable object moved by GC_realloc to the collector instead of freeing it") orelse false;
+    const disable_thread_local_warmup = b.option(bool, "disable_thread_local_warmup", "Let a thread use its thread-local free list of each size from its first allocation of that size") orelse false;
     const enable_gc_assertions = b.option(bool, "enable_gc_assertions", "Enable collector-internal assertion checking") orelse false;
     const enable_mmap = b.option(bool, "enable_mmap", "Use mmap instead of sbrk to expand the heap") orelse false;
     const enable_munmap = b.option(bool, "enable_munmap", "Return page to the OS if empty for N collections") orelse true;
@@ -419,6 +420,13 @@ pub fn build(b: *std.Build) void {
 
     if (disable_realloc_free) {
         flags.append(b.allocator, "-D GC_REALLOC_NO_FREE") catch unreachable;
+    }
+
+    if (disable_thread_local_warmup) {
+        if (!enable_threads or !enable_thread_local_alloc) {
+            @panic("Skipping thread-local free list warm-up assumes thread-local allocation support");
+        }
+        flags.append(b.allocator, "-D GC_NO_THREAD_LOCAL_WARMUP") catch unreachable;
     }
 
     if (enable_gc_assertions) {
