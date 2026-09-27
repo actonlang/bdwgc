@@ -1257,6 +1257,13 @@ if(BUILD_TESTING)
         )
         add_test(NAME threadleaktest COMMAND threadleaktest)
 
+        add_executable(threadwarmuptest tests/threadwarmup.c ${NODIST_SRC})
+        target_link_libraries(
+            threadwarmuptest
+            PRIVATE gc gc_build_flags ${THREADDLLIBS_LIST}
+        )
+        add_test(NAME threadwarmuptest COMMAND threadwarmuptest)
+
         if(NOT WIN32)
             add_executable(forktest tests/fork.c ${NODIST_SRC})
             target_link_libraries(
