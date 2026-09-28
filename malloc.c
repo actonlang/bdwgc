@@ -196,6 +196,7 @@ GC_extend_size_map(size_t i)
 
   for (; low_limit <= byte_sz; low_limit++)
     GC_size_map[low_limit] = lg;
+  GC_ASSERT(GC_size_map[i] != 0);
 }
 
 STATIC void *
