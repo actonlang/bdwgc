@@ -1149,6 +1149,10 @@ if(BUILD_TESTING)
     target_link_libraries(realloctest PRIVATE gc gc_build_flags)
     add_test(NAME realloctest COMMAND realloctest)
 
+    add_executable(sizemaptest tests/sizemap.c ${NODIST_SRC})
+    target_link_libraries(sizemaptest PRIVATE gc gc_build_flags)
+    add_test(NAME sizemaptest COMMAND sizemaptest)
+
     add_executable(smashtest tests/smash.c ${NODIST_SRC})
     target_link_libraries(smashtest PRIVATE gc gc_build_flags)
     add_test(NAME smashtest COMMAND smashtest)
