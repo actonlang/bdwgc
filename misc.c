@@ -228,6 +228,20 @@ GC_set_handle_fork(int value)
 }
 
 /*
+ * The maximum size (in granules) of the entries filled in by
+ * `GC_init_size_map()`.  It is not less than 8 even if `GC_TINY_FREELISTS`
+ * is smaller: `GC_extend_size_map()` fills in a range of entries which
+ * starts at three quarters, or seven eighths plus one, of the requested
+ * size rounded up to granules, and for a size of up to 8 granules that
+ * start might be above the requested size itself.
+ */
+#if GC_TINY_FREELISTS > 9
+#  define SIZE_MAP_INIT_GRANULES (GC_TINY_FREELISTS - 1)
+#else
+#  define SIZE_MAP_INIT_GRANULES 8
+#endif
+
+/*
  * Set things up so that `GC_size_map[i] >= granules(i)`, but not too
  * much bigger and so that `GC_size_map` contains relatively few
  * distinct entries.  This was originally stolen from Russ Atkinson's
@@ -241,11 +255,11 @@ GC_init_size_map(void)
   /* Map size 0 to something bigger; this avoids problems at lower levels. */
   GC_size_map[0] = 1;
 
-  for (; i <= GRANULES_TO_BYTES(GC_TINY_FREELISTS - 1) - EXTRA_BYTES; i++) {
+  for (; i <= GRANULES_TO_BYTES(SIZE_MAP_INIT_GRANULES) - EXTRA_BYTES; i++) {
     GC_size_map[i] = ALLOC_REQUEST_GRANS(i);
 #ifndef _MSC_VER
     /* Seems to tickle bug in VC++ 2008 for x86_64. */
-    GC_ASSERT(GC_size_map[i] < GC_TINY_FREELISTS);
+    GC_ASSERT(GC_size_map[i] <= SIZE_MAP_INIT_GRANULES);
 #endif
   }
   /* We leave the rest of the array to be filled in on demand. */
