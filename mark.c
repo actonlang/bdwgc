@@ -1464,7 +1464,12 @@ alloc_mark_stack(size_t n)
 #endif
 
   GC_ASSERT(I_HOLD_LOCK());
-  new_stack = (mse *)GC_scratch_alloc(n * sizeof(struct GC_ms_entry));
+  if (UNLIKELY(n > GC_SIZE_MAX / sizeof(struct GC_ms_entry))) {
+    /* The size in bytes does not fit in `size_t`. */
+    new_stack = NULL;
+  } else {
+    new_stack = (mse *)GC_scratch_alloc(n * sizeof(struct GC_ms_entry));
+  }
 #ifdef GWW_VDB
   /*
    * Do not recycle a stack segment obtained with the wrong flags.
@@ -1508,6 +1513,8 @@ alloc_mark_stack(size_t n)
 GC_INNER void
 GC_mark_init(void)
 {
+  GC_STATIC_ASSERT(INITIAL_MARK_STACK_SIZE
+                   <= GC_SIZE_MAX / sizeof(struct GC_ms_entry));
   alloc_mark_stack(INITIAL_MARK_STACK_SIZE);
 }
 
