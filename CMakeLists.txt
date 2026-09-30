@@ -1137,6 +1137,10 @@ if(BUILD_TESTING)
     target_link_libraries(mallocmanytest PRIVATE gc gc_build_flags)
     add_test(NAME mallocmanytest COMMAND mallocmanytest)
 
+    add_executable(memaligntest tests/memalign.c ${NODIST_SRC})
+    target_link_libraries(memaligntest PRIVATE gc gc_build_flags)
+    add_test(NAME memaligntest COMMAND memaligntest)
+
     add_executable(middletest tests/middle.c ${NODIST_SRC})
     target_link_libraries(middletest PRIVATE gc gc_build_flags)
     add_test(NAME middletest COMMAND middletest)
