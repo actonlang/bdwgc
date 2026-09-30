@@ -71,6 +71,11 @@ check_PROGRAMS += mallocmanytest
 mallocmanytest_SOURCES = tests/mallocmany.c
 mallocmanytest_LDADD = $(test_ldadd)
 
+TESTS += memaligntest$(EXEEXT)
+check_PROGRAMS += memaligntest
+memaligntest_SOURCES = tests/memalign.c
+memaligntest_LDADD = $(test_ldadd)
+
 TESTS += middletest$(EXEEXT)
 check_PROGRAMS += middletest
 middletest_SOURCES = tests/middle.c
@@ -251,6 +256,7 @@ check-without-test-driver: $(TESTS)
 	./hugetest$(EXEEXT)
 	./leaktest$(EXEEXT)
 	./mallocmanytest$(EXEEXT)
+	./memaligntest$(EXEEXT)
 	./middletest$(EXEEXT)
 	./realloctest$(EXEEXT)
 	./smashtest$(EXEEXT)
