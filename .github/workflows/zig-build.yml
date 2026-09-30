@@ -150,3 +150,36 @@ jobs:
           -Denable_threads=${{ matrix.enable_threads }}
           -Denable_werror
           test
+
+  acton-options:
+    name: >-
+      ${{ matrix.os }} Acton options block_size:${{ matrix.block_size }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 7
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        zig_version: ["0.16.0"]
+        os: [macos-latest, ubuntu-latest, windows-latest]
+        block_size: [16384, 65536]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ matrix.zig_version }}
+
+      - name: Build and run tests
+        run: >
+          zig build
+          -Dblock_size=${{ matrix.block_size }}
+          -Ddisable_realloc_free
+          -Ddisable_thread_local_warmup
+          -Denable_gc_assertions
+          -Denable_mark_range_stealing
+          -Denable_werror
+          -Dinitial_mark_stack_size=1048576
+          test
