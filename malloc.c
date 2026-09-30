@@ -65,6 +65,18 @@ GC_alloc_large(size_t lb_adjusted, int kind, unsigned flags, size_t align_m1)
     LOCK();
   }
   GC_ASSERT(lb_adjusted != 0 && (lb_adjusted & (GC_GRANULE_BYTES - 1)) == 0);
+  if (lb_adjusted <= MAXOBJBYTES) {
+    /*
+     * A small object (it is allocated here only if aligned) is placed
+     * in a block of objects of its size.  The collector clears the free
+     * lists, and sweeps the blocks, only of the kinds having the reclaim
+     * list, thus allocate the latter before the first block of the kind.
+     */
+    struct obj_kind *ok = &GC_obj_kinds[kind];
+
+    if (UNLIKELY(NULL == ok->ok_reclaim_list) && !GC_alloc_reclaim_list(ok))
+      return NULL;
+  }
   n_blocks = OBJ_SZ_TO_BLOCKS_CHECKED(SIZET_SAT_ADD(lb_adjusted, align_m1));
 
   /* Do our share of marking work. */
