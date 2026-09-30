@@ -110,6 +110,7 @@ jobs:
             cflags_extra: -m32 -D NO_MPROTECT_VDB -D NO_SOFT_VDB
             c_compiler: gcc
             install_multilib: true
+            expect_vdb: Using userfaultfd in write-protect mode
           - os: ubuntu-latest
             conf_options: >-
               --disable-parallel-mark --disable-shared
@@ -344,6 +345,8 @@ jobs:
           - os: ubuntu-latest
             conf_options: --enable-cplusplus --enable-gc-assertions
             cflags_extra: -D HBLKSIZE=65536 -D _FORTIFY_SOURCE=2
+            expect_vdb: Using userfaultfd in write-protect mode
+            expect_mprotect_vdb: true
           - os: ubuntu-latest
             conf_options: >-
               --enable-cplusplus --enable-gc-assertions --enable-gc-debug
@@ -383,11 +386,36 @@ jobs:
           - os: ubuntu-latest
             conf_options: --enable-cplusplus --enable-gc-debug
             c_compiler: gcc
+          - os: macos-latest
+            conf_options: --enable-gc-assertions
+            cflags_extra: >-
+              -D GC_MARKERS=8 -D INITIAL_MARK_STACK_SIZE=1048576
+              -D STEAL_MARK_STACK_RANGES -D TEST_EXPLICIT_GC_INIT
+          - os: ubuntu-latest
+            conf_options: --enable-gc-assertions
+            cflags_extra: >-
+              -D GC_MARKERS=8 -D INITIAL_MARK_STACK_SIZE=1048576
+              -D STEAL_MARK_STACK_RANGES -D TEST_EXPLICIT_GC_INIT
+          - os: macos-latest
+            conf_options: --enable-gc-assertions
+            cflags_extra: >-
+              -D GC_MARKERS=8 -D STEAL_MARK_STACK_RANGES
+              -D TEST_EXPLICIT_GC_INIT
+          - os: ubuntu-latest
+            conf_options: --enable-gc-assertions
+            cflags_extra: >-
+              -D GC_MARKERS=8 -D STEAL_MARK_STACK_RANGES
+              -D TEST_EXPLICIT_GC_INIT
           - os: ubuntu-latest
             conf_options: --enable-gc-assertions
             cflags_extra: >-
               -D MARK_BIT_PER_OBJ -D USE_CUSTOM_SPECIFIC
               -D _FORTIFY_SOURCE=2 -m32
+            install_multilib: true
+          - os: ubuntu-latest
+            conf_options: --enable-gc-assertions
+            cflags_extra: -D SMALL_CONFIG -m32
+            c_compiler: gcc
             install_multilib: true
           - os: ubuntu-latest
             conf_options: --enable-gc-assertions --enable-gc-debug
@@ -396,6 +424,7 @@ jobs:
           - os: macos-latest
             conf_options: --enable-gc-assertions --enable-large-config
             cflags_extra: -D HBLKSIZE=65536
+            expect_vdb: Emulating dirty bits with mprotect/signals
           - os: ubuntu-latest
             conf_options: --enable-gc-assertions --enable-large-config
             cflags_extra: -D _FORTIFY_SOURCE=2 -march=native -mx32
@@ -530,9 +559,22 @@ jobs:
             fi
           done
 
+      - name: Check VDB used by gctest
+        if: ${{ matrix.expect_vdb }}
+        run: grep -F "${{ matrix.expect_vdb }}" build/gctest.log
+
       - name: Test enforcing mprotect-based VDB
         if: ${{ !matrix.skip_tests }}
-        run: GC_USE_GETWRITEWATCH=0 build/gctest
+        run: >
+          set -o pipefail;
+          GC_USE_GETWRITEWATCH=0 build/gctest
+          | tee build/gctest-mprotect.log
+
+      - name: Check VDB used by gctest enforcing mprotect-based one
+        if: ${{ matrix.expect_mprotect_vdb }}
+        run: >
+          grep -F "Emulating dirty bits with mprotect/signals"
+          build/gctest-mprotect.log
 
       - name: Run tests with Sanitizer runtime options
         if: ${{ matrix.extra_sanitizer_checks }}
