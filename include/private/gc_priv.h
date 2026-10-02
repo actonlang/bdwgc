@@ -326,6 +326,23 @@ EXTERN_C_END
 #  endif
 #endif
 
+/*
+ * `GC_ATTR_ALWAYS_INLINE` is placed after `GC_INLINE` to make the
+ * compiler inline the function regardless of its size heuristics.
+ * It is not used with the sanitizers because some compilers reject (as
+ * an error) inlining of an `always_inline` function into a caller with
+ * a different `no_sanitize` attribute.  The client may define the macro
+ * to empty to leave the decision to the compiler.
+ */
+#ifndef GC_ATTR_ALWAYS_INLINE
+#  if GC_GNUC_PREREQ(3, 1) && !defined(ADDRESS_SANITIZER) \
+      && !defined(MEMORY_SANITIZER) && !defined(THREAD_SANITIZER)
+#    define GC_ATTR_ALWAYS_INLINE __attribute__((__always_inline__))
+#  else
+#    define GC_ATTR_ALWAYS_INLINE /*< empty */
+#  endif
+#endif
+
 #ifndef GC_API_OSCALL
 /* This is used to identify GC routines called by name from OS. */
 #  if defined(__GNUC__)
