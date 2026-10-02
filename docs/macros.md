@@ -656,11 +656,14 @@ freeing it after moving its contents to a new object (see
 `GC_set_realloc_no_free()`).  The mode could be changed at run-time.
 
 `GC_ATTR_ALWAYS_INLINE` - The attribute which forces the inlining of
-`GC_ms_push_contents_hdr()`, e.g. into `GC_mark_from()`.  By default it is
-`__attribute__((__always_inline__))` with GCC and clang unless the address,
-memory or thread sanitizer is used, and empty otherwise.  Defining it to
-empty leaves the inlining to the compiler (clang then calls
-`GC_ms_push_contents_hdr()` out of line from `GC_mark_from()`).
+`GC_ms_push_contents_hdr()`, e.g. into `GC_mark_from()`, and of the
+thread-local allocation into `GC_malloc()`, `GC_malloc_atomic()` and
+`GC_malloc_kind()`.  By default it is `__attribute__((__always_inline__))`
+with GCC and clang unless the address, memory or thread sanitizer is used,
+and empty otherwise.  Defining it to empty leaves the inlining to the
+compiler (clang then calls `GC_ms_push_contents_hdr()` out of line from
+`GC_mark_from()`, but the thread-local allocation stays inline in
+`GC_malloc()` and `GC_malloc_atomic()`).
 
 `GC_NO_PUSH_PREFETCH` - Turns off the prefetch of an object when it is
 pushed onto the mark stack.  Instead, `GC_mark_from()`, `GC_mark_and_push()`
