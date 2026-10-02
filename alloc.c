@@ -811,6 +811,19 @@ GC_get_max_prior_attempts(void)
   return max_prior_attempts;
 }
 
+/*
+ * Disable the thread cancellation around the collection work in
+ * `GC_collect_a_little_inner()`.  If `GC_NO_CANCEL_STATE_SKIP` macro is
+ * defined, then the cancellation is disabled for the whole call instead.
+ */
+#ifdef GC_NO_CANCEL_STATE_SKIP
+#  define DISABLE_CANCEL_FOR_WORK(state) (void)0
+#  define RESTORE_CANCEL_FOR_WORK(state) (void)0
+#else
+#  define DISABLE_CANCEL_FOR_WORK(state) DISABLE_CANCEL(state)
+#  define RESTORE_CANCEL_FOR_WORK(state) RESTORE_CANCEL(state)
+#endif
+
 GC_INNER void
 GC_collect_a_little_inner(size_t n_blocks)
 {
@@ -823,13 +836,16 @@ GC_collect_a_little_inner(size_t n_blocks)
    * a thread-local free list and at every allocation of a large object,
    * thus the thread cancellation (disabling it is a system call on some
    * targets, e.g. Darwin) is disabled only if there is collection work
-   * to do.
+   * to do, unless `GC_NO_CANCEL_STATE_SKIP` macro is defined.
    */
+#ifdef GC_NO_CANCEL_STATE_SKIP
+  DISABLE_CANCEL(cancel_state);
+#endif
   if (GC_incremental && GC_collection_in_progress()) {
     size_t i;
     size_t max_deficit = GC_rate * n_blocks;
 
-    DISABLE_CANCEL(cancel_state);
+    DISABLE_CANCEL_FOR_WORK(cancel_state);
     ENTER_GC();
 #ifdef PARALLEL_MARK
     if (GC_time_limit != GC_TIME_UNLIMITED)
@@ -872,12 +888,15 @@ GC_collect_a_little_inner(size_t n_blocks)
       GC_mark_deficit
           = GC_mark_deficit > max_deficit ? GC_mark_deficit - max_deficit : 0;
     }
-    RESTORE_CANCEL(cancel_state);
+    RESTORE_CANCEL_FOR_WORK(cancel_state);
   } else if (!GC_dont_gc && GC_should_collect()) {
-    DISABLE_CANCEL(cancel_state);
+    DISABLE_CANCEL_FOR_WORK(cancel_state);
     GC_maybe_gc();
-    RESTORE_CANCEL(cancel_state);
+    RESTORE_CANCEL_FOR_WORK(cancel_state);
   }
+#ifdef GC_NO_CANCEL_STATE_SKIP
+  RESTORE_CANCEL(cancel_state);
+#endif
 }
 
 #if !defined(NO_FIND_LEAK) || !defined(SHORT_DBG_HDRS)

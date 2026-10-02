@@ -548,7 +548,8 @@ GC_disclaim_and_reclaim_or_free_small_block(struct hblk *hbp)
  * builds by coalescing the blocks one at a time, except that the split
  * points may differ for a free block which would reach `SIZET_SIGNB` bytes
  * (on 32-bit targets) and on CHERI purecap targets.  Each run is added to
- * a free list once.
+ * a free list once.  If `GC_NO_FREE_BLOCK_RUNS` macro is defined, then each
+ * block is freed at once instead.
  */
 struct reclaim_walk_s {
   GC_bool report_if_found;
@@ -590,14 +591,20 @@ GC_add_to_pending_run(struct reclaim_walk_s *pw, hdr *hhdr, size_t bytes)
 
   GC_ASSERT(I_HOLD_LOCK());
   GC_ASSERT(bytes >= HBLKSIZE && modHBLKSZ(bytes) == 0);
+#ifdef GC_NO_FREE_BLOCK_RUNS
+  /* Free the block at once.  The run stays empty. */
+  UNUSED_ARG(pw);
+  UNUSED_ARG(bytes);
+  GC_freehblk(hbp);
+#else
   /* Remove the forwarding counts of a multi-block object. */
   GC_remove_counts(hbp, bytes);
   if (pw->run != NULL && ADDR(hbp) + bytes == ADDR(pw->run)
       && ((pw->run_bytes + bytes) & SIZET_SIGNB) == 0
-#ifdef CHERI_PURECAP
+#  ifdef CHERI_PURECAP
       && CAPABILITY_COVERS_RANGE(hbp, ADDR(pw->run),
                                  ADDR(pw->run) + pw->run_bytes)
-#endif
+#  endif
   ) {
     GC_remove_header(pw->run);
     pw->run_bytes += bytes;
@@ -607,6 +614,7 @@ GC_add_to_pending_run(struct reclaim_walk_s *pw, hdr *hhdr, size_t bytes)
   }
   pw->run = hbp;
   pw->run_hdr = hhdr;
+#endif
 }
 
 /*
