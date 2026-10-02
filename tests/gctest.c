@@ -1281,6 +1281,51 @@ test_tfls(void)
 #endif
 }
 
+#ifndef DBG_HDRS_ALL
+/*
+ * Allocate collectable and atomic objects of the smallest sizes and of
+ * the sizes around the biggest one served by the thread-local free lists,
+ * check their size, and check that the collectable ones are cleared.
+ * Each size is allocated enough times to get past the allocations from
+ * the global free lists which a thread does before it takes a thread-local
+ * free list of the size (for any `HBLKSIZE` up to 64 KB).
+ */
+static void
+test_small_sizes(void)
+{
+  size_t extra_bytes
+      = GC_get_all_interior_pointers() && !GC_get_dont_add_byte_at_end() ? 1
+                                                                         : 0;
+  size_t lb;
+
+  for (lb = 0; lb <= GC_RAW_BYTES_FROM_INDEX(GC_TINY_FREELISTS + 1); lb++) {
+    size_t i;
+    size_t n = 32 + 8192 / (lb / GC_GRANULE_BYTES + 1);
+
+    if (lb > GC_RAW_BYTES_FROM_INDEX(2)
+        && lb + GC_RAW_BYTES_FROM_INDEX(3)
+               < GC_RAW_BYTES_FROM_INDEX(GC_TINY_FREELISTS)) {
+      /* Skip the sizes in the middle. */
+      continue;
+    }
+    for (i = 0; i < n; i++) {
+      void **p = (void **)checkOOM(GC_malloc(lb));
+      const void *q = checkOOM(GC_malloc_atomic(lb));
+      size_t j;
+
+      AO_fetch_and_add1(&collectable_count);
+      AO_fetch_and_add1(&atomic_count);
+      TEST_ASSERT(GC_size(p) >= lb + extra_bytes);
+      TEST_ASSERT(GC_size(q) >= lb + extra_bytes);
+      for (j = 0; j < GC_size(p) / sizeof(void *); j++)
+        TEST_ASSERT(NULL == p[j]);
+      GC_PTR_STORE_AND_DIRTY(p, q);
+      GC_reachable_here(p);
+    }
+  }
+}
+#endif /* !DBG_HDRS_ALL */
+
 #if defined(THREADS) && defined(GC_DEBUG)
 #  ifdef VERY_SMALL_CONFIG
 #    define TREE_HEIGHT 12
@@ -1921,6 +1966,9 @@ run_one_test(void)
 static void
 run_single_threaded_test(void)
 {
+#ifndef DBG_HDRS_ALL
+  test_small_sizes();
+#endif
   GC_disable();
   GC_FREE(checkOOM(GC_MALLOC(100)));
   /* Add a block to heap. */
