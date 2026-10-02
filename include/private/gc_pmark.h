@@ -233,8 +233,9 @@ GC_ms_push_obj_hdr(ptr_t obj, const hdr *hhdr, mse *mark_stack_top,
  * preceding header calculation will succeed for a pointer past the
  * first page of an object, only if it is in fact a valid pointer
  * to the object.  Thus we can omit the otherwise necessary tests here.
+ * This is inlined always, as it is on the hot path of `GC_mark_from()`.
  */
-GC_INLINE mse *
+GC_INLINE GC_ATTR_ALWAYS_INLINE mse *
 GC_ms_push_contents_hdr(ptr_t current, hdr *hhdr, mse *mark_stack_top,
                         mse *mark_stack_limit, ptr_t source,
                         GC_bool do_offset_check)
