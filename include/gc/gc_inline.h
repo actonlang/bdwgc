@@ -75,8 +75,11 @@ extern "C" {
 
 /**
  * Determine if the collector has been configured not to pad the
- * allocated objects even in the all-interior-pointers mode.
- * Meaningful only if `GC_get_all_interior_pointers()` returns 1.
+ * allocated objects even in the all-interior-pointers mode (at build
+ * time, by `GC_set_dont_add_byte_at_end()`, or by
+ * `GC_DONT_ADD_BYTE_AT_END` environment variable, which is read at the
+ * collector initialization).  Meaningful only if
+ * `GC_get_all_interior_pointers()` returns 1.
  */
 GC_API int GC_CALL GC_get_dont_add_byte_at_end(void);
 

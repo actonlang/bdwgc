@@ -193,17 +193,6 @@ GC_get_version(void)
          | GC_VERSION_MICRO;
 }
 
-GC_API int GC_CALL
-GC_get_dont_add_byte_at_end(void)
-{
-#if MAX_EXTRA_BYTES > 0
-  /* This is meaningful only if `GC_all_interior_pointers`. */
-  return 0;
-#else
-  return 1;
-#endif
-}
-
 /* Some more variables. */
 
 #ifdef GC_DONT_EXPAND

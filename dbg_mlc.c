@@ -520,7 +520,23 @@ GC_debug_malloc(size_t lb, GC_EXTRA_PARAMS)
 #  define ADD_DEBUG_UNCOLLECTABLE_BYTES(lb) \
     SIZET_SAT_ADD(0 == (lb) ? 1 : (lb), UNCOLLECTABLE_DEBUG_BYTES)
 #else
-#  define ADD_DEBUG_BYTES(lb) SIZET_SAT_ADD(lb, DEBUG_BYTES)
+#  if MAX_EXTRA_BYTES > 0
+/*
+ * Return `lb` plus `DEBUG_BYTES` value.  The latter depends on
+ * `EXTRA_BYTES` value which might be changed by `GC_init()`, thus the
+ * collector is initialized first.
+ */
+static size_t
+add_debug_bytes(size_t lb)
+{
+  if (UNLIKELY(!GC_is_initialized))
+    GC_init();
+  return SIZET_SAT_ADD(lb, DEBUG_BYTES);
+}
+#    define ADD_DEBUG_BYTES(lb) add_debug_bytes(lb)
+#  else
+#    define ADD_DEBUG_BYTES(lb) SIZET_SAT_ADD(lb, DEBUG_BYTES)
+#  endif
 #  define ADD_DEBUG_UNCOLLECTABLE_BYTES(lb) \
     SIZET_SAT_ADD(lb, UNCOLLECTABLE_DEBUG_BYTES)
 #endif
@@ -538,6 +554,12 @@ GC_debug_malloc_inner(size_t lb, GC_bool is_redirect, GC_EXTRA_PARAMS)
    * We always do the latter.
    */
 #if defined(_FORTIFY_SOURCE) && !defined(__clang__)
+#  if MAX_EXTRA_BYTES > 0 && !defined(SHORT_DBG_HDRS)
+  if (UNLIKELY(!GC_is_initialized)) {
+    /* `DEBUG_BYTES` value might be changed by `GC_init()`. */
+    GC_init();
+  }
+#  endif
   /* Workaround to avoid "exceeds maximum object size" gcc warning. */
   sz = lb < GC_SIZE_MAX - DEBUG_BYTES ? (
 #  ifdef SHORT_DBG_HDRS

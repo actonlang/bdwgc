@@ -1618,6 +1618,14 @@ run_one_test(void)
   x = (char *)checkOOM(GC_malloc(16));
   AO_fetch_and_add1(&collectable_count);
   TEST_ASSERT(GC_base(GC_PTR_ADD(x, 13)) == x);
+  if (GC_get_all_interior_pointers() && !GC_get_dont_add_byte_at_end()) {
+    /* The object is padded, thus the pointer past its end is valid. */
+    TEST_ASSERT(GC_size(x) > 16);
+    TEST_ASSERT(GC_base(GC_PTR_ADD(x, 16)) == x);
+  } else {
+    /* The size is rounded up to a granule only. */
+    TEST_ASSERT(GC_size(x) == (16 > GC_GRANULE_BYTES ? 16 : GC_GRANULE_BYTES));
+  }
   TEST_ASSERT(GC_is_heap_ptr(x));
   TEST_ASSERT(!GC_is_heap_ptr(&x));
   TEST_ASSERT(!GC_is_heap_ptr(&fail_count));
