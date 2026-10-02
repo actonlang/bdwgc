@@ -241,12 +241,36 @@ GC_get_tlfs(void)
 #  endif
 }
 
+/*
+ * The slow path of `GC_malloc_kind()`: the size is too big for the
+ * thread-local free lists, or the free list is empty or holds a counter,
+ * or the free-list entry should be dirtied manually.  `tiny_fl` is the
+ * thread-local free-list array of `kind`.  Not inlined, so that the fast
+ * path does not need a stack frame to preserve its arguments across the
+ * calls made here.
+ */
+STATIC GC_ATTR_NOINLINE void *
+GC_malloc_kind_tl_slow(size_t lb, int kind, void **tiny_fl)
+{
+  size_t lg = ALLOC_REQUEST_GRANS(lb);
+  void *result;
+
+  GC_FAST_MALLOC_GRANS(
+      result, lg, tiny_fl, DIRECT_GRANULES, kind,
+      GC_malloc_kind_global(lb, kind),
+      (void)(kind == PTRFREE ? NULL : (obj_link(result) = NULL)));
+#  ifdef LOG_ALLOCS
+  GC_log_printf("GC_malloc_kind(%lu, %d) returned %p, recent GC #%lu\n",
+                (unsigned long)lb, kind, result, (unsigned long)GC_gc_no);
+#  endif
+  return result;
+}
+
 GC_API GC_ATTR_MALLOC void *GC_CALL
 GC_malloc_kind(size_t lb, int kind)
 {
-  size_t lg;
   void *tsd;
-  void *result;
+  void **tiny_fl;
 
 #  if MAXOBJKINDS > THREAD_FREELISTS_KINDS
   if (UNLIKELY(kind >= THREAD_FREELISTS_KINDS))
@@ -258,16 +282,46 @@ GC_malloc_kind(size_t lb, int kind)
 
   GC_ASSERT(GC_is_initialized);
   GC_ASSERT(GC_is_thread_tsd_valid(tsd));
-  lg = ALLOC_REQUEST_GRANS(lb);
-  GC_FAST_MALLOC_GRANS(
-      result, lg, ((GC_tlfs)tsd)->_freelists[kind], DIRECT_GRANULES, kind,
-      GC_malloc_kind_global(lb, kind),
-      (void)(kind == PTRFREE ? NULL : (obj_link(result) = NULL)));
+  tiny_fl = ((GC_tlfs)tsd)->_freelists[kind];
+  /*
+   * The case of a nonempty free list of `GC_FAST_MALLOC_GRANS()` follows.
+   * The size check ensures that `lg` is less than `GC_TINY_FREELISTS`
+   * without the saturated addition of `ALLOC_REQUEST_GRANS()`.  (The
+   * biggest size which fits the tiny free lists only if `EXTRA_BYTES` is
+   * zero is left to the slow path, which handles it in the same way.)
+   */
+  if (LIKELY(lb
+             <= GRANULES_TO_BYTES(GC_TINY_FREELISTS - 1) - MAX_EXTRA_BYTES)) {
+    size_t lg = BYTES_TO_GRANULES(lb + (GC_GRANULE_BYTES - 1) + EXTRA_BYTES);
+    void **my_fl = tiny_fl + lg;
+    void *result = *my_fl;
+
+    GC_ASSERT(lg == ALLOC_REQUEST_GRANS(lb));
+    /*
+     * The free-list entry is dirtied (by `GC_end_stubborn_change()` in
+     * `GC_FAST_MALLOC_GRANS()`) only in the manual VDB mode, which is
+     * left to the slow path.  Thus there is no call here.
+     */
+    if (LIKELY(ADDR(result) > DIRECT_GRANULES + GC_TINY_FREELISTS + 1)
+        && (PTRFREE == kind || LIKELY(!GC_manual_vdb))) {
+      void *next = *(void **)result;
+
+      GC_FAST_M_AO_STORE(my_fl, next);
+      if (kind != PTRFREE)
+        obj_link(result) = NULL;
+      GC_PREFETCH_FOR_WRITE(next);
+      if (kind != PTRFREE)
+        GC_reachable_here(next);
+      GC_ASSERT(GC_size(result) >= GRANULES_TO_BYTES(lg));
+      GC_ASSERT(PTRFREE == kind || NULL == ((void **)result)[1]);
 #  ifdef LOG_ALLOCS
-  GC_log_printf("GC_malloc_kind(%lu, %d) returned %p, recent GC #%lu\n",
-                (unsigned long)lb, kind, result, (unsigned long)GC_gc_no);
+      GC_log_printf("GC_malloc_kind(%lu, %d) returned %p, recent GC #%lu\n",
+                    (unsigned long)lb, kind, result, (unsigned long)GC_gc_no);
 #  endif
-  return result;
+      return result;
+    }
+  }
+  return GC_malloc_kind_tl_slow(lb, kind, tiny_fl);
 }
 
 #  ifdef THREAD_GCJ_FREELISTS
