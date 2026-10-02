@@ -521,14 +521,23 @@ GC_INNER void GC_print_finalization_stats(void);
 #  define EXTRA_BYTES MAX_EXTRA_BYTES
 #else
 #  define MAX_EXTRA_BYTES 1
+/*
+ * The number of bytes added to the size of each object to recognize
+ * pointers just past the end of the object: 1 if `GC_all_interior_pointers`
+ * and the padding is not turned off by `GC_set_dont_add_byte_at_end()` (or
+ * `GC_DONT_ADD_BYTE_AT_END` environment variable), 0 otherwise.  Computed
+ * by `GC_init()`, `GC_set_all_interior_pointers()` and
+ * `GC_set_dont_add_byte_at_end()`.
+ */
+GC_EXTERN int GC_extra_bytes;
 #  ifdef LINT2
 /*
- * Explicitly instruct the code analysis tool that `GC_all_interior_pointers`
+ * Explicitly instruct the code analysis tool that `GC_extra_bytes`
  * is assumed to have only value of 0 or 1.
  */
-#    define EXTRA_BYTES ((size_t)(GC_all_interior_pointers ? 1 : 0))
+#    define EXTRA_BYTES ((size_t)(GC_extra_bytes ? 1 : 0))
 #  else
-#    define EXTRA_BYTES ((size_t)GC_all_interior_pointers)
+#    define EXTRA_BYTES ((size_t)GC_extra_bytes)
 #  endif
 #endif
 

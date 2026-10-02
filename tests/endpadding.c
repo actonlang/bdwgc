@@ -3,15 +3,17 @@
  * collector initialization requires, including the object of the first
  * allocation, which initializes the collector.  In the
  * all-interior-pointers mode, each collectible object is enlarged by at
- * least a byte, so that a pointer just past its end is recognized, and
- * the descriptor of `NORMAL` objects (set up by `GC_init`) excludes the
- * last pointer-sized word of an object from the scanning.
- * `GC_ALL_INTERIOR_POINTERS` environment variable turns the mode on at
- * the initialization.  Each case (a way to set the mode, and the
- * allocation function called first) runs in a child process of its own,
- * as the collector is initialized once per process, except for the case
- * of the unchanged mode, which runs in this process (the only case if
- * `fork()` is unavailable).
+ * least a byte (unless the padding is turned off), so that a pointer just
+ * past its end is recognized, and the descriptor of `NORMAL` objects (set
+ * up by `GC_init`) excludes the last pointer-sized word of an object from
+ * the scanning.  At the initialization, `GC_ALL_INTERIOR_POINTERS`
+ * environment variable turns the mode on, and `GC_DONT_ADD_BYTE_AT_END`
+ * one turns the padding off (or on, if the value is "0").  Each case (a
+ * way to set the mode, and the allocation function called first) runs in
+ * a child process of its own, as the collector is initialized once per
+ * process, except for the case of the unchanged mode, which runs in this
+ * process (the only case if `fork()` is unavailable).  Also check that
+ * the padding setting cannot be changed after the initialization.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -65,6 +67,15 @@ enum {
    * `GC_ALL_INTERIOR_POINTERS` environment variable turns it on.
    */
   MODE_ALL_INTERIOR_BY_ENV,
+  /* Turn the padding off by `GC_set_dont_add_byte_at_end()`. */
+  MODE_NO_PADDING,
+  /* `GC_DONT_ADD_BYTE_AT_END` environment variable turns the padding off. */
+  MODE_NO_PADDING_BY_ENV,
+  /*
+   * Turn the padding off by `GC_set_dont_add_byte_at_end()` while
+   * `GC_DONT_ADD_BYTE_AT_END` environment variable set to "0" turns it on.
+   */
+  MODE_PADDING_BY_ENV,
   N_MODES
 };
 
@@ -298,10 +309,21 @@ set_mode(int mode)
     return;
 #ifdef RUN_CHILD_CASES
   (void)unsetenv("GC_ALL_INTERIOR_POINTERS");
+  (void)unsetenv("GC_DONT_ADD_BYTE_AT_END");
   switch (mode) {
   case MODE_ALL_INTERIOR_BY_ENV:
     GC_set_all_interior_pointers(0);
     CHECK(setenv("GC_ALL_INTERIOR_POINTERS", "1", 1) == 0);
+    break;
+  case MODE_NO_PADDING:
+    GC_set_dont_add_byte_at_end(1);
+    break;
+  case MODE_NO_PADDING_BY_ENV:
+    CHECK(setenv("GC_DONT_ADD_BYTE_AT_END", "1", 1) == 0);
+    break;
+  case MODE_PADDING_BY_ENV:
+    GC_set_dont_add_byte_at_end(1);
+    CHECK(setenv("GC_DONT_ADD_BYTE_AT_END", "0", 1) == 0);
     break;
   }
 #endif
@@ -312,12 +334,13 @@ static void
 check_mode(int mode)
 {
   int all_interior_pointers = initial_all_interior_pointers;
-  int no_padding = 0;
+  int no_padding = MODE_NO_PADDING == mode || MODE_NO_PADDING_BY_ENV == mode;
 
 #  if defined(NO_GETENV) && !defined(CPPCHECK)
-  /* The environment variable is ignored.  Only the setter takes effect. */
+  /* The environment variables are ignored.  Only the setters take effect. */
   if (MODE_ALL_INTERIOR_BY_ENV == mode)
     all_interior_pointers = 0;
+  no_padding = MODE_NO_PADDING == mode || MODE_PADDING_BY_ENV == mode;
 #  else
   if (MODE_ALL_INTERIOR_BY_ENV == mode)
     all_interior_pointers = 1;
@@ -371,6 +394,35 @@ run_case(int mode, int first)
   GC_reachable_here(objs);
 }
 
+static int late_setter_warnings;
+
+static void GC_CALLBACK
+count_late_setter_warning(const char *msg, GC_uintptr_t arg)
+{
+  (void)arg;
+  if (strstr(msg, "GC_set_dont_add_byte_at_end") != NULL)
+    late_setter_warnings++;
+}
+
+/*
+ * Check that the padding setting is not changed after the initialization
+ * (with a warning).
+ */
+static void
+check_late_setter(void)
+{
+  GC_warn_proc old_proc = GC_get_warn_proc();
+  int no_padding = GC_get_dont_add_byte_at_end();
+
+  GC_set_warn_proc(count_late_setter_warning);
+  GC_set_dont_add_byte_at_end(!no_padding);
+  GC_set_warn_proc(old_proc);
+  CHECK(GC_get_dont_add_byte_at_end() == no_padding);
+#if MAX_EXTRA_BYTES > 0
+  CHECK(1 == late_setter_warnings);
+#endif
+}
+
 #ifdef RUN_CHILD_CASES
 /* Run a case in a child process.  Return 0 if `fork()` failed. */
 static int
@@ -415,6 +467,7 @@ main(void)
   }
 #endif
   run_case(MODE_AS_IS, ALLOC_LARGE);
+  check_late_setter();
   if (GC_get_find_leak())
     printf("This test program is not designed for leak detection mode\n");
   printf("SUCCEEDED\n");

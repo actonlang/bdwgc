@@ -454,6 +454,12 @@ GC_generic_malloc_uncollectable(size_t lb, int kind)
   size_t lb_orig = lb;
 
   GC_ASSERT(kind < MAXOBJKINDS);
+#if MAX_EXTRA_BYTES > 0
+  if (UNLIKELY(!GC_is_initialized)) {
+    /* `EXTRA_BYTES` value might be changed by `GC_init()`. */
+    GC_init();
+  }
+#endif
   if (EXTRA_BYTES != 0 && LIKELY(lb != 0)) {
     /*
      * We do not need the extra byte, since this will not be collected

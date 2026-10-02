@@ -120,7 +120,9 @@ Unexpected heap growth can be due to one of the following:
      it may be worth considering. If the collector recognizes interior
      pointers, object sizes are increased, so that one-past-the-end pointers
      are correctly recognized. The collector can be configured not to do this
-     (`-D DONT_ADD_BYTE_AT_END`).
+     at build time (`-D DONT_ADD_BYTE_AT_END`), or at run-time, before the
+     collector initialization, by `GC_set_dont_add_byte_at_end()` or
+     `GC_DONT_ADD_BYTE_AT_END` environment variable.
 
 The collector rounds up object sizes so the result fits well into the chunk
 size (`HBLKSIZE`, normally 4 KB on 32-bit machines, 8 KB on 64-bit ones) used

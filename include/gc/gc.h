@@ -251,6 +251,24 @@ GC_API void GC_CALL GC_set_all_interior_pointers(int);
 GC_API int GC_CALL GC_get_all_interior_pointers(void);
 
 /**
+ * Turn off (if the argument is nonzero) the padding of objects in the
+ * all-interior-pointers mode.  Normally, in this mode, the size of every
+ * collectible object is increased by at least a byte, so that a pointer
+ * just past the end of an object keeps the object alive.  Without the
+ * padding, e.g. a 32-byte object occupies 32 bytes instead of 48, but the
+ * client must never rely on a pointer just past the end of an object being
+ * the only reference to it (such a pointer is treated as a pointer to the
+ * next object, if any).  Must be called before the collector
+ * initialization (a later call is ignored with a warning).
+ * `GC_DONT_ADD_BYTE_AT_END` environment variable, if set, overrides the
+ * setting at the initialization.  Has no effect if the collector is built
+ * with `DONT_ADD_BYTE_AT_END` macro defined (then the padding is always
+ * off).  The setting is returned by `GC_get_dont_add_byte_at_end()`
+ * (declared in `gc_inline.h` file).  Unsynchronized.
+ */
+GC_API void GC_CALL GC_set_dont_add_byte_at_end(int);
+
+/**
  * If nonzero, finalizers will only be run in response to an explicit
  * `GC_invoke_finalizers()` call.  The default is determined by whether
  * the `FINALIZE_ON_DEMAND` macro is defined when the collector is built.

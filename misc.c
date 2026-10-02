@@ -133,6 +133,27 @@ int GC_all_interior_pointers = 0;
 #  endif
 #endif
 
+#if MAX_EXTRA_BYTES > 0
+/* The initial value is the same as that of `GC_all_interior_pointers`. */
+#  ifdef ALL_INTERIOR_POINTERS
+GC_INNER int GC_extra_bytes = 1;
+#  else
+GC_INNER int GC_extra_bytes = 0;
+#  endif
+
+/*
+ * Do not pad the objects in the all-interior-pointers mode.  Set by
+ * `GC_set_dont_add_byte_at_end()` or `GC_DONT_ADD_BYTE_AT_END` environment
+ * variable before the collector initialization.
+ */
+STATIC GC_bool GC_dont_add_byte = FALSE;
+
+#  define SET_EXTRA_BYTES() \
+    (void)(GC_extra_bytes = GC_all_interior_pointers && !GC_dont_add_byte)
+#else
+#  define SET_EXTRA_BYTES() (void)0
+#endif
+
 #ifdef FINALIZE_ON_DEMAND
 int GC_finalize_on_demand = 1;
 #else
@@ -1263,6 +1284,22 @@ GC_init(void)
     GC_all_interior_pointers = 1;
   }
 #endif
+#if MAX_EXTRA_BYTES > 0
+  {
+    const char *str = GETENV("GC_DONT_ADD_BYTE_AT_END");
+
+    if (str != NULL) {
+      /* "0" is used to keep the padding. */
+      GC_dont_add_byte = str[0] != '0' || str[1] != '\0';
+    }
+  }
+#endif
+  /*
+   * `EXTRA_BYTES` value is fixed from now on (unless
+   * `GC_set_all_interior_pointers()` is called).  The descriptor of
+   * `NORMAL` objects and `GC_size_map` are set up for it below.
+   */
+  SET_EXTRA_BYTES();
   if (GETENV("GC_DONT_GC") != NULL) {
 #if defined(LINT2) \
     && !(defined(GC_ASSERTIONS) && defined(GC_ALWAYS_MULTITHREADED))
@@ -2961,7 +2998,6 @@ GC_set_all_interior_pointers(int value)
   if (value)
     ABORT("All-interior-pointers mode is unsupported");
 #else
-  GC_all_interior_pointers = value ? 1 : 0;
   if (GC_is_initialized) {
     /*
      * It is not recommended to change `GC_all_interior_pointers` value
@@ -2969,6 +3005,8 @@ GC_set_all_interior_pointers(int value)
      * correctly even after switching the mode.
      */
     LOCK();
+    GC_all_interior_pointers = value ? 1 : 0;
+    SET_EXTRA_BYTES();
     /* Note: this resets manual offsets as well. */
     GC_initialize_offsets();
 #  ifndef NO_BLACK_LISTING
@@ -2976,7 +3014,41 @@ GC_set_all_interior_pointers(int value)
       GC_bl_init_no_interiors();
 #  endif
     UNLOCK();
+  } else {
+    GC_all_interior_pointers = value ? 1 : 0;
+    SET_EXTRA_BYTES();
   }
+#endif
+}
+
+GC_API void GC_CALL
+GC_set_dont_add_byte_at_end(int value)
+{
+#if MAX_EXTRA_BYTES > 0
+  if (UNLIKELY(GC_is_initialized)) {
+    /*
+     * The size map and the descriptor of `NORMAL` objects depend on
+     * `EXTRA_BYTES`, and the existing objects are padded or not.
+     */
+    WARN("GC_set_dont_add_byte_at_end() ignored after GC_init()\n", 0);
+    return;
+  }
+  GC_dont_add_byte = value != 0;
+  SET_EXTRA_BYTES();
+#else
+  /* The padding is turned off at build time. */
+  UNUSED_ARG(value);
+#endif
+}
+
+GC_API int GC_CALL
+GC_get_dont_add_byte_at_end(void)
+{
+#if MAX_EXTRA_BYTES > 0
+  /* This is meaningful only if `GC_all_interior_pointers`. */
+  return (int)GC_dont_add_byte;
+#else
+  return 1;
 #endif
 }
 

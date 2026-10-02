@@ -167,6 +167,12 @@ default value): `GC_realloc` leaves a small collectable object to the
 collector instead of freeing it after moving its contents to a new object
 (see `GC_set_realloc_no_free()`).  The special value "0" turns the mode off.
 
+`GC_DONT_ADD_BYTE_AT_END` - Turns off the padding of objects in the
+all-interior-pointers mode, i.e. a pointer just past the end of an object no
+longer keeps the object alive (see `GC_set_dont_add_byte_at_end()`).  The
+special value "0" keeps the padding.  Has no effect if the collector is built
+with `DONT_ADD_BYTE_AT_END` macro defined.
+
 `GC_NO_THREAD_LOCAL_WARMUP` - Turns "no thread-local warm-up" mode on
 (overrides the default value): a thread uses its thread-local free list of
 each small object size starting from its first allocation of that size,

@@ -195,7 +195,10 @@ defined (or `GC_all_interior_pointers` variable set to one).  Normally
 `ALL_INTERIOR_POINTERS` macro causes all objects to be padded so that pointers
 just past the end of an object can be recognized.  This can be expensive.
 (The padding is normally more than one byte due to alignment constraints.)
-`DONT_ADD_BYTE_AT_END` macro disables the padding.
+`DONT_ADD_BYTE_AT_END` macro disables the padding.  (Alternatively, the
+padding could be turned off at run-time, before the collector initialization,
+by `GC_set_dont_add_byte_at_end()` or `GC_DONT_ADD_BYTE_AT_END` environment
+variable.)
 
 `NO_EXECUTE_PERMISSION` - May cause some or all of the heap to not
 have execute permission, i.e. it may be impossible to execute
