@@ -242,7 +242,7 @@ GC_get_tlfs(void)
 }
 
 /*
- * The slow path of `GC_malloc_kind()`: the size is too big for the
+ * The slow path of `malloc_kind_tl()`: the size is too big for the
  * thread-local free lists, or the free list is empty or holds a counter,
  * or the free-list entry should be dirtied manually.  `tiny_fl` is the
  * thread-local free-list array of `kind`.  Not inlined, so that the fast
@@ -266,8 +266,13 @@ GC_malloc_kind_tl_slow(size_t lb, int kind, void **tiny_fl)
   return result;
 }
 
-GC_API GC_ATTR_MALLOC void *GC_CALL
-GC_malloc_kind(size_t lb, int kind)
+/*
+ * The thread-local allocation of an object of the given `kind`.  Inlined
+ * into `GC_malloc_kind()`, `GC_malloc()` and `GC_malloc_atomic()`, thus
+ * the checks of `kind` are done at compile time in the latter two.
+ */
+GC_INLINE GC_ATTR_ALWAYS_INLINE void *
+malloc_kind_tl(size_t lb, int kind)
 {
   void *tsd;
   void **tiny_fl;
@@ -322,6 +327,26 @@ GC_malloc_kind(size_t lb, int kind)
     }
   }
   return GC_malloc_kind_tl_slow(lb, kind, tiny_fl);
+}
+
+GC_API GC_ATTR_MALLOC void *GC_CALL
+GC_malloc_kind(size_t lb, int kind)
+{
+  return malloc_kind_tl(lb, kind);
+}
+
+GC_API GC_ATTR_MALLOC void *GC_CALL
+GC_malloc_atomic(size_t lb)
+{
+  /* Allocate `lb` bytes of atomic (pointer-free) data. */
+  return malloc_kind_tl(lb, PTRFREE);
+}
+
+GC_API GC_ATTR_MALLOC void *GC_CALL
+GC_malloc(size_t lb)
+{
+  /* Allocate `lb` bytes of composite (pointer-containing) data. */
+  return malloc_kind_tl(lb, NORMAL);
 }
 
 #  ifdef THREAD_GCJ_FREELISTS
