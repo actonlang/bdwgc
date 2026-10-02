@@ -244,10 +244,11 @@ GC_get_tlfs(void)
 /*
  * The slow path of `malloc_kind_tl()`: the size is too big for the
  * thread-local free lists, or the free list is empty or holds a counter,
- * or the free-list entry should be dirtied manually.  `tiny_fl` is the
- * thread-local free-list array of `kind`.  Not inlined, so that the fast
- * path does not need a stack frame to preserve its arguments across the
- * calls made here.
+ * or the free-list entry should be dirtied manually.  If
+ * `GC_NO_TL_MALLOC_FAST_PATH` macro is defined, then every allocation takes
+ * this path.  `tiny_fl` is the thread-local free-list array of `kind`.  Not
+ * inlined, so that the fast path does not need a stack frame to preserve its
+ * arguments across the calls made here.
  */
 STATIC GC_ATTR_NOINLINE void *
 GC_malloc_kind_tl_slow(size_t lb, int kind, void **tiny_fl)
@@ -269,7 +270,9 @@ GC_malloc_kind_tl_slow(size_t lb, int kind, void **tiny_fl)
 /*
  * The thread-local allocation of an object of the given `kind`.  Inlined
  * into `GC_malloc_kind()`, `GC_malloc()` and `GC_malloc_atomic()`, thus
- * the checks of `kind` are done at compile time in the latter two.
+ * the checks of `kind` are done at compile time in the latter two.  If
+ * `GC_NO_TL_MALLOC_FAST_PATH` macro is defined, then only
+ * `GC_malloc_kind()` uses it, and it always calls the slow path.
  */
 GC_INLINE GC_ATTR_ALWAYS_INLINE void *
 malloc_kind_tl(size_t lb, int kind)
@@ -288,6 +291,7 @@ malloc_kind_tl(size_t lb, int kind)
   GC_ASSERT(GC_is_initialized);
   GC_ASSERT(GC_is_thread_tsd_valid(tsd));
   tiny_fl = ((GC_tlfs)tsd)->_freelists[kind];
+#  ifndef GC_NO_TL_MALLOC_FAST_PATH
   /*
    * The case of a nonempty free list of `GC_FAST_MALLOC_GRANS()` follows.
    * The size check ensures that `lg` is less than `GC_TINY_FREELISTS`
@@ -319,13 +323,14 @@ malloc_kind_tl(size_t lb, int kind)
         GC_reachable_here(next);
       GC_ASSERT(GC_size(result) >= GRANULES_TO_BYTES(lg));
       GC_ASSERT(PTRFREE == kind || NULL == ((void **)result)[1]);
-#  ifdef LOG_ALLOCS
+#    ifdef LOG_ALLOCS
       GC_log_printf("GC_malloc_kind(%lu, %d) returned %p, recent GC #%lu\n",
                     (unsigned long)lb, kind, result, (unsigned long)GC_gc_no);
-#  endif
+#    endif
       return result;
     }
   }
+#  endif
   return GC_malloc_kind_tl_slow(lb, kind, tiny_fl);
 }
 
@@ -335,6 +340,7 @@ GC_malloc_kind(size_t lb, int kind)
   return malloc_kind_tl(lb, kind);
 }
 
+#  ifndef GC_NO_TL_MALLOC_FAST_PATH
 GC_API GC_ATTR_MALLOC void *GC_CALL
 GC_malloc_atomic(size_t lb)
 {
@@ -348,6 +354,7 @@ GC_malloc(size_t lb)
   /* Allocate `lb` bytes of composite (pointer-containing) data. */
   return malloc_kind_tl(lb, NORMAL);
 }
+#  endif
 
 #  ifdef THREAD_GCJ_FREELISTS
 #    include "gc/gc_gcj.h"

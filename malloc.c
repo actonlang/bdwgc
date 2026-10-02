@@ -427,7 +427,7 @@ GC_malloc_kind(size_t lb, int kind)
 }
 #endif
 
-#ifndef THREAD_LOCAL_ALLOC
+#if !defined(THREAD_LOCAL_ALLOC) || defined(GC_NO_TL_MALLOC_FAST_PATH)
 /*
  * Otherwise, these are defined in `thread_local_alloc.c` file, with the
  * thread-local allocation inlined.

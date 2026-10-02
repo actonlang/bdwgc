@@ -666,7 +666,19 @@ with GCC and clang unless the address, memory or thread sanitizer is used,
 and empty otherwise.  Defining it to empty leaves the inlining to the
 compiler (clang then calls `GC_ms_push_contents_hdr()` out of line from
 `GC_mark_from()`, but the thread-local allocation stays inline in
-`GC_malloc()` and `GC_malloc_atomic()`).
+`GC_malloc()` and `GC_malloc_atomic()` unless `GC_NO_TL_MALLOC_FAST_PATH`
+macro is defined).
+
+`GC_NO_CANCEL_STATE_SKIP` - Causes `GC_collect_a_little_inner()` (called in
+the incremental mode at every refill of a thread-local free list and at every
+allocation of a large object) to disable the thread cancellation for the
+whole call, i.e. also when there is no collection work to do.  By default,
+the cancellation state (which is changed by a system call on some targets) is
+changed only around the collection work.  It turns this speedup off.
+
+`GC_NO_FREE_BLOCK_RUNS` - Causes `GC_start_reclaim()` to free each empty heap
+block (and each unmarked large object) when it visits it instead of
+accumulating runs of adjacent ones.  It turns this speedup off.
 
 `GC_NO_PUSH_PREFETCH` - Turns off the prefetch of an object when it is
 pushed onto the mark stack.  Instead, `GC_mark_from()`, `GC_mark_and_push()`
@@ -682,6 +694,13 @@ size starting from its first allocation of that size (see
 `GC_set_no_thread_local_warmup()`).  The mode could be changed at run-time
 (for the threads registered afterwards).  Has no effect unless
 `THREAD_LOCAL_ALLOC` is defined.
+
+`GC_NO_TL_MALLOC_FAST_PATH` - Causes `GC_malloc()` and `GC_malloc_atomic()`
+(with `THREAD_LOCAL_ALLOC`) to call `GC_malloc_kind()`, which takes every
+object from the thread-local free list by `GC_FAST_MALLOC_GRANS()` in the
+non-inlined `GC_malloc_kind_tl_slow()`.  By default, both functions inline
+the thread-local allocation, and an object of a nonempty thread-local free
+list is taken by an inline fast path.  It turns this speedup off.
 
 `GC_ALLOCD_BYTES_PER_FINALIZER=<value>` - Sets the alternate default value of
 `GC_allocd_bytes_per_finalizer` variable.
