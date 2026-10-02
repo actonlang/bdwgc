@@ -538,23 +538,96 @@ GC_disclaim_and_reclaim_or_free_small_block(struct hblk *hbp)
 #endif /* ENABLE_DISCLAIM */
 
 /*
- * Restore an unmarked large object or an entirely empty block of
- * small objects to the heap block free list.  Otherwise enqueue the
- * block for later processing by `GC_reclaim_small_nonempty_block()`.
- * If `report_if_found` is `TRUE`, then process any block immediately,
- * and simply report free objects; do not actually reclaim them.
+ * The state of the heap walk of `GC_start_reclaim()`.  The heap blocks
+ * found unreferenced during the walk are accumulated in a run of adjacent
+ * blocks, which is passed to `GC_freehblk()` as one block when the next
+ * such block does not extend it, before a disclaim procedure is called,
+ * and at the end of the walk.  `GC_apply_to_all_hdrs()` visits the blocks
+ * of a bottom index in the descending order of addresses, thus a run grows
+ * downwards.  The free blocks which result are the ones `GC_freehblk()`
+ * builds by coalescing the blocks one at a time, except that the split
+ * points may differ for a free block which would reach `SIZET_SIGNB` bytes
+ * (on 32-bit targets) and on CHERI purecap targets.  Each run is added to
+ * a free list once.
+ */
+struct reclaim_walk_s {
+  GC_bool report_if_found;
+
+  /* The lowest block of the pending run, or `NULL`. */
+  struct hblk *run;
+
+  /* The header of `run` (valid only if `run` is not `NULL`). */
+  hdr *run_hdr;
+
+  /* The size of the pending run, in bytes. */
+  size_t run_bytes;
+};
+
+/* Pass the pending run of blocks (if any) to `GC_freehblk()`. */
+STATIC void
+GC_free_pending_run(struct reclaim_walk_s *pw)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  if (pw->run != NULL) {
+    GC_ASSERT(HDR(pw->run) == pw->run_hdr && !HBLK_IS_FREE(pw->run_hdr));
+    pw->run_hdr->hb_sz = pw->run_bytes;
+    GC_freehblk(pw->run);
+    pw->run = NULL;
+  }
+}
+
+/*
+ * Add the block of `hhdr`, of `bytes` size (a multiple of `HBLKSIZE`),
+ * which is not referenced any longer, to the pending run of blocks to be
+ * freed.  The block is merged into the run exactly when `GC_freehblk()`
+ * would coalesce it with the run as its successor.  Otherwise the run is
+ * freed and a new one is started.
  */
 STATIC void
-GC_reclaim_block(hdr *hhdr, void *report_if_found)
+GC_add_to_pending_run(struct reclaim_walk_s *pw, hdr *hhdr, size_t bytes)
 {
   struct hblk *hbp = hhdr->hb_block;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  GC_ASSERT(bytes >= HBLKSIZE && modHBLKSZ(bytes) == 0);
+  /* Remove the forwarding counts of a multi-block object. */
+  GC_remove_counts(hbp, bytes);
+  if (pw->run != NULL && ADDR(hbp) + bytes == ADDR(pw->run)
+      && ((pw->run_bytes + bytes) & SIZET_SIGNB) == 0
+#ifdef CHERI_PURECAP
+      && CAPABILITY_COVERS_RANGE(hbp, ADDR(pw->run),
+                                 ADDR(pw->run) + pw->run_bytes)
+#endif
+  ) {
+    GC_remove_header(pw->run);
+    pw->run_bytes += bytes;
+  } else {
+    GC_free_pending_run(pw);
+    pw->run_bytes = bytes;
+  }
+  pw->run = hbp;
+  pw->run_hdr = hhdr;
+}
+
+/*
+ * Restore an unmarked large object or an entirely empty block of
+ * small objects to the heap block free list (the block is added to the
+ * pending run of `*pw`).  Otherwise enqueue the block for later
+ * processing by `GC_reclaim_small_nonempty_block()`.  If
+ * `report_if_found` field of `*pw` is `TRUE`, then process any block
+ * immediately, and simply report free objects; do not actually reclaim
+ * them.
+ */
+STATIC void
+GC_reclaim_block(hdr *hhdr, void *walk_state)
+{
+  struct hblk *hbp = hhdr->hb_block;
+  struct reclaim_walk_s *pw = (struct reclaim_walk_s *)walk_state;
+  GC_bool report_if_found = pw->report_if_found;
   size_t sz; /*< size of objects in current block */
   struct obj_kind *ok;
 
   GC_ASSERT(I_HOLD_LOCK());
-#if defined(CPPCHECK)
-  GC_noop1_ptr(report_if_found);
-#endif
   ok = &GC_obj_kinds[hhdr->hb_obj_kind];
 #ifdef AO_HAVE_load
   /* Atomic access is used to avoid racing with `GC_realloc`. */
@@ -577,6 +650,8 @@ GC_reclaim_block(hdr *hhdr, void *report_if_found)
       } else {
 #ifdef ENABLE_DISCLAIM
         if (UNLIKELY((hhdr->hb_flags & HAS_DISCLAIM) != 0)) {
+          /* Do not let the client see the pending run. */
+          GC_free_pending_run(pw);
           if (ok->ok_disclaim_proc(hbp)) {
             /* Not disclaimed, thus resurrect the object. */
             set_mark_bit_from_hdr(hhdr, 0);
@@ -589,8 +664,8 @@ GC_reclaim_block(hdr *hhdr, void *report_if_found)
           GC_large_allocd_bytes -= HBLKSIZE * OBJ_SZ_TO_BLOCKS(sz);
         }
         GC_bytes_found += (GC_signed_word)sz;
-        GC_freehblk(hbp);
         FREE_PROFILER_HOOK(hbp);
+        GC_add_to_pending_run(pw, hhdr, HBLKSIZE * OBJ_SZ_TO_BLOCKS(sz));
       }
     } else {
 #ifdef ENABLE_DISCLAIM
@@ -628,6 +703,7 @@ GC_reclaim_block(hdr *hhdr, void *report_if_found)
     } else if (GC_block_empty(hhdr)) {
 #ifdef ENABLE_DISCLAIM
       if ((hhdr->hb_flags & HAS_DISCLAIM) != 0) {
+        GC_free_pending_run(pw);
         GC_disclaim_and_reclaim_or_free_small_block(hbp);
       } else
 #endif
@@ -644,7 +720,7 @@ GC_reclaim_block(hdr *hhdr, void *report_if_found)
           FREE_PROFILER_HOOK(p);
 #endif
         GC_bytes_found += (GC_signed_word)HBLKSIZE;
-        GC_freehblk(hbp);
+        GC_add_to_pending_run(pw, hhdr, HBLKSIZE);
       }
     } else if (GC_find_leak_inner || !GC_block_nearly_full(hhdr, sz)) {
       /* Group of smaller objects, enqueue the real work. */
@@ -840,6 +916,7 @@ GC_INNER void
 GC_start_reclaim(GC_bool report_if_found)
 {
   int kind;
+  struct reclaim_walk_s walk_state;
 
   GC_ASSERT(I_HOLD_LOCK());
 #ifdef PARALLEL_MARK
@@ -881,7 +958,12 @@ GC_start_reclaim(GC_bool report_if_found)
    * Go through all heap blocks, and reclaim unmarked objects or enqueue
    * the block for later processing.
    */
-  GC_apply_to_all_hdrs(GC_reclaim_block, NUMERIC_TO_VPTR(report_if_found));
+  walk_state.report_if_found = report_if_found;
+  walk_state.run = NULL;
+  walk_state.run_hdr = NULL;
+  walk_state.run_bytes = 0;
+  GC_apply_to_all_hdrs(GC_reclaim_block, &walk_state);
+  GC_free_pending_run(&walk_state);
 
 #ifdef EAGER_SWEEP
   /*
