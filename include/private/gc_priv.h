@@ -3020,9 +3020,10 @@ typedef void (*GC_walk_hdr_fn)(hdr *, void *);
 
 /*
  * Same as `GC_apply_to_all_blocks()` but `fn` gets the block header,
- * thus it does not need to look it up.  `fn` may free the block (by
- * `GC_freehblk()`) but should not modify the headers of other blocks
- * except for the ones of the free blocks adjacent to it.
+ * thus it does not need to look it up.  The blocks of a bottom index are
+ * visited in the descending order of addresses.  `fn` may free the block
+ * and the blocks visited before it, but should not modify the headers of
+ * the blocks in use which are not visited yet.
  */
 GC_INNER void GC_apply_to_all_hdrs(GC_walk_hdr_fn fn, void *client_data);
 
