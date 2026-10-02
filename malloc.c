@@ -426,6 +426,11 @@ GC_malloc_kind(size_t lb, int kind)
 }
 #endif
 
+#ifndef THREAD_LOCAL_ALLOC
+/*
+ * Otherwise, these are defined in `thread_local_alloc.c` file, with the
+ * thread-local allocation inlined.
+ */
 GC_API GC_ATTR_MALLOC void *GC_CALL
 GC_malloc_atomic(size_t lb)
 {
@@ -439,6 +444,7 @@ GC_malloc(size_t lb)
   /* Allocate `lb` bytes of composite (pointer-containing) data. */
   return GC_malloc_kind(lb, NORMAL);
 }
+#endif
 
 GC_API GC_ATTR_MALLOC void *GC_CALL
 GC_generic_malloc_uncollectable(size_t lb, int kind)
