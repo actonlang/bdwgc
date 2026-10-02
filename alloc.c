@@ -585,17 +585,15 @@ STATIC GC_bool GC_stopped_mark(GC_stop_func stop_func);
 STATIC void GC_finish_collection(void);
 
 /*
- * Initiate a garbage collection if appropriate.  Choose judiciously
- * between partial, full, and stop-world collections.
+ * Initiate a garbage collection.  Choose judiciously between partial,
+ * full, and stop-world collections.  Called only if `GC_should_collect()`
+ * returned true.
  */
 STATIC void
 GC_maybe_gc(void)
 {
   GC_ASSERT(I_HOLD_LOCK());
   ASSERT_CANCEL_DISABLED();
-  if (!GC_should_collect())
-    return;
-
   if (!GC_incremental) {
     GC_gcollect_inner();
     return;
@@ -831,11 +829,18 @@ GC_collect_a_little_inner(size_t n_blocks)
 
   GC_ASSERT(I_HOLD_LOCK());
   GC_ASSERT(GC_is_initialized);
-  DISABLE_CANCEL(cancel_state);
+  /*
+   * In the incremental mode, this is called at every refill of
+   * a thread-local free list and at every allocation of a large object,
+   * thus the thread cancellation (disabling it is a system call on some
+   * targets, e.g. Darwin) is disabled only if there is collection work
+   * to do.
+   */
   if (GC_incremental && GC_collection_in_progress()) {
     size_t i;
     size_t max_deficit = GC_rate * n_blocks;
 
+    DISABLE_CANCEL(cancel_state);
     ENTER_GC();
 #ifdef PARALLEL_MARK
     if (GC_time_limit != GC_TIME_UNLIMITED)
@@ -878,10 +883,12 @@ GC_collect_a_little_inner(size_t n_blocks)
       GC_mark_deficit
           = GC_mark_deficit > max_deficit ? GC_mark_deficit - max_deficit : 0;
     }
-  } else if (!GC_dont_gc) {
+    RESTORE_CANCEL(cancel_state);
+  } else if (!GC_dont_gc && GC_should_collect()) {
+    DISABLE_CANCEL(cancel_state);
     GC_maybe_gc();
+    RESTORE_CANCEL(cancel_state);
   }
-  RESTORE_CANCEL(cancel_state);
 }
 
 #if !defined(NO_FIND_LEAK) || !defined(SHORT_DBG_HDRS)
