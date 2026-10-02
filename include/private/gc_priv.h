@@ -3013,6 +3013,20 @@ GC_INNER void GC_enable_inner(void);
 GC_INNER GC_bool GC_should_collect(void);
 
 /*
+ * Same as `GC_walk_hblk_fn` but the header of the block is passed
+ * instead of the block itself.
+ */
+typedef void (*GC_walk_hdr_fn)(hdr *, void *);
+
+/*
+ * Same as `GC_apply_to_all_blocks()` but `fn` gets the block header,
+ * thus it does not need to look it up.  `fn` may free the block (by
+ * `GC_freehblk()`) but should not modify the headers of other blocks
+ * except for the ones of the free blocks adjacent to it.
+ */
+GC_INNER void GC_apply_to_all_hdrs(GC_walk_hdr_fn fn, void *client_data);
+
+/*
  * Get the next block whose address is at least `h`.  Returned block
  * is managed by the collector.  The block must be in use unless
  * `allow_free` is TRUE.  Return `NULL` if there is no such block.

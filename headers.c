@@ -344,8 +344,8 @@ GC_remove_counts(const struct hblk *h, size_t sz /* bytes */)
 #define HBLK_ADDR(bi, j) \
   ((((bi)->key << LOG_BOTTOM_SZ) + (word)(j)) << LOG_HBLKSIZE)
 
-GC_API void GC_CALL
-GC_apply_to_all_blocks(GC_walk_hblk_fn fn, void *client_data)
+GC_INNER void
+GC_apply_to_all_hdrs(GC_walk_hdr_fn fn, void *client_data)
 {
   bottom_index *bi;
 
@@ -353,19 +353,42 @@ GC_apply_to_all_blocks(GC_walk_hblk_fn fn, void *client_data)
     GC_signed_word j;
 
     for (j = BOTTOM_SZ - 1; j >= 0;) {
-      const hdr *hhdr = bi->index[j];
+      hdr *hhdr = bi->index[j];
 
       if (IS_FORWARDING_ADDR_OR_NIL(hhdr)) {
         j -= (GC_signed_word)(hhdr != NULL ? ADDR(hhdr) : 1);
       } else {
         if (!HBLK_IS_FREE(hhdr)) {
           GC_ASSERT(HBLK_ADDR(bi, j) == ADDR(hhdr->hb_block));
-          fn(hhdr->hb_block, client_data);
+          fn(hhdr, client_data);
         }
         j--;
       }
     }
   }
+}
+
+struct apply_to_block_s {
+  GC_walk_hblk_fn fn;
+  void *client_data;
+};
+
+static void
+apply_to_block_of_hdr(hdr *hhdr, void *pa)
+{
+  const struct apply_to_block_s *a = (struct apply_to_block_s *)pa;
+
+  a->fn(hhdr->hb_block, a->client_data);
+}
+
+GC_API void GC_CALL
+GC_apply_to_all_blocks(GC_walk_hblk_fn fn, void *client_data)
+{
+  struct apply_to_block_s a;
+
+  a.fn = fn;
+  a.client_data = client_data;
+  GC_apply_to_all_hdrs(apply_to_block_of_hdr, &a);
 }
 
 GC_INNER struct hblk *
