@@ -556,10 +556,10 @@ GC_disclaim_and_reclaim_small_block(struct hblk *hbp)
  * If `report_if_found` is `TRUE`, then process any block immediately,
  * and simply report free objects; do not actually reclaim them.
  */
-STATIC void GC_CALLBACK
-GC_reclaim_block(struct hblk *hbp, void *report_if_found)
+STATIC void
+GC_reclaim_block(hdr *hhdr, void *report_if_found)
 {
-  hdr *hhdr;
+  struct hblk *hbp = hhdr->hb_block;
   size_t sz; /*< size of objects in current block */
   struct obj_kind *ok;
 
@@ -567,7 +567,6 @@ GC_reclaim_block(struct hblk *hbp, void *report_if_found)
 #if defined(CPPCHECK)
   GC_noop1_ptr(report_if_found);
 #endif
-  hhdr = HDR(hbp);
   ok = &GC_obj_kinds[hhdr->hb_obj_kind];
 #ifdef AO_HAVE_load
   /* Atomic access is used to avoid racing with `GC_realloc`. */
@@ -896,7 +895,7 @@ GC_start_reclaim(GC_bool report_if_found)
    * Go through all heap blocks, and reclaim unmarked objects or enqueue
    * the block for later processing.
    */
-  GC_apply_to_all_blocks(GC_reclaim_block, NUMERIC_TO_VPTR(report_if_found));
+  GC_apply_to_all_hdrs(GC_reclaim_block, NUMERIC_TO_VPTR(report_if_found));
 
 #ifdef EAGER_SWEEP
   /*

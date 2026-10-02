@@ -270,12 +270,10 @@ GC_set_hdr_marks(hdr *hhdr)
 #endif
 }
 
-/* Clear all mark bits associated with block `h`. */
-static void GC_CALLBACK
-clear_marks_for_block(struct hblk *h, void *dummy)
+/* Clear all mark bits associated with the block of `hhdr`. */
+static void
+clear_marks_for_hdr(hdr *hhdr, void *dummy)
 {
-  hdr *hhdr = HDR(h);
-
   UNUSED_ARG(dummy);
   if (IS_UNCOLLECTABLE(hhdr->hb_obj_kind)) {
     /*
@@ -286,9 +284,6 @@ clear_marks_for_block(struct hblk *h, void *dummy)
     return;
   }
   GC_clear_hdr_marks(hhdr);
-#if defined(CPPCHECK)
-  GC_noop1_ptr(h);
-#endif
 }
 
 /* Slow but general routines for setting/clearing/getting mark bits. */
@@ -355,7 +350,7 @@ GC_clear_marks(void)
   /* The initialization is needed for `GC_push_roots()`. */
   GC_ASSERT(GC_is_initialized);
 
-  GC_apply_to_all_blocks(clear_marks_for_block, NULL);
+  GC_apply_to_all_hdrs(clear_marks_for_hdr, NULL);
   GC_objects_are_marked = FALSE;
   GC_mark_state = MS_INVALID;
   GC_scan_ptr = NULL;
