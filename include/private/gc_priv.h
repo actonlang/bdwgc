@@ -1700,6 +1700,22 @@ struct back_edges_s {
 };
 #endif
 
+#ifdef PARALLEL_MARK
+/*
+ * Use atomic updates of `GC_fl_builder_count`, so that a free-list
+ * builder does not need the mark lock except for waking up the thread
+ * (if any) waiting for all the builders to finish.  For simplicity, TSan
+ * builds keep using the mark lock.  Client could define
+ * `NO_ATOMIC_FL_BUILDER_COUNT` macro to use the mark lock instead as well.
+ */
+#  if defined(AO_HAVE_fetch_and_add) && defined(AO_HAVE_load) \
+      && defined(AO_HAVE_load_acquire)                        \
+      && defined(AO_HAVE_compare_and_swap_release)            \
+      && !defined(THREAD_SANITIZER) && !defined(NO_ATOMIC_FL_BUILDER_COUNT)
+#    define ATOMIC_FL_BUILDER_COUNT
+#  endif
+#endif
+
 /*
  * Lists of all heap blocks and free lists as well as other random data
  * structures that should not be scanned by the collector.  These are
@@ -2744,10 +2760,26 @@ struct _GC_arrays {
    * Number of threads currently building free lists without holding
    * the allocator lock.  It is not safe to collect if this is nonzero.
    * Also, together with the mark lock, it is used as a semaphore during
-   * marker threads startup.  Protected by the mark lock.
+   * marker threads startup (in this case, the value may be negative).
+   * It is incremented only with the allocator lock held.  Protected by the
+   * mark lock, unless `ATOMIC_FL_BUILDER_COUNT`, in which case it is updated
+   * atomically, and the value is twice the count plus `FL_BUILDER_WAITING`
+   * flag.  The flag is set by a thread waiting for the count to drop to zero
+   * (holding the allocator and mark locks), and it is cleared (together with
+   * the count dropping to zero) only holding the mark lock by the last
+   * builder (or the last marker thread being initialized), which also
+   * notifies the waiter.  Thus, once the waiter has observed zero, no
+   * builder accesses the mark lock.  (Otherwise, e.g., a builder waiting for
+   * the mark lock might be suspended by the collector, and the mark lock
+   * might be handed over to it on release, which would block the collector
+   * forever.)
    */
 #  define GC_fl_builder_count GC_arrays._fl_builder_count
+#  ifdef ATOMIC_FL_BUILDER_COUNT
+  volatile AO_t _fl_builder_count;
+#  else
   GC_signed_word _fl_builder_count;
+#  endif
 
   GC_signed_word _bytes_found; /*< see `GC_bytes_found` above */
 #endif
@@ -4823,7 +4855,10 @@ GC_EXTERN size_t GC_bytes_per_marker;
  * The routines to deal with the mark lock and condition variables.
  * If the allocator lock is also acquired, it must be done first.
  * The mark lock is used to both protect some variables used by the
- * parallel marker, and to protect `GC_fl_builder_count`.
+ * parallel marker, and to wait for `GC_fl_builder_count` to drop to zero.
+ * Without `ATOMIC_FL_BUILDER_COUNT`, it also protects the latter variable.
+ * With it, the waiting flag of the latter is set and cleared only by
+ * a holder of the mark lock.
  * `GC_notify_all_marker()` is called when the state of the parallel marker
  * changes in some significant way (see `gc_pmark.h` file for details).
  * Incrementing `GC_mark_no` is not notified (unless `GC_NO_IDLE_MARKER_CV`
@@ -4841,6 +4876,37 @@ GC_INNER void GC_acquire_mark_lock(void);
 GC_INNER void GC_release_mark_lock(void);
 GC_INNER void GC_notify_all_builder(void);
 GC_INNER void GC_wait_for_reclaim(void);
+
+#  ifdef ATOMIC_FL_BUILDER_COUNT
+#    define FL_BUILDER_WAITING ((AO_t)1)
+#    define FL_BUILDER_ONE ((AO_t)2)
+
+/*
+ * Check whether there are free-list builders.  If there are, set the
+ * waiting flag and return TRUE.  Called by the waiter holding the
+ * allocator and mark locks.
+ */
+GC_INNER GC_bool GC_fl_builders_to_wait(void);
+#    define GC_FL_BUILDERS_TO_WAIT() GC_fl_builders_to_wait()
+#  else
+#    define GC_FL_BUILDERS_TO_WAIT() (GC_fl_builder_count > 0)
+#  endif
+
+/*
+ * Register the current thread as a builder of a free list, i.e.
+ * increment `GC_fl_builder_count`.  The caller should hold the allocator
+ * lock, and is expected to release it just after this call.
+ */
+GC_INNER void GC_fl_builder_enter(void);
+
+/*
+ * Unregister the current thread as a builder of a free list, i.e.
+ * decrement `GC_fl_builder_count`, notifying the collector if it waits
+ * for this.  The built free list should be already stored to the place
+ * where it is visible to the collector (and the marker).  The caller
+ * should not hold the allocator lock.
+ */
+GC_INNER void GC_fl_builder_leave(void);
 
 GC_INNER void GC_notify_all_marker(void);
 GC_INNER void GC_wait_marker(void);

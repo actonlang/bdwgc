@@ -544,8 +544,33 @@ unsigned __stdcall GC_mark_thread(void *id)
   /* Inform `GC_start_mark_threads` about completion of marker data init. */
   GC_acquire_mark_lock();
   /* Note: the count variable may have a negative value. */
+#    ifdef ATOMIC_FL_BUILDER_COUNT
+  {
+    /*
+     * The free-list builders update the count without the mark lock, thus
+     * an atomic update is needed.  The waiter checks the count holding the
+     * mark lock, so no memory barrier is needed.
+     */
+    AO_t v = AO_fetch_and_add(&GC_fl_builder_count, (AO_t)0 - FL_BUILDER_ONE)
+             - FL_BUILDER_ONE;
+
+    if (FL_BUILDER_WAITING == v) {
+      /*
+       * The count is zero.  Clear the flag set by the waiter.  This is
+       * a read-modify-write for the same reason as in
+       * `GC_fl_builder_leave()`.
+       */
+      (void)AO_fetch_and_add(&GC_fl_builder_count,
+                             (AO_t)0 - FL_BUILDER_WAITING);
+      v = 0;
+    }
+    if (0 == v)
+      GC_notify_all_builder();
+  }
+#    else
   if (0 == --GC_fl_builder_count)
     GC_notify_all_builder();
+#    endif
 
   /*
    * `GC_mark_no` is passed only to allow `GC_help_marker` to return
@@ -578,8 +603,10 @@ GC_INNER_WIN32THREAD int GC_available_markers_m1 = 0;
 #  ifdef GC_PTHREADS_PARAMARK
 
 /*
- * The mark lock.  Every thread that builds a free list without the
- * allocator lock takes it, thus it is placed on cache lines of its own.
+ * The mark lock.  The marker threads take it many times during each
+ * parallel mark, and without `ATOMIC_FL_BUILDER_COUNT` every free-list
+ * build outside the allocator lock takes it twice, thus it is placed on
+ * cache lines of its own.
  */
 static struct {
   GC_ATTR_CACHE_ALIGNED pthread_mutex_t lock;
@@ -3360,7 +3387,7 @@ GC_INNER void
 GC_wait_for_reclaim(void)
 {
   GC_acquire_mark_lock();
-  while (GC_fl_builder_count > 0) {
+  while (GC_FL_BUILDERS_TO_WAIT()) {
     GC_wait_builder();
   }
   GC_release_mark_lock();
@@ -3377,7 +3404,7 @@ static void
 wait_for_reclaim_atfork(void)
 {
   GC_acquire_mark_lock();
-  while (GC_fl_builder_count > 0)
+  while (GC_FL_BUILDERS_TO_WAIT())
     GC_wait_builder();
   GC_release_mark_lock();
 }

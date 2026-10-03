@@ -1262,6 +1262,97 @@ GC_mark_from(mse *mark_stack_top, const mse *mark_stack, mse *mark_stack_limit)
 /* Note: this is protected by the mark lock. */
 STATIC GC_bool GC_help_wanted = FALSE;
 
+#  ifdef ATOMIC_FL_BUILDER_COUNT
+GC_INNER void
+GC_fl_builder_enter(void)
+{
+  /*
+   * Only a holder of the allocator lock may increment the count, and
+   * a waiter for the builders holds the allocator lock while waiting.
+   * Thus the count cannot increase while somebody waits for it to reach
+   * zero, and no memory barrier is needed here: `UNLOCK()` publishes the
+   * new value to the next holder of the allocator lock.
+   */
+  GC_ASSERT(I_HOLD_LOCK());
+  (void)AO_fetch_and_add(&GC_fl_builder_count, FL_BUILDER_ONE);
+}
+
+GC_INNER void
+GC_fl_builder_leave(void)
+{
+  GC_ASSERT(I_DONT_HOLD_LOCK());
+  for (;;) {
+    AO_t v = AO_load(&GC_fl_builder_count);
+
+    if (v == (FL_BUILDER_ONE | FL_BUILDER_WAITING))
+      break;
+    /*
+     * Either there are other builders, or nobody waits for us.  The
+     * release barrier makes the built free list (and our reads of the
+     * mark bits) complete before the collector could observe the
+     * decremented count.
+     */
+    if (AO_compare_and_swap_release(&GC_fl_builder_count, v,
+                                    v - FL_BUILDER_ONE))
+      return;
+  }
+
+  /*
+   * We were the last builder when the collector waited for us.  Holding
+   * the mark lock, decrement the count, and if only the flag is left,
+   * clear the flag and notify the waiter, as the marker threads startup
+   * does.  Both are read-modify-writes, so that they continue the
+   * release sequences of the decrements by the other builders, and the
+   * acquire load of zero by the waiter synchronizes with all of them.
+   */
+  GC_acquire_mark_lock();
+  if (AO_fetch_and_add(&GC_fl_builder_count, (AO_t)0 - FL_BUILDER_ONE)
+          - FL_BUILDER_ONE
+      == FL_BUILDER_WAITING) {
+    (void)AO_fetch_and_add(&GC_fl_builder_count, (AO_t)0 - FL_BUILDER_WAITING);
+    GC_notify_all_builder();
+  }
+  GC_release_mark_lock();
+}
+
+GC_INNER GC_bool
+GC_fl_builders_to_wait(void)
+{
+  /* Holding the allocator lock prevents new builders from entering. */
+  GC_ASSERT(I_HOLD_LOCK());
+  for (;;) {
+    AO_t v = AO_load_acquire(&GC_fl_builder_count);
+
+    /* The marker threads startup can make the count negative. */
+    if ((GC_signed_word)v <= 0)
+      return FALSE;
+    if ((v & FL_BUILDER_WAITING) != 0
+        || AO_compare_and_swap_release(&GC_fl_builder_count, v,
+                                       v | FL_BUILDER_WAITING))
+      return TRUE;
+  }
+}
+#  else
+GC_INNER void
+GC_fl_builder_enter(void)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  GC_acquire_mark_lock();
+  ++GC_fl_builder_count;
+  GC_release_mark_lock();
+}
+
+GC_INNER void
+GC_fl_builder_leave(void)
+{
+  GC_ASSERT(I_DONT_HOLD_LOCK());
+  GC_acquire_mark_lock();
+  if (0 == --GC_fl_builder_count)
+    GC_notify_all_builder();
+  GC_release_mark_lock();
+}
+#  endif /* !ATOMIC_FL_BUILDER_COUNT */
+
 GC_INNER void
 GC_wait_for_markers_init(void)
 {
@@ -1295,8 +1386,15 @@ GC_wait_for_markers_init(void)
    * startup.
    */
   GC_acquire_mark_lock();
+#  ifdef ATOMIC_FL_BUILDER_COUNT
+  /* Note: `count` is twice the number here. */
+  count = (GC_signed_word)AO_fetch_and_add(
+              &GC_fl_builder_count, (AO_t)GC_markers_m1 * FL_BUILDER_ONE)
+          + GC_markers_m1 * (GC_signed_word)FL_BUILDER_ONE;
+#  else
   GC_fl_builder_count += GC_markers_m1;
   count = GC_fl_builder_count;
+#  endif
   GC_release_mark_lock();
   if (count != 0) {
     GC_ASSERT(count > 0);

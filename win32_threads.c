@@ -1545,7 +1545,7 @@ GC_wait_for_reclaim(void)
   GC_ASSERT(builder_cv != 0);
   for (;;) {
     GC_acquire_mark_lock();
-    if (0 == GC_fl_builder_count)
+    if (!GC_FL_BUILDERS_TO_WAIT())
       break;
     if (!ResetEvent(builder_cv))
       ABORT("ResetEvent failed");
@@ -1561,7 +1561,9 @@ GC_notify_all_builder(void)
 {
   GC_ASSERT(GC_mark_lock_holder == GetCurrentThreadId());
   GC_ASSERT(builder_cv != 0);
+#    ifndef ATOMIC_FL_BUILDER_COUNT
   GC_ASSERT(0 == GC_fl_builder_count);
+#    endif
   if (!SetEvent(builder_cv))
     ABORT("SetEvent failed");
 }

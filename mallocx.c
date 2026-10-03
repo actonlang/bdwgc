@@ -331,18 +331,6 @@ GC_get_expl_freed_bytes_since_gc(void)
   return (size_t)GC_bytes_freed;
 }
 
-#ifdef PARALLEL_MARK
-static void
-acquire_mark_lock_notify_builders(void)
-{
-  GC_acquire_mark_lock();
-  --GC_fl_builder_count;
-  if (0 == GC_fl_builder_count)
-    GC_notify_all_builder();
-  GC_release_mark_lock();
-}
-#endif
-
 GC_API void GC_CALL
 GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
 {
@@ -420,35 +408,35 @@ GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
                                  (AO_t)(-my_bytes_allocd_tmp));
           GC_bytes_allocd += (word)my_bytes_allocd_tmp;
         }
-        GC_acquire_mark_lock();
-        ++GC_fl_builder_count;
+        GC_fl_builder_enter();
         UNLOCK();
-        GC_release_mark_lock();
 
         op = GC_reclaim_generic(hbp, hhdr, lb_adjusted, ok->ok_init, NULL,
                                 &my_bytes_allocd);
         if (op != NULL) {
           *result = op;
           (void)AO_fetch_and_add(&GC_bytes_allocd_tmp, (AO_t)my_bytes_allocd);
-          GC_acquire_mark_lock();
-          --GC_fl_builder_count;
-          if (0 == GC_fl_builder_count)
-            GC_notify_all_builder();
 #  ifdef THREAD_SANITIZER
-          GC_release_mark_lock();
+          GC_fl_builder_leave();
           LOCK();
           GC_bytes_found += (GC_signed_word)my_bytes_allocd;
           UNLOCK();
 #  else
-          /* The resulting `GC_bytes_found` may be inaccurate. */
-          GC_bytes_found += (GC_signed_word)my_bytes_allocd;
-          GC_release_mark_lock();
+          /*
+           * The resulting `GC_bytes_found` may be inaccurate (as it is
+           * updated also by the holder of the allocator lock).  It is
+           * updated before `GC_fl_builder_leave()` so that the update
+           * cannot happen after the reset of the value by the collector.
+           */
+          (void)AO_fetch_and_add((volatile AO_t *)&GC_bytes_found,
+                                 (AO_t)my_bytes_allocd);
+          GC_fl_builder_leave();
 #  endif
           (void)GC_clear_stack(NULL);
           return;
         }
 
-        acquire_mark_lock_notify_builders();
+        GC_fl_builder_leave();
 
         /*
          * The allocator lock is needed for access to the reclaim list.
@@ -514,15 +502,12 @@ GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
       GC_bytes_allocd += HBLKSIZE - (HBLKSIZE % lb_adjusted);
 #ifdef PARALLEL_MARK
       if (GC_parallel) {
-        GC_acquire_mark_lock();
-        ++GC_fl_builder_count;
+        GC_fl_builder_enter();
         UNLOCK();
-        GC_release_mark_lock();
 
         op = GC_build_fl(h, NULL, lg, ok->ok_init || GC_debugging_started);
         *result = op;
-
-        acquire_mark_lock_notify_builders();
+        GC_fl_builder_leave();
         (void)GC_clear_stack(NULL);
         return;
       }
