@@ -452,6 +452,11 @@ every refill of a thread-local free list updates) is placed on lines of its
 own, so that these writes do not evict the data that every thread reads.
 Defaults to 128 on Apple arm64, and to 64 otherwise.
 
+`NO_ATOMIC_FL_BUILDER_COUNT` - Causes the count of threads building free lists
+outside the allocator lock (with `PARALLEL_MARK`) to be protected by the mark
+lock instead of being updated atomically.  This makes each such build
+acquire the mark lock twice.
+
 `GC_BUILTIN_ATOMIC` - Uses GCC atomic intrinsics instead of `libatomic_ops`
 primitives.
 
