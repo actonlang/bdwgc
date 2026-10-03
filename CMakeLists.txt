@@ -1068,6 +1068,10 @@ if(BUILD_TESTING)
     target_link_libraries(dbgfunctest PRIVATE gc)
     add_test(NAME dbgfunctest COMMAND dbgfunctest)
 
+    add_executable(endpaddingtest tests/endpadding.c ${NODIST_SRC})
+    target_link_libraries(endpaddingtest PRIVATE gc)
+    add_test(NAME endpaddingtest COMMAND endpaddingtest)
+
     # The test includes the collector source instead of linking `gc`.
     add_executable(expandfailtest tests/expandfail.c ${NODIST_SRC})
     if(MSVC)
