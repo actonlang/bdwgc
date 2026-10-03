@@ -273,6 +273,12 @@ GC_generic_malloc_aligned(size_t lb, int kind, unsigned flags, size_t align_m1)
   void *result;
 
   GC_ASSERT(kind < MAXOBJKINDS);
+#if MAX_EXTRA_BYTES > 0
+  if (UNLIKELY(!GC_is_initialized)) {
+    /* `EXTRA_BYTES` value (used below) might be changed by `GC_init()`. */
+    GC_init();
+  }
+#endif
   if (UNLIKELY(get_have_errors()))
     GC_print_all_errors();
   GC_notify_or_invoke_finalizers();
