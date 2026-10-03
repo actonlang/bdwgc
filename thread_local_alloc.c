@@ -71,7 +71,9 @@ init_freelists(GC_tlfs p)
    */
 #  ifdef THREAD_GCJ_FREELISTS
   p->gcj_freelists[0] = MAKE_CPTR(ERROR_FL);
+  BZERO(p->gcj_refill, sizeof(p->gcj_refill));
 #  endif
+  BZERO(p->refill, sizeof(p->refill));
 }
 
 /*
@@ -239,6 +241,29 @@ GC_get_tlfs(void)
   }
   return GC_getspecific(k);
 #  endif
+}
+
+GC_INNER struct GC_tl_refill_s *
+GC_get_tl_refill_state(void **fl)
+{
+  GC_tlfs p = (GC_tlfs)GC_get_tlfs();
+
+  if (UNLIKELY(NULL == p))
+    return NULL;
+  if (ADDR_INSIDE((ptr_t)fl, (ptr_t)p->_freelists,
+                  (ptr_t)p->_freelists + sizeof(p->_freelists))) {
+    size_t i = (size_t)((ptr_t)fl - (ptr_t)p->_freelists) / sizeof(void *);
+
+    return &p->refill[i / GC_TINY_FREELISTS][i % GC_TINY_FREELISTS];
+  }
+#  ifdef THREAD_GCJ_FREELISTS
+  if (ADDR_INSIDE((ptr_t)fl, (ptr_t)p->gcj_freelists,
+                  (ptr_t)p->gcj_freelists + sizeof(p->gcj_freelists))) {
+    return &p->gcj_refill[(size_t)((ptr_t)fl - (ptr_t)p->gcj_freelists)
+                          / sizeof(void *)];
+  }
+#  endif
+  return NULL;
 }
 
 /*

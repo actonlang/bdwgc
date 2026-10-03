@@ -76,6 +76,12 @@ struct thread_local_freelists {
 #    define ERROR_FL GC_WORD_MAX
 #  endif
 
+  /* The refill states of `_freelists` (and `gcj_freelists`) elements. */
+  struct GC_tl_refill_s refill[THREAD_FREELISTS_KINDS][GC_TINY_FREELISTS];
+#  ifdef THREAD_GCJ_FREELISTS
+  struct GC_tl_refill_s gcj_refill[GC_TINY_FREELISTS];
+#  endif
+
   /*
    * Do not use local free lists for up to this much allocation (unless
    * `GC_no_thread_local_warmup`).
