@@ -3691,6 +3691,14 @@ GC_INNER GC_bool GC_expand_hp_inner(word n);
 GC_INNER void GC_start_reclaim(GC_bool abort_if_found);
 
 /*
+ * Clear all next-object pointers in the free list `fl` (which should not
+ * be empty).  This must be done before dropping a list of free `gcj`-style
+ * objects, since may otherwise end up with dangling "descriptor" pointers.
+ * It may help for other pointer-containing objects.
+ */
+GC_INNER void GC_clear_fl_links(void *fl);
+
+/*
  * Sweep blocks of the indicated object size (in granules) and kind
  * until either the appropriate nonempty free list is found, or there
  * are no more blocks to sweep.
@@ -4471,6 +4479,17 @@ struct GC_tl_refill_s {
  * `NULL` otherwise.  Does not need the allocator lock.
  */
 GC_INNER struct GC_tl_refill_s *GC_get_tl_refill_state(void **fl);
+
+/*
+ * Drop the free lists of the current thread which have not been refilled
+ * since the collection before the latest one (i.e. during a complete
+ * collection cycle).  Does nothing if it has already been done by the
+ * thread after the latest collection.  Does nothing in the leak detection
+ * mode.  Called only when refilling a thread-local free list of the
+ * current thread by multiple heap blocks is enabled.  The caller should
+ * hold the allocator lock.
+ */
+GC_INNER void GC_drop_stale_tl_free_lists(void);
 
 /*
  * We must explicitly mark `ptrfree` and `gcj` free lists, since the

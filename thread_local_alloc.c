@@ -22,6 +22,10 @@
 
 #  include "private/thread_local_alloc.h"
 
+#  ifdef THREAD_GCJ_FREELISTS
+#    include "gc/gc_gcj.h"
+#  endif
+
 #  if defined(USE_COMPILER_TLS)
 __thread GC_ATTR_TLS_FAST
 #  elif defined(USE_WIN32_COMPILER_TLS)
@@ -74,6 +78,7 @@ init_freelists(GC_tlfs p)
   BZERO(p->gcj_refill, sizeof(p->gcj_refill));
 #  endif
   BZERO(p->refill, sizeof(p->refill));
+  p->stale_drop_gc_no = 0;
 }
 
 /*
@@ -267,6 +272,73 @@ GC_get_tl_refill_state(void **fl)
 }
 
 /*
+ * Set to empty every nonempty free list of `fl` (starting at index
+ * `first`) which has not been refilled (according to the corresponding
+ * element of `refill`) since the collection before the one numbered
+ * `gc_no`.  The objects are not marked by the next collection (as they
+ * are no longer on a thread-local free list), thus they are reclaimed by
+ * its sweep (in the generational mode, by the sweep after the next full
+ * collection).  An emptied free list is refilled (with a single heap
+ * block) at the next allocation of its size by the thread.  The links
+ * of a dropped free list are cleared if `kind` has per-object descriptors
+ * (as `gcj` kind has): otherwise a dropped object kept by a conservative
+ * pointer would be marked using the next object of the list as its type
+ * descriptor, after that object might be reallocated.  The links of the
+ * other kinds are left as is: the marker does not take descriptors from
+ * their objects, thus a kept dropped object at most keeps the rest of its
+ * list while it is kept itself, and clearing the links would walk every
+ * dropped list with the allocator lock held.
+ */
+static void
+drop_stale_freelists(void **fl, const struct GC_tl_refill_s *refill, int first,
+                     unsigned char gc_no, int kind)
+{
+  GC_bool clear_links
+      = (GC_obj_kinds[kind].ok_descriptor & GC_DS_TAGS) == GC_DS_PER_OBJECT;
+  int j;
+
+  for (j = first; j < GC_TINY_FREELISTS; ++j) {
+    if (ADDR(fl[j]) > HBLKSIZE && refill[j].gc_no != gc_no
+        && refill[j].gc_no != (unsigned char)(gc_no - 1)) {
+      if (clear_links)
+        GC_clear_fl_links(fl[j]);
+      fl[j] = NULL;
+    }
+  }
+}
+
+GC_INNER void
+GC_drop_stale_tl_free_lists(void)
+{
+  GC_tlfs p = (GC_tlfs)GC_get_tlfs();
+  unsigned char gc_no = (unsigned char)GC_gc_no;
+  int kind;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  /*
+   * In the leak detection mode, the next collection would report the
+   * dropped objects as leaked.
+   */
+  if (GC_find_leak_inner || UNLIKELY(NULL == p)
+      || p->stale_drop_gc_no == gc_no)
+    return;
+  p->stale_drop_gc_no = gc_no;
+  for (kind = 0; kind < THREAD_FREELISTS_KINDS; ++kind) {
+    /*
+     * The mark bits of uncollectable objects are never cleared by the
+     * collector, thus the dropped ones would never be reclaimed.
+     */
+    if (!IS_UNCOLLECTABLE(kind))
+      drop_stale_freelists(p->_freelists[kind], p->refill[kind], 0, gc_no,
+                           kind);
+  }
+#  ifdef THREAD_GCJ_FREELISTS
+  /* The zero-sized `gcj` free list holds `ERROR_FL` value. */
+  drop_stale_freelists(p->gcj_freelists, p->gcj_refill, 1, gc_no, GC_gcj_kind);
+#  endif
+}
+
+/*
  * The slow path of `malloc_kind_tl()`: the size is too big for the
  * thread-local free lists, or the free list is empty or holds a counter,
  * or the free-list entry should be dirtied manually.  If
@@ -383,8 +455,6 @@ GC_malloc(size_t lb)
 #  endif
 
 #  ifdef THREAD_GCJ_FREELISTS
-#    include "gc/gc_gcj.h"
-
 GC_API GC_ATTR_MALLOC void *GC_CALL
 GC_gcj_malloc(size_t lb, const void *vtable_ptr)
 {

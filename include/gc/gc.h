@@ -664,6 +664,10 @@ GC_API int GC_CALL GC_get_max_prior_attempts(void);
  * list.  The number taken grows from one to this value (doubling at each
  * refill of the same free list within a collection cycle), thus it is
  * bigger only for the object sizes which the thread allocates a lot.
+ * A free list of a collectable kind of a thread which has not been
+ * refilled during a whole collection cycle is dropped (except in the leak
+ * detection mode) at the next refill of any free list by the same thread,
+ * and the objects on it are reclaimed by the collector.
  * A value bigger than one reduces the allocator lock contention at the
  * cost of more memory retained by thread-local free lists.  The value
  * should not be zero; bigger ones are capped at an internal limit (32).

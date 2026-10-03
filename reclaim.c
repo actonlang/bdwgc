@@ -919,14 +919,8 @@ GC_print_free_list(int kind, size_t lg)
 }
 #endif /* !NO_DEBUGGING */
 
-/*
- * Clear all next-object pointers in the free list.  This must be done
- * before dropping a list of free `gcj`-style objects, since may otherwise
- * end up with dangling "descriptor" pointers.  It may help for other
- * pointer-containing objects.
- */
-static void
-clear_fl_links(void *fl)
+GC_INNER void
+GC_clear_fl_links(void *fl)
 {
   do {
     void **flp = &obj_link(fl);
@@ -969,7 +963,7 @@ GC_start_reclaim(GC_bool report_if_found)
         if (fl != NULL) {
           ok->ok_freelist[lg] = NULL;
           if (ok->ok_descriptor != 0) /*< should clobber? */
-            clear_fl_links(fl);
+            GC_clear_fl_links(fl);
         }
       }
     } else {
