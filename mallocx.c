@@ -458,8 +458,14 @@ GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
 
   LOCK();
 #ifdef THREAD_LOCAL_ALLOC
-  if (refill_state != NULL)
+  if (refill_state != NULL) {
     n_blocks = next_tl_refill_blocks(refill_state, max_blocks);
+    /*
+     * The free lists of the sizes this thread no longer allocates would
+     * otherwise keep up to `max_blocks` heap blocks each indefinitely.
+     */
+    GC_drop_stale_tl_free_lists();
+  }
 #endif
   /* Do our share of marking work (proportional to the blocks taken). */
   if (GC_incremental && !GC_dont_gc) {

@@ -83,6 +83,12 @@ struct thread_local_freelists {
 #  endif
 
   /*
+   * The lowest byte of `GC_gc_no` at the latest drop of the stale free
+   * lists of this thread (see `GC_drop_stale_tl_free_lists()`).
+   */
+  unsigned char stale_drop_gc_no;
+
+  /*
    * Do not use local free lists for up to this much allocation (unless
    * `GC_no_thread_local_warmup`).
    */
