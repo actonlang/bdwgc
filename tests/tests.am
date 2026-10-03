@@ -44,6 +44,11 @@ check_PROGRAMS += dbgfunctest
 dbgfunctest_SOURCES = tests/dbgfunc.c
 dbgfunctest_LDADD = $(test_ldadd)
 
+TESTS += endpaddingtest$(EXEEXT)
+check_PROGRAMS += endpaddingtest
+endpaddingtest_SOURCES = tests/endpadding.c
+endpaddingtest_LDADD = $(test_ldadd)
+
 # The test includes the collector source instead of linking `libgc`.
 TESTS += expandfailtest$(EXEEXT)
 check_PROGRAMS += expandfailtest
@@ -271,6 +276,7 @@ check-without-test-driver: $(TESTS)
 	./gctest$(EXEEXT)
 	./allocbudgettest$(EXEEXT)
 	./dbgfunctest$(EXEEXT)
+	./endpaddingtest$(EXEEXT)
 	./expandfailtest$(EXEEXT)
 	./heapgrowthtest$(EXEEXT)
 	./heaplimittest$(EXEEXT)
