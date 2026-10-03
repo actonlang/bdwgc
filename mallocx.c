@@ -553,6 +553,12 @@ GC_malloc_many(size_t lb)
 
   if (UNLIKELY(0 == lb))
     lb = 1;
+#if MAX_EXTRA_BYTES > 0
+  if (UNLIKELY(!GC_is_initialized)) {
+    /* `EXTRA_BYTES` value might be changed by `GC_init()`. */
+    GC_init();
+  }
+#endif
   lg = ALLOC_REQUEST_GRANS(lb);
   lb_adjusted = GRANULES_TO_BYTES(lg);
   GC_generic_malloc_many(lb_adjusted, NORMAL, &result);
