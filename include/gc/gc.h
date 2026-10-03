@@ -659,6 +659,24 @@ GC_API void GC_CALL GC_set_max_prior_attempts(int);
 GC_API int GC_CALL GC_get_max_prior_attempts(void);
 
 /**
+ * Set/get the maximum number of heap blocks taken (under a single
+ * acquisition of the allocator lock) by a refill of a thread-local free
+ * list.  The number taken grows from one to this value (doubling at each
+ * refill of the same free list within a collection cycle), thus it is
+ * bigger only for the object sizes which the thread allocates a lot.
+ * A value bigger than one reduces the allocator lock contention at the
+ * cost of more memory retained by thread-local free lists.  The value
+ * should not be zero; bigger ones are capped at an internal limit (32).
+ * The default value is one (unless the collector is built with
+ * `GC_TL_REFILL_MAX` macro defined to another value), it could also be
+ * set by `GC_TL_REFILL_MAX` environment variable.  Has effect only if
+ * the collector is built with thread-local allocation support.
+ * Not synchronized.
+ */
+GC_API void GC_CALL GC_set_tl_refill_max(unsigned);
+GC_API unsigned GC_CALL GC_get_tl_refill_max(void);
+
+/**
  * Control whether to disable algorithm deciding if a collection should
  * be started when we allocated enough to amortize the collection.
  * Both the setter and the getter acquire the allocator lock (in the reader

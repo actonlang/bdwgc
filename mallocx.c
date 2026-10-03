@@ -331,6 +331,70 @@ GC_get_expl_freed_bytes_since_gc(void)
   return (size_t)GC_bytes_freed;
 }
 
+#ifndef GC_TL_REFILL_MAX
+#  define GC_TL_REFILL_MAX 1
+#endif
+
+/*
+ * The hard limit of the number of heap blocks taken by a single refill
+ * of a thread-local free list.
+ */
+#define MAX_TL_REFILL_BLOCKS 32
+
+#if GC_TL_REFILL_MAX < 1 || GC_TL_REFILL_MAX > MAX_TL_REFILL_BLOCKS
+#  error Wrong GC_TL_REFILL_MAX value
+#endif
+
+/*
+ * The maximum number of heap blocks taken by a single refill of
+ * a thread-local free list.
+ */
+STATIC unsigned GC_tl_refill_max = GC_TL_REFILL_MAX;
+
+GC_API void GC_CALL
+GC_set_tl_refill_max(unsigned value)
+{
+  GC_ASSERT(value > 0);
+  if (UNLIKELY(0 == value))
+    value = 1;
+  GC_tl_refill_max
+      = value < MAX_TL_REFILL_BLOCKS ? value : MAX_TL_REFILL_BLOCKS;
+}
+
+GC_API unsigned GC_CALL
+GC_get_tl_refill_max(void)
+{
+  return GC_tl_refill_max;
+}
+
+#ifdef THREAD_LOCAL_ALLOC
+/*
+ * Return the number of heap blocks the current refill of a thread-local
+ * free list (with the given refill state) should take at most, and update
+ * the state.  The number is doubled at every refill of the same free list
+ * within a collection cycle, starting from one, up to `max_blocks`.
+ * Thus the free lists of the rarely used sizes stay short, and a thread
+ * does not retain much memory on its free lists after the collection.
+ */
+static size_t
+next_tl_refill_blocks(struct GC_tl_refill_s *state, size_t max_blocks)
+{
+  unsigned char gc_no = (unsigned char)GC_gc_no;
+  size_t n_blocks = 1;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  GC_ASSERT(max_blocks <= MAX_TL_REFILL_BLOCKS);
+  if (state->gc_no == gc_no && state->n_blocks > 0) {
+    n_blocks = (size_t)state->n_blocks * 2;
+    if (n_blocks > max_blocks)
+      n_blocks = max_blocks;
+  }
+  state->gc_no = gc_no;
+  state->n_blocks = (unsigned char)n_blocks;
+  return n_blocks;
+}
+#endif
+
 GC_API void GC_CALL
 GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
 {
@@ -342,6 +406,12 @@ GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
   word my_bytes_allocd = 0;
   struct obj_kind *ok;
   struct hblk **rlh;
+  /* The maximum number of heap blocks to take. */
+  size_t n_blocks = 1;
+#ifdef THREAD_LOCAL_ALLOC
+  size_t max_blocks;
+  struct GC_tl_refill_s *refill_state = NULL;
+#endif
 
   if (UNLIKELY(!GC_is_initialized))
     GC_init();
@@ -375,24 +445,50 @@ GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
     GC_print_all_errors();
   GC_notify_or_invoke_finalizers();
   GC_DBG_COLLECT_AT_MALLOC(lb_adjusted - EXTRA_BYTES);
+#ifdef THREAD_LOCAL_ALLOC
+  max_blocks = GC_tl_refill_max;
+  if (max_blocks > 1) {
+    /*
+     * Multiple heap blocks are taken only when refilling a thread-local
+     * free list of the current thread.
+     */
+    refill_state = GC_get_tl_refill_state(result);
+  }
+#endif
 
   LOCK();
-  /* Do our share of marking work. */
+#ifdef THREAD_LOCAL_ALLOC
+  if (refill_state != NULL)
+    n_blocks = next_tl_refill_blocks(refill_state, max_blocks);
+#endif
+  /* Do our share of marking work (proportional to the blocks taken). */
   if (GC_incremental && !GC_dont_gc) {
-    GC_collect_a_little_inner(1);
+    GC_collect_a_little_inner(n_blocks);
   }
 
-  /* First see if we can reclaim a page of objects waiting to be reclaimed. */
+  /*
+   * First see if we can reclaim a page (or up to `n_blocks` pages)
+   * of objects waiting to be reclaimed.
+   */
   rlh = ok->ok_reclaim_list;
   if (rlh != NULL) {
-    struct hblk *hbp;
-    hdr *hhdr;
+    hdr *taken[MAX_TL_REFILL_BLOCKS];
 
-    while ((hbp = rlh[lg]) != NULL) {
-      hhdr = HDR(hbp);
-      rlh[lg] = hhdr->hb_next;
-      GC_ASSERT(hhdr->hb_sz == lb_adjusted);
-      hhdr->hb_last_reclaimed = (unsigned short)GC_gc_no;
+    while (rlh[lg] != NULL) {
+      size_t i, n;
+
+      for (n = 0; n < n_blocks; n++) {
+        hdr *hhdr;
+
+        if (NULL == rlh[lg])
+          break;
+        hhdr = HDR(rlh[lg]);
+        rlh[lg] = hhdr->hb_next;
+        GC_ASSERT(hhdr->hb_sz == lb_adjusted);
+        hhdr->hb_last_reclaimed = (unsigned short)GC_gc_no;
+        taken[n] = hhdr;
+      }
+      GC_ASSERT(n > 0);
 #ifdef PARALLEL_MARK
       if (GC_parallel) {
         GC_signed_word my_bytes_allocd_tmp
@@ -411,8 +507,11 @@ GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
         GC_fl_builder_enter();
         UNLOCK();
 
-        op = GC_reclaim_generic(hbp, hhdr, lb_adjusted, ok->ok_init, NULL,
-                                &my_bytes_allocd);
+        op = NULL;
+        for (i = 0; i < n; i++) {
+          op = GC_reclaim_generic(taken[i]->hb_block, taken[i], lb_adjusted,
+                                  ok->ok_init, (ptr_t)op, &my_bytes_allocd);
+        }
         if (op != NULL) {
           *result = op;
           (void)AO_fetch_and_add(&GC_bytes_allocd_tmp, (AO_t)my_bytes_allocd);
@@ -451,8 +550,11 @@ GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
       }
 #endif
 
-      op = GC_reclaim_generic(hbp, hhdr, lb_adjusted, ok->ok_init, NULL,
-                              &my_bytes_allocd);
+      op = NULL;
+      for (i = 0; i < n; i++) {
+        op = GC_reclaim_generic(taken[i]->hb_block, taken[i], lb_adjusted,
+                                ok->ok_init, (ptr_t)op, &my_bytes_allocd);
+      }
       if (op != NULL) {
         /* We also reclaimed memory, so we need to adjust that count. */
         GC_bytes_found += (GC_signed_word)my_bytes_allocd;
@@ -468,7 +570,8 @@ GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
   /*
    * Next try to use prefix of global free list if there is one.
    * We do not refill it, but we need to use it up before allocating
-   * a new block ourselves.
+   * a new block ourselves.  (The prefix is limited by one block since
+   * it is found by a walk holding the allocator lock.)
    */
   opp = &ok->ok_freelist[lg];
   op = *opp;
@@ -486,26 +589,43 @@ GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
     GC_bytes_allocd += my_bytes_allocd;
 
   } else {
-    /* Next try to allocate a new block worth of objects of this size. */
-    struct hblk *h = NULL;
+    /*
+     * Next try to allocate a new block (or up to `n_blocks` blocks)
+     * worth of objects of this size.
+     */
+    struct hblk *hbs[MAX_TL_REFILL_BLOCKS];
+    GC_bool clear = ok->ok_init || GC_debugging_started;
+    size_t i, n = 0;
 
     /*
      * The collector clears the free lists, and sweeps the blocks, only of
      * the kinds having the reclaim list, thus allocate the latter before
      * the first block of the kind.
      */
-    if (LIKELY(ok->ok_reclaim_list != NULL) || GC_alloc_reclaim_list(ok))
-      h = GC_allochblk(lb_adjusted, kind, 0 /* `flags` */, 0 /* `align_m1` */);
-    if (h != NULL) {
-      if (IS_UNCOLLECTABLE(kind))
-        GC_set_hdr_marks(HDR(h));
-      GC_bytes_allocd += HBLKSIZE - (HBLKSIZE % lb_adjusted);
+    if (LIKELY(ok->ok_reclaim_list != NULL) || GC_alloc_reclaim_list(ok)) {
+      for (; n < n_blocks; n++) {
+        struct hblk *h = GC_allochblk(lb_adjusted, kind, 0 /* `flags` */,
+                                      0 /* `align_m1` */);
+
+        if (NULL == h)
+          break;
+        if (IS_UNCOLLECTABLE(kind))
+          GC_set_hdr_marks(HDR(h));
+        GC_bytes_allocd += HBLKSIZE - (HBLKSIZE % lb_adjusted);
+        hbs[n] = h;
+      }
+    }
+
+    if (n > 0) {
 #ifdef PARALLEL_MARK
       if (GC_parallel) {
         GC_fl_builder_enter();
         UNLOCK();
 
-        op = GC_build_fl(h, NULL, lg, ok->ok_init || GC_debugging_started);
+        op = NULL;
+        for (i = 0; i < n; i++) {
+          op = GC_build_fl(hbs[i], (ptr_t)op, lg, clear);
+        }
         *result = op;
         GC_fl_builder_leave();
         (void)GC_clear_stack(NULL);
@@ -513,7 +633,10 @@ GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
       }
 #endif
 
-      op = GC_build_fl(h, NULL, lg, ok->ok_init || GC_debugging_started);
+      op = NULL;
+      for (i = 0; i < n; i++) {
+        op = GC_build_fl(hbs[i], (ptr_t)op, lg, clear);
+      }
     } else {
       /*
        * As a last attempt, try allocating a single object.

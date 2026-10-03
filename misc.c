@@ -1450,6 +1450,16 @@ GC_init(void)
       }
     }
   }
+  {
+    const char *str = GETENV("GC_TL_REFILL_MAX");
+
+    if (str != NULL) {
+      int tl_refill_max = atoi(str);
+
+      if (tl_refill_max > 0)
+        GC_set_tl_refill_max((unsigned)tl_refill_max);
+    }
+  }
 #ifdef USE_MUNMAP
   {
     const char *str = GETENV("GC_UNMAP_THRESHOLD");

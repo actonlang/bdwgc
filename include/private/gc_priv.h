@@ -4453,6 +4453,26 @@ GC_EXTERN __thread ptr_t GC_save_regs_ret_val;
 GC_EXTERN GC_bool GC_world_stopped; /*< defined in `alloc.c` file */
 
 /*
+ * The state of the adaptive refilling of a thread-local free list by
+ * `GC_generic_malloc_many()`.  Accessed only by the owner thread holding
+ * the allocator lock.
+ */
+struct GC_tl_refill_s {
+  /* The number of heap blocks taken by the latest refill. */
+  unsigned char n_blocks;
+
+  /* The lowest byte of `GC_gc_no` at the latest refill. */
+  unsigned char gc_no;
+};
+
+/*
+ * Return the refill state of the free list pointed to by `fl` if the
+ * latter is one of the thread-local free lists of the current thread,
+ * `NULL` otherwise.  Does not need the allocator lock.
+ */
+GC_INNER struct GC_tl_refill_s *GC_get_tl_refill_state(void **fl);
+
+/*
  * We must explicitly mark `ptrfree` and `gcj` free lists, since the
  * free list links would not otherwise be found.  We also set them in
  * the normal free lists, since that involves touching less memory than

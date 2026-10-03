@@ -719,6 +719,10 @@ non-inlined `GC_malloc_kind_tl_slow()`.  By default, both functions inline
 the thread-local allocation, and an object of a nonempty thread-local free
 list is taken by an inline fast path.  It turns this speedup off.
 
+`GC_TL_REFILL_MAX=<value>` - Sets the alternate default value (1..32) of the
+maximum number of heap blocks taken by a single refill of a thread-local free
+list (see `GC_set_tl_refill_max()`).  The default is 1.
+
 `GC_ALLOCD_BYTES_PER_FINALIZER=<value>` - Sets the alternate default value of
 `GC_allocd_bytes_per_finalizer` variable.
 

@@ -187,6 +187,11 @@ free lists (acquiring the allocator lock for each) first (see
 `GC_set_no_thread_local_warmup()`).  The special value "0" turns the mode off.
 Has no effect unless thread-local allocation is supported.
 
+`GC_TL_REFILL_MAX` - Sets the maximum number of heap blocks taken by a single
+refill of a thread-local free list (see `GC_set_tl_refill_max()`).  Values
+bigger than one reduce the allocator lock contention in multi-threaded
+applications at the cost of more memory retained by thread-local free lists.
+
 `GC_UNMAP_THRESHOLD` - Sets the desired threshold of memory blocks unmapping
 (the number of sequential garbage collections during those a candidate block
 for unmapping should be marked as free).  The special value "0" completely
