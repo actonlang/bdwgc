@@ -766,6 +766,7 @@ pub fn build(b: *std.Build) void {
     }
     addTest(b, gc, test_step, flags, "allocbudgettest", "tests/allocbudget.c");
     addTest(b, gc, test_step, flags, "dbgfunctest", "tests/dbgfunc.c");
+    addTest(b, gc, test_step, flags, "endpaddingtest", "tests/endpadding.c");
     // `expandfailtest` includes the collector source, thus it is not
     // linked with `gc` library.
     addTestExt(b, gc, test_step, flags, "expandfailtest", "tests/expandfail.c", .{
