@@ -155,7 +155,7 @@ jobs:
     name: >-
       ${{ matrix.os }} Acton options block_size:${{ matrix.block_size }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     strategy:
       fail-fast: false
@@ -188,6 +188,34 @@ jobs:
         run: >
           zig build
           "-DCFLAGS_EXTRA=-DGC_NO_PUSH_PREFETCH"
+          -Dblock_size=${{ matrix.block_size }}
+          -Ddisable_realloc_free
+          -Ddisable_thread_local_warmup
+          -Denable_gc_assertions
+          -Denable_mark_range_stealing
+          -Denable_werror
+          -Dinitial_mark_stack_size=1048576
+          test
+
+      - name: Run tests with object padding turned off at run-time
+        env:
+          GC_DONT_ADD_BYTE_AT_END: "1"
+        run: >
+          zig build
+          -Dblock_size=${{ matrix.block_size }}
+          -Ddisable_realloc_free
+          -Ddisable_thread_local_warmup
+          -Denable_gc_assertions
+          -Denable_mark_range_stealing
+          -Denable_werror
+          -Dinitial_mark_stack_size=1048576
+          test
+
+      - name: Build and run tests with speedups turned off
+        run: >
+          zig build
+          "-DCFLAGS_EXTRA=-DGC_ATTR_ALWAYS_INLINE= -DGC_NO_CANCEL_STATE_SKIP
+          -DGC_NO_FREE_BLOCK_RUNS -DGC_NO_TL_MALLOC_FAST_PATH"
           -Dblock_size=${{ matrix.block_size }}
           -Ddisable_realloc_free
           -Ddisable_thread_local_warmup
