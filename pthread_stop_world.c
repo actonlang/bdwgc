@@ -247,8 +247,15 @@ GC_get_thr_restart_signal(void)
 #      define ao_cptr_store_async(p, v) GC_cptr_store(p, v)
 #    endif /* !BASE_ATOMIC_OPS_EMULATED */
 
-/* Note: this is also used to acknowledge restart. */
-STATIC sem_t GC_suspend_ack_sem;
+/*
+ * Note: this is also used to acknowledge restart.  Every thread posts it
+ * at each world stop and start, thus it is placed on cache lines of its
+ * own.
+ */
+STATIC struct GC_suspend_ack_sem_s {
+  GC_ATTR_CACHE_ALIGNED sem_t sem;
+} GC_suspend_ack_sem_padded;
+#    define GC_suspend_ack_sem GC_suspend_ack_sem_padded.sem
 
 STATIC void GC_suspend_handler_inner(ptr_t dummy, void *context);
 

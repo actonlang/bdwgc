@@ -54,12 +54,15 @@ GC_VAR_ATTR int GC_use_entire_heap = USE_ENTIRE_HEAP_INIT;
 /*
  * List of completely empty heap blocks.  Linked through `hb_next` field
  * of header structure associated with block.  Remains externally visible
- * as used by GNU `gcj`.
+ * as used by GNU `gcj`.  This array and `GC_free_bytes` are written at
+ * each allocation and freeing of a heap block, thus both start a cache
+ * line.
  */
 #ifndef GC_GCJ_SUPPORT
 STATIC
 #endif
-GC_VAR_ATTR struct hblk *GC_hblkfreelist[N_HBLK_FLS + 1] = { NULL };
+GC_VAR_ATTR GC_ATTR_CACHE_ALIGNED struct hblk *GC_hblkfreelist[N_HBLK_FLS + 1]
+    = { NULL };
 
 GC_API void GC_CALL
 GC_iterate_free_hblks(GC_walk_free_blk_fn fn, void *client_data)
@@ -79,7 +82,7 @@ GC_iterate_free_hblks(GC_walk_free_blk_fn fn, void *client_data)
 #ifndef GC_GCJ_SUPPORT
 STATIC
 #endif
-GC_VAR_ATTR word GC_free_bytes[N_HBLK_FLS + 1] = { 0 };
+GC_VAR_ATTR GC_ATTR_CACHE_ALIGNED word GC_free_bytes[N_HBLK_FLS + 1] = { 0 };
 
 #ifndef GC_NO_DEINIT
 GC_INNER void

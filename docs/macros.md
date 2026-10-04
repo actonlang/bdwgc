@@ -445,6 +445,13 @@ entries, e.g. in the generational mode (after pushing the marked objects of
 the dirty pages), but the full collection of some heap shapes might be
 slightly slower.  Ignored unless `PARALLEL_MARK` is defined.
 
+`GC_CACHE_LINE_SIZE=<n>` - Sets the size (in bytes) of the blocks of memory
+the processors keep coherent, i.e. of a cache line.  The data that several
+threads write often (e.g. the allocator and mark locks, the counters which
+every refill of a thread-local free list updates) is placed on lines of its
+own, so that these writes do not evict the data that every thread reads.
+Defaults to 128 on Apple arm64, and to 64 otherwise.
+
 `GC_BUILTIN_ATOMIC` - Uses GCC atomic intrinsics instead of `libatomic_ops`
 primitives.
 
