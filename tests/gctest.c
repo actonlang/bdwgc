@@ -1764,10 +1764,21 @@ run_one_test(void)
   GC_free(checkOOM(GC_malloc(0)));
   GC_freezero(checkOOM(GC_malloc_atomic(0)), GC_SIZE_MAX);
 #ifndef NO_TEST_HANDLE_FORK
+  /*
+   * The child process runs finalizers, and `finalizer()` acquires
+   * `incr_lock`.  Hold the lock across `fork()`, so that the child process
+   * does not inherit it held by another thread, which does not exist
+   * there.  Acquire it before the collector locks are acquired for `fork()`
+   * because a thread holding it might write to a protected heap page, and
+   * handling the write fault might need one of those locks (e.g. the
+   * userfaultfd monitor one).
+   */
+  FINALIZER_LOCK();
   GC_atfork_prepare();
   pid = fork();
   if (pid != 0) {
     GC_atfork_parent();
+    FINALIZER_UNLOCK();
     if (pid == -1) {
       GC_printf("Process fork failed\n");
       exit(69);
@@ -1784,6 +1795,22 @@ run_one_test(void)
     pid_t child_pid = getpid();
 
     GC_atfork_child();
+#  if defined(THREADS) && defined(GC_PTHREADS)
+    {
+      /*
+       * Reinitialize the lock instead of unlocking it.  Other threads might
+       * be waiting for it at `fork()`, and then, on macOS, a mutex with the
+       * fairshare policy is unusable in the child process after an unlock:
+       * the next lock of it blocks forever.  The collector reinitializes its
+       * allocator lock in the child process for the same reason.
+       */
+      pthread_mutex_t mutex_local = PTHREAD_MUTEX_INITIALIZER;
+
+      BCOPY(&mutex_local, &incr_lock, sizeof(incr_lock));
+    }
+#  else
+    FINALIZER_UNLOCK();
+#  endif
     if (print_stats)
       GC_log_printf("Started a child process, pid= %ld\n", (long)child_pid);
 #  ifdef PARALLEL_MARK
