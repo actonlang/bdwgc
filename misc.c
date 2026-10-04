@@ -40,10 +40,11 @@
 #ifdef THREADS
 #  if defined(SN_TARGET_PSP2)
 GC_INNER WapiMutex GC_allocate_ml_PSP2 = { 0, NULL };
-#  elif defined(GC_DEFN_ALLOCATE_ML) && !defined(USE_RWLOCK) \
+#  elif defined(GC_DEFN_ALLOCATE_ML) && defined(USE_PTHREAD_LOCKS) \
+          && !defined(USE_RWLOCK)                                  \
       || defined(SN_TARGET_PS3)
 #    include <pthread.h>
-GC_INNER pthread_mutex_t GC_allocate_ml;
+GC_INNER struct GC_allocate_ml_s GC_allocate_ml_padded;
 #  else
 /*
  * For other platforms with threads, the allocator lock and, possibly,
@@ -353,9 +354,15 @@ static unsigned
 next_random_no(void)
 {
 #    ifdef AO_HAVE_fetch_and_add1
-  static volatile AO_t random_no;
+  /*
+   * Every thread that clears its stack updates the counter, thus it is
+   * placed on cache lines of its own.
+   */
+  static struct {
+    GC_ATTR_CACHE_ALIGNED volatile AO_t value;
+  } random_no;
 
-  return (unsigned)AO_fetch_and_add1(&random_no) % 13;
+  return (unsigned)AO_fetch_and_add1(&random_no.value) % 13;
 #    else
   static unsigned random_no = 0;
 
