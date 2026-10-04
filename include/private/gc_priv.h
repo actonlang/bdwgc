@@ -204,6 +204,39 @@ typedef char GC_bool;
 #  define GC_ATTR_PTRT_ALIGNED /*< empty */
 #endif
 
+/*
+ * The size of the memory block that the processors keep coherent as
+ * a whole: a variable written by one thread slows down the threads that
+ * read any other data in the same block.  Unlike `CACHE_LINE_SIZE`, which
+ * only sets the prefetch distance, this one should not be underestimated.
+ * The arm64 processors by Apple have 128-byte cache lines.  The client
+ * could override it (e.g. by `-D GC_CACHE_LINE_SIZE=128`).
+ */
+#ifndef GC_CACHE_LINE_SIZE
+#  if defined(AARCH64) && defined(DARWIN)
+#    define GC_CACHE_LINE_SIZE 128
+#  else
+#    define GC_CACHE_LINE_SIZE 64
+#  endif
+#endif
+
+/*
+ * Align a variable or a structure member to `GC_CACHE_LINE_SIZE`.
+ * The data written often by several threads is placed in a structure
+ * whose first member has this attribute: the size of such a structure
+ * is a multiple of the line size, thus no other data shares its lines.
+ */
+#if defined(__GNUC__)
+#  define GC_ATTR_CACHE_ALIGNED \
+    __attribute__((__aligned__(GC_CACHE_LINE_SIZE)))
+#elif defined(_MSC_VER)
+#  define GC_ATTR_CACHE_ALIGNED __declspec(align(GC_CACHE_LINE_SIZE))
+/* Do not warn that a structure is padded because of the alignment. */
+#  pragma warning(disable : 4324)
+#else
+#  define GC_ATTR_CACHE_ALIGNED /*< empty */
+#endif
+
 #ifdef CHERI_PURECAP
 #  include <cheriintrin.h>
 #endif
@@ -1671,6 +1704,23 @@ struct _GC_arrays {
 #define GC_large_free_bytes GC_arrays._large_free_bytes
   word _large_free_bytes;
 
+  /*
+   * How many consecutive collection/expansion failures?
+   * Reset by `GC_allochblk()`.  This and `GC_unmapped_bytes` are updated,
+   * as `GC_large_free_bytes` is, when heap blocks are allocated, thus they
+   * are placed next to it, away from the fields read without the allocator
+   * lock (e.g. `GC_is_initialized`).
+   */
+#define GC_alloc_fail_count GC_arrays._alloc_fail_count
+  unsigned _alloc_fail_count;
+
+#ifdef USE_MUNMAP
+#  define GC_unmapped_bytes GC_arrays._unmapped_bytes
+  word _unmapped_bytes;
+#else
+#  define GC_unmapped_bytes 0
+#endif
+
   /* Total number of bytes in allocated large objects blocks. */
 #define GC_large_allocd_bytes GC_arrays._large_allocd_bytes
   word _large_allocd_bytes;
@@ -1846,21 +1896,9 @@ struct _GC_arrays {
    */
 #define GC_mark_stack_top GC_arrays._mark_stack_top
 #ifdef PARALLEL_MARK
-  /* Updated only with the mark lock held, but read asynchronously. */
-  mse *volatile _mark_stack_top;
-
+  /* `_mark_stack_top` is at the end of the structure. */
 #  define GC_mark_no GC_arrays._mark_no
   word _mark_no; /*< protected by the mark lock */
-
-  /*
-   * Number of bytes of memory allocated since we released the allocator lock.
-   * Instead of reacquiring the allocator lock just to add this in, we add it
-   * in the next time we reacquire the allocator lock.  (Atomically adding it
-   * does not work, since we would have to atomically update it in
-   * `GC_malloc`, which is too expensive.)
-   */
-#  define GC_bytes_allocd_tmp GC_arrays._bytes_allocd_tmp
-  volatile AO_t _bytes_allocd_tmp;
 #else
   mse *_mark_stack_top;
 #endif
@@ -2107,7 +2145,9 @@ struct _GC_arrays {
    * on free lists that we had to drop.  Protected by the allocator lock.
    */
 #define GC_bytes_found GC_arrays._bytes_found
-  GC_signed_word _bytes_found;
+#ifndef PARALLEL_MARK
+  GC_signed_word _bytes_found; /*< otherwise, at the end of the structure */
+#endif
 
 #ifndef GC_GET_HEAP_USAGE_NOT_NEEDED
   /*
@@ -2116,13 +2156,6 @@ struct _GC_arrays {
    */
 #  define GC_reclaimed_bytes_before_gc GC_arrays._reclaimed_bytes_before_gc
   word _reclaimed_bytes_before_gc;
-#endif
-
-#ifdef USE_MUNMAP
-#  define GC_unmapped_bytes GC_arrays._unmapped_bytes
-  word _unmapped_bytes;
-#else
-#  define GC_unmapped_bytes 0
 #endif
 
 #if defined(COUNT_UNMAPPED_REGIONS) && defined(USE_MUNMAP)
@@ -2141,13 +2174,6 @@ struct _GC_arrays {
 #ifdef PARALLEL_MARK
 #  define GC_main_local_mark_stack GC_arrays._main_local_mark_stack
   mse *_main_local_mark_stack;
-
-  /*
-   * The lowest entry on mark stack that may not be empty.
-   * Updated only by the initiating thread.
-   */
-#  define GC_first_nonempty GC_arrays._first_nonempty
-  volatile ptr_t _first_nonempty;
 #endif
 
 #ifndef THREADS
@@ -2324,13 +2350,6 @@ struct _GC_arrays {
   static int _darwin_fault_count;
 #  endif
 #endif
-
-  /*
-   * How many consecutive collection/expansion failures?
-   * Reset by `GC_allochblk()`.
-   */
-#define GC_alloc_fail_count GC_arrays._alloc_fail_count
-  unsigned _alloc_fail_count;
 
 #ifdef ENABLE_DISCLAIM
 #  define GC_finalized_kind GC_arrays._finalized_kind
@@ -2641,6 +2660,60 @@ struct _GC_arrays {
 #  define GC_ecos_memory GC_arrays._ecos_memory
   size_t _ecos_brk_idx;
   char _ecos_memory[ECOS_GC_MEMORY_SIZE];
+#endif
+
+#ifdef PARALLEL_MARK
+  /*
+   * The fields below are written often by several threads at a time:
+   * the first group by the markers, the second one by the threads that
+   * build free lists without the allocator lock.  Each group starts
+   * a cache line, and the size of the structure is a multiple of the line
+   * size, thus no other field shares the lines of these groups.
+   */
+
+  /* Updated only with the mark lock held, but read asynchronously. */
+  GC_ATTR_CACHE_ALIGNED mse *volatile _mark_stack_top;
+
+  /* The lowest entry on mark stack that may not be empty. */
+#  define GC_first_nonempty GC_arrays._first_nonempty
+  volatile ptr_t _first_nonempty;
+
+  /*
+   * Number of running helpers.  Updated only with the mark lock held,
+   * but read asynchronously (as a hint) if `STEAL_MARK_STACK_RANGES`.
+   */
+#  define GC_helper_count GC_arrays._helper_count
+  volatile AO_t _helper_count;
+
+  /*
+   * Number of active helpers.  May increase and decrease within each
+   * mark cycle; but once it returns to zero, it stays for the cycle.
+   * Updated only with the mark lock held, but read asynchronously (as
+   * a hint) if `STEAL_MARK_STACK_RANGES`.
+   */
+#  define GC_active_count GC_arrays._active_count
+  volatile AO_t _active_count;
+
+  /*
+   * Number of bytes of memory allocated since we released the allocator lock.
+   * Instead of reacquiring the allocator lock just to add this in, we add it
+   * in the next time we reacquire the allocator lock.  (Atomically adding it
+   * does not work, since we would have to atomically update it in
+   * `GC_malloc`, which is too expensive.)
+   */
+#  define GC_bytes_allocd_tmp GC_arrays._bytes_allocd_tmp
+  GC_ATTR_CACHE_ALIGNED volatile AO_t _bytes_allocd_tmp;
+
+  /*
+   * Number of threads currently building free lists without holding
+   * the allocator lock.  It is not safe to collect if this is nonzero.
+   * Also, together with the mark lock, it is used as a semaphore during
+   * marker threads startup.  Protected by the mark lock.
+   */
+#  define GC_fl_builder_count GC_arrays._fl_builder_count
+  GC_signed_word _fl_builder_count;
+
+  GC_signed_word _bytes_found; /*< see `GC_bytes_found` above */
 #endif
 };
 
@@ -4658,14 +4731,6 @@ GC_INNER void GC_acquire_mark_lock(void);
 GC_INNER void GC_release_mark_lock(void);
 GC_INNER void GC_notify_all_builder(void);
 GC_INNER void GC_wait_for_reclaim(void);
-
-/*
- * Number of threads currently building free lists without holding
- * the allocator lock.  It is not safe to collect if this is nonzero.
- * Also, together with the mark lock, it is used as a semaphore during
- * marker threads startup.  Protected by the mark lock.
- */
-GC_EXTERN GC_signed_word GC_fl_builder_count;
 
 GC_INNER void GC_notify_all_marker(void);
 GC_INNER void GC_wait_marker(void);

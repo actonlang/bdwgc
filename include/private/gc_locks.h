@@ -242,6 +242,18 @@ GC_INNER void GC_lock(void);
 EXTERN_C_END
 #      include <pthread.h>
 EXTERN_C_BEGIN
+/*
+ * The allocator lock.  Every thread that takes it writes it, thus it is
+ * placed on cache lines of its own.
+ */
+GC_EXTERN struct GC_allocate_ml_s {
+#      ifdef USE_RWLOCK
+  GC_ATTR_CACHE_ALIGNED pthread_rwlock_t lock;
+#      else
+  GC_ATTR_CACHE_ALIGNED pthread_mutex_t lock;
+#      endif
+} GC_allocate_ml_padded;
+#      define GC_allocate_ml GC_allocate_ml_padded.lock
 #      ifdef GC_ASSERTIONS
 GC_INNER void GC_lock(void);
 #        define UNCOND_LOCK()              \
@@ -252,7 +264,6 @@ GC_INNER void GC_lock(void);
           }
 #      endif
 #      ifdef USE_RWLOCK
-GC_EXTERN pthread_rwlock_t GC_allocate_ml;
 #        ifdef GC_ASSERTIONS
 #          define UNCOND_READER_LOCK()                      \
             {                                               \
@@ -278,7 +289,6 @@ GC_EXTERN pthread_rwlock_t GC_allocate_ml;
 #          define UNCOND_UNLOCK() (void)pthread_rwlock_unlock(&GC_allocate_ml)
 #        endif /* !GC_ASSERTIONS */
 #      else
-GC_EXTERN pthread_mutex_t GC_allocate_ml;
 #        ifdef GC_ASSERTIONS
 #          define UNCOND_UNLOCK()                    \
             {                                        \

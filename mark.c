@@ -1066,22 +1066,6 @@ GC_mark_from(mse *mark_stack_top, const mse *mark_stack, mse *mark_stack_limit)
 /* Note: this is protected by the mark lock. */
 STATIC GC_bool GC_help_wanted = FALSE;
 
-/*
- * Number of running helpers.  Updated only with the mark lock held,
- * but read asynchronously (as a hint) if `STEAL_MARK_STACK_RANGES`.
- */
-STATIC volatile AO_t GC_helper_count = 0;
-
-/*
- * Number of active helpers.  May increase and decrease within each
- * mark cycle; but once it returns to zero, it stays for the cycle.
- * Updated only with the mark lock held, but read asynchronously (as
- * a hint) if `STEAL_MARK_STACK_RANGES`.
- */
-STATIC volatile AO_t GC_active_count = 0;
-
-GC_INNER GC_signed_word GC_fl_builder_count = 0;
-
 GC_INNER void
 GC_wait_for_markers_init(void)
 {
