@@ -104,6 +104,7 @@
     "Etrax",
     "EXCMASK",
     "execinfo",
+    "fairshare",
     "FALLTHRU",
     "FARPROC",
     "feenableexcept",
