@@ -752,7 +752,13 @@ GC_mark_from(mse *mark_stack_top, const mse *mark_stack, mse *mark_stack_limit)
 
 #define SPLIT_RANGE_PTRS 128 /*< must be power of 2 */
 
-  GC_objects_are_marked = TRUE;
+  /*
+   * Every marker calls this function often.  A store, even of the unchanged
+   * value, would take the cache line holding the flag away from the other
+   * markers.
+   */
+  if (!GC_objects_are_marked)
+    GC_objects_are_marked = TRUE;
   INIT_HDR_CACHE;
 #if defined(OS2) || CPP_PTRSZ > CPP_WORDSZ
   /* OS/2: avoid the tweaked variant to circumvent a compiler problem. */
@@ -1065,22 +1071,6 @@ GC_mark_from(mse *mark_stack_top, const mse *mark_stack, mse *mark_stack_limit)
 
 /* Note: this is protected by the mark lock. */
 STATIC GC_bool GC_help_wanted = FALSE;
-
-/*
- * Number of running helpers.  Updated only with the mark lock held,
- * but read asynchronously (as a hint) if `STEAL_MARK_STACK_RANGES`.
- */
-STATIC volatile AO_t GC_helper_count = 0;
-
-/*
- * Number of active helpers.  May increase and decrease within each
- * mark cycle; but once it returns to zero, it stays for the cycle.
- * Updated only with the mark lock held, but read asynchronously (as
- * a hint) if `STEAL_MARK_STACK_RANGES`.
- */
-STATIC volatile AO_t GC_active_count = 0;
-
-GC_INNER GC_signed_word GC_fl_builder_count = 0;
 
 GC_INNER void
 GC_wait_for_markers_init(void)

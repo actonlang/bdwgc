@@ -574,21 +574,29 @@ GC_INNER_WIN32THREAD int GC_available_markers_m1 = 0;
 
 #  ifdef GC_PTHREADS_PARAMARK
 
-#    ifdef GLIBC_2_1_MUTEX_HACK
 /*
- * Ugly workaround for a Linux threads bug in the final versions
- * of `glibc` 2.1.  `pthread_mutex_trylock` sets the mutex owner
- * field even when it fails to acquire the mutex.  This causes
- * `pthread_cond_wait` to die.  Should not be needed for `glibc` 2.2.
- * According to the man page, we should use
- * `PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP`, but that is not actually
- * defined.
+ * The mark lock.  Every thread that builds a free list without the
+ * allocator lock takes it, thus it is placed on cache lines of its own.
  */
-static pthread_mutex_t mark_mutex
-    = { 0, 0, 0, PTHREAD_MUTEX_ERRORCHECK_NP, { 0, 0 } };
+static struct {
+  GC_ATTR_CACHE_ALIGNED pthread_mutex_t lock;
+} mark_mutex_padded = {
+#    ifdef GLIBC_2_1_MUTEX_HACK
+  /*
+   * Ugly workaround for a Linux threads bug in the final versions
+   * of `glibc` 2.1.  `pthread_mutex_trylock` sets the mutex owner
+   * field even when it fails to acquire the mutex.  This causes
+   * `pthread_cond_wait` to die.  Should not be needed for `glibc` 2.2.
+   * According to the man page, we should use
+   * `PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP`, but that is not actually
+   * defined.
+   */
+  { 0, 0, 0, PTHREAD_MUTEX_ERRORCHECK_NP, { 0, 0 } }
 #    else
-static pthread_mutex_t mark_mutex = PTHREAD_MUTEX_INITIALIZER;
+  PTHREAD_MUTEX_INITIALIZER
 #    endif
+};
+#    define mark_mutex mark_mutex_padded.lock
 
 #    ifdef CAN_HANDLE_FORK
 /* Note: this is initialized by `GC_start_mark_threads_inner()`. */
@@ -3178,9 +3186,11 @@ yield:
 
 #  elif defined(USE_PTHREAD_LOCKS)
 #    ifdef USE_RWLOCK
-GC_INNER pthread_rwlock_t GC_allocate_ml = PTHREAD_RWLOCK_INITIALIZER;
+GC_INNER struct GC_allocate_ml_s GC_allocate_ml_padded
+    = { PTHREAD_RWLOCK_INITIALIZER };
 #    else
-GC_INNER pthread_mutex_t GC_allocate_ml = PTHREAD_MUTEX_INITIALIZER;
+GC_INNER struct GC_allocate_ml_s GC_allocate_ml_padded
+    = { PTHREAD_MUTEX_INITIALIZER };
 #    endif
 
 #    ifndef NO_PTHREAD_TRYLOCK
