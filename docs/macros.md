@@ -685,6 +685,15 @@ are already marked or pointer-free (and thus are not scanned).  The last
 candidate pointer of a range scanned by `GC_mark_from()` is prefetched as
 soon as it is found either way.
 
+`GC_NO_IDLE_MARKER_CV` - Causes the marker threads to wait between mark phases
+on the condition variable of the markers in a phase, thus to be woken up by
+every notification of a phase and once more when it ends, and allows a marker
+thread to join a phase after its marking is complete.  By default, the marker
+threads wait between mark phases on a separate condition variable shared by
+them, which is notified only at the start of a parallel mark phase, and no
+marker thread joins a phase after the first marker finds its marking complete.
+An off switch for the latter.
+
 `GC_NO_THREAD_LOCAL_WARMUP` - Sets "no thread-local warm-up" mode on by
 default, i.e. a thread uses its thread-local free list of each small object
 size starting from its first allocation of that size (see
