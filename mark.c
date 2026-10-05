@@ -1466,6 +1466,13 @@ GC_mark_local(mse *local_mark_stack, int id)
            * only be incremented asynchronously.  Thus we know that
            * both conditions are actually held simultaneously.
            */
+#  ifndef GC_NO_IDLE_MARKER_CV
+          /*
+           * The marking of this phase is complete, so no other marker
+           * thread should join the phase.
+           */
+          GC_help_wanted = FALSE;
+#  endif
           AO_store(&GC_helper_count, GC_helper_count - 1);
           if (0 == GC_helper_count)
             need_to_notify = TRUE;
@@ -1546,8 +1553,12 @@ GC_do_parallel_mark(void)
   AO_store(&GC_helper_count, 1);
   GC_help_wanted = TRUE;
   /* Wake up potential helpers. */
-  GC_notify_all_marker();
+  GC_notify_all_idle_markers();
   GC_mark_local(GC_main_local_mark_stack, 0);
+#  ifndef GC_NO_IDLE_MARKER_CV
+  /* Cleared by the first marker which found the marking complete. */
+  GC_ASSERT(!GC_help_wanted);
+#  endif
   GC_help_wanted = FALSE;
   /* Done; clean up. */
   while (GC_helper_count > 0) {
@@ -1558,7 +1569,19 @@ GC_do_parallel_mark(void)
                         (unsigned long)GC_mark_no);
   GC_mark_no++;
   GC_release_mark_lock();
+#  ifdef GC_NO_IDLE_MARKER_CV
   GC_notify_all_marker();
+#  else
+  /*
+   * The marker threads waiting for a mark phase are not woken up here.
+   * Such a thread joins a phase only if `GC_help_wanted` is set, which is
+   * not the case now.  A thread which sleeps through the increment of
+   * `GC_mark_no` is woken up at the start of the next phase, returns from
+   * `GC_help_marker()` (as its mark number is behind), and resynchronizes
+   * with `GC_mark_no` in `GC_mark_thread()`, the only caller of
+   * `GC_help_marker()`.
+   */
+#  endif
 }
 
 GC_INNER void
@@ -1580,7 +1603,7 @@ GC_help_marker(word my_mark_no)
   GC_ASSERT(GC_parallel);
   while (GC_mark_no < my_mark_no
          || (!GC_help_wanted && GC_mark_no == my_mark_no)) {
-    GC_wait_marker();
+    GC_wait_idle_marker();
   }
   my_id = GC_helper_count;
   if (GC_mark_no != my_mark_no || my_id > (unsigned)GC_markers_m1) {

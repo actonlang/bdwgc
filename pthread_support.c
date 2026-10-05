@@ -548,8 +548,11 @@ unsigned __stdcall GC_mark_thread(void *id)
     GC_notify_all_builder();
 
   /*
-   * `GC_mark_no` is passed only to allow `GC_help_marker` to
-   * terminate promptly.  This is important if it were called from the
+   * `GC_mark_no` is passed only to allow `GC_help_marker` to return
+   * once the mark cycle it is called for is done (a thread waiting for
+   * that mark cycle notices this only when it is woken up, i.e. at the
+   * start of the next parallel mark phase, unless `GC_NO_IDLE_MARKER_CV`
+   * macro is defined).  This is important if it were called from the
    * signal handler or from the allocator lock acquisition code.
    * On Linux, it is not safe to call it from a signal handler, since
    * it uses mutex and condition variables.  Since it is called only
@@ -605,6 +608,27 @@ static pthread_cond_t mark_cv;
 static pthread_cond_t mark_cv = PTHREAD_COND_INITIALIZER;
 #    endif
 
+#    ifndef GC_NO_IDLE_MARKER_CV
+/*
+ * The condition variable the marker threads wait on between mark phases
+ * (`mark_cv` is waited on only by the markers in a phase, and by the
+ * thread which initiated the phase).  It is placed on cache lines of its
+ * own, so that the idle marker threads do not write a line shared with
+ * other data, e.g. with `mark_cv`.
+ */
+#      ifdef CAN_HANDLE_FORK
+/* Note: this is initialized by `GC_start_mark_threads_inner()`. */
+static struct {
+  GC_ATTR_CACHE_ALIGNED pthread_cond_t cv;
+} idle_marker_cv_padded;
+#      else
+static struct {
+  GC_ATTR_CACHE_ALIGNED pthread_cond_t cv;
+} idle_marker_cv_padded = { PTHREAD_COND_INITIALIZER };
+#      endif
+#      define idle_marker_cv idle_marker_cv_padded.cv
+#    endif
+
 GC_INNER void
 GC_start_mark_threads_inner(void)
 {
@@ -624,11 +648,11 @@ GC_start_mark_threads_inner(void)
 
 #    ifdef CAN_HANDLE_FORK
   /*
-   * Initialize `mark_cv` (for the first time), or cleanup its value
-   * after forking in the child process.  All the marker threads in the
-   * parent process were blocked on this variable at process fork, so
-   * `pthread_cond_wait()` malfunction (hang) is possible in the child
-   * process without such a cleanup.
+   * Initialize `mark_cv` and `idle_marker_cv` (for the first time), or
+   * cleanup their values after forking in the child process.  All the
+   * marker threads in the parent process were blocked on these variables
+   * at process fork, so `pthread_cond_wait()` malfunction (hang) is
+   * possible in the child process without such a cleanup.
    */
 
   /*
@@ -639,6 +663,12 @@ GC_start_mark_threads_inner(void)
     pthread_cond_t mark_cv_local = PTHREAD_COND_INITIALIZER;
     BCOPY(&mark_cv_local, &mark_cv, sizeof(mark_cv));
   }
+#      ifndef GC_NO_IDLE_MARKER_CV
+  {
+    pthread_cond_t idle_marker_cv_local = PTHREAD_COND_INITIALIZER;
+    BCOPY(&idle_marker_cv_local, &idle_marker_cv, sizeof(idle_marker_cv));
+  }
+#      endif
 #    endif
 
   GC_ASSERT(0 == GC_fl_builder_count);
@@ -3373,6 +3403,28 @@ GC_notify_all_marker(void)
   if (pthread_cond_broadcast(&mark_cv) != 0)
     ABORT("pthread_cond_broadcast failed");
 }
+
+#    ifndef GC_NO_IDLE_MARKER_CV
+GC_INNER void
+GC_wait_idle_marker(void)
+{
+  ASSERT_CANCEL_DISABLED();
+  GC_ASSERT(GC_parallel);
+  UNSET_MARK_LOCK_HOLDER;
+  if (pthread_cond_wait(&idle_marker_cv, &mark_mutex) != 0)
+    ABORT("pthread_cond_wait failed");
+  GC_ASSERT(GC_mark_lock_holder == NO_THREAD);
+  SET_MARK_LOCK_HOLDER;
+}
+
+GC_INNER void
+GC_notify_all_idle_markers(void)
+{
+  GC_ASSERT(GC_parallel);
+  if (pthread_cond_broadcast(&idle_marker_cv) != 0)
+    ABORT("pthread_cond_broadcast failed");
+}
+#    endif
 
 #  endif /* GC_PTHREADS_PARAMARK */
 

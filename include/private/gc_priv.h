@@ -4803,10 +4803,10 @@ GC_EXTERN GC_bool GC_parallel_mark_disabled;
  * The mark lock is used to both protect some variables used by the
  * parallel marker, and to protect `GC_fl_builder_count`.
  * `GC_notify_all_marker()` is called when the state of the parallel marker
- * changes in some significant way (see `gc_mark.h` file for details).
- * The latter set of events includes incrementing `GC_mark_no`.
- * `GC_notify_all_builder()` is called when `GC_fl_builder_count` reaches
- * zero.
+ * changes in some significant way (see `gc_pmark.h` file for details).
+ * Incrementing `GC_mark_no` is not notified (unless `GC_NO_IDLE_MARKER_CV`
+ * macro is defined).  `GC_notify_all_builder()` is called when
+ * `GC_fl_builder_count` reaches zero.
  */
 
 /*
@@ -4824,9 +4824,24 @@ GC_INNER void GC_notify_all_marker(void);
 GC_INNER void GC_wait_marker(void);
 
 /*
+ * The routines to wait for the start of a mark phase, and to notify the
+ * marker threads waiting for it.  The caller holds the mark lock.
+ */
+#  if defined(GC_PTHREADS_PARAMARK) && !defined(GC_NO_IDLE_MARKER_CV)
+GC_INNER void GC_wait_idle_marker(void);
+GC_INNER void GC_notify_all_idle_markers(void);
+#  else
+#    define GC_wait_idle_marker() GC_wait_marker()
+#    define GC_notify_all_idle_markers() GC_notify_all_marker()
+#  endif
+
+/*
  * Try to help out parallel marker, if it is running, for mark cycle
- * `my_mark_no`.  Returns if the mark cycle finishes or was already
- * done, or there was nothing to do for some other reason.  We hold the
+ * `my_mark_no`.  Returns after helping in the mark cycle, if the mark
+ * cycle is found done, or if there was nothing to do for some other
+ * reason.  A thread waiting for the mark cycle is woken up only at the
+ * start of a parallel mark phase (unless `GC_NO_IDLE_MARKER_CV` macro is
+ * defined), so it may find the mark cycle done only then.  We hold the
  * mark lock only, the initiating thread holds the allocator lock.
  */
 GC_INNER void GC_help_marker(word my_mark_no);

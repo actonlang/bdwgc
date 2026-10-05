@@ -214,7 +214,8 @@ jobs:
         run: >
           zig build
           "-DCFLAGS_EXTRA=-DGC_ATTR_ALWAYS_INLINE= -DGC_NO_CANCEL_STATE_SKIP
-          -DGC_NO_FREE_BLOCK_RUNS -DGC_NO_TL_MALLOC_FAST_PATH"
+          -DGC_NO_FREE_BLOCK_RUNS -DGC_NO_IDLE_MARKER_CV
+          -DGC_NO_TL_MALLOC_FAST_PATH"
           -Dblock_size=${{ matrix.block_size }}
           -Ddisable_realloc_free
           -Ddisable_thread_local_warmup
