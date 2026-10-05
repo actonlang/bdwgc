@@ -89,7 +89,13 @@ GC_EXTERN unsigned GC_n_mark_procs;
  *        2.4. If necessary, copy local stack to global one, holding the
  *             mark lock;
  *        2.5. Stop when the global mark stack is empty.
- *     3. Decrement `GC_helper_count` (holding the mark lock).
+ *     3. Decrement `GC_helper_count` (holding the mark lock).  The first
+ *        marker (a helper or the initiating thread) which finds the
+ *        marking complete (no active marker and an empty global mark
+ *        stack) also clears `GC_help_wanted`, so that no other thread
+ *        joins the phase.  (If `GC_NO_IDLE_MARKER_CV` macro is defined,
+ *        then the initiating thread clears it when it leaves the
+ *        phase.)
  *
  * This is an experiment to see if we can do something along the lines
  * of the University of Tokyo SGC in a less intrusive, though probably
@@ -99,11 +105,19 @@ GC_EXTERN unsigned GC_n_mark_procs;
 /* `GC_mark_stack_top` is protected by the mark lock. */
 
 /*
- * `GC_notify_all_marker()` is used when `GC_help_wanted` is first set,
- * when the last helper becomes inactive, when something is added to the
- * global mark stack, and just after `GC_mark_no` is incremented.
- * This could be split into multiple conditional variables (and probably
- * should be) to scale to really large numbers of processors.
+ * `GC_notify_all_idle_markers()` is used when `GC_help_wanted` is set,
+ * i.e. at the start of a parallel mark phase.  `GC_notify_all_marker()`
+ * is used when the last active marker becomes inactive, when something
+ * is added to the global mark stack, and when the last helper leaves the
+ * phase; only the markers in the phase and the thread which initiated
+ * the phase wait for these events.  If `GC_NO_IDLE_MARKER_CV` macro is
+ * defined, then the marker threads waiting for a phase wait on the same
+ * condition variable as the markers in a phase, and
+ * `GC_notify_all_marker()` is also used just after `GC_mark_no` is
+ * incremented.  (If the parallel marker is not based on pthreads, then
+ * every marker thread waits on an event of its own, which both functions
+ * set.)  The condition variables could be split further to scale to
+ * really large numbers of processors.
  */
 #endif /* PARALLEL_MARK */
 
