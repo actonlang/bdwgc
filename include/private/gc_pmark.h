@@ -322,8 +322,19 @@ GC_ms_push_contents_hdr(ptr_t current, hdr *hhdr, mse *mark_stack_top,
                                      (void *)source));
     INCR_MARKS(hhdr);
     GC_STORE_BACK_PTR(source, base);
-    mark_stack_top
-        = GC_ms_push_obj_hdr(base, hhdr, mark_stack_top, mark_stack_limit);
+    GC_ASSERT(!HBLK_IS_FREE(hhdr));
+    if (IS_PTRFREE(hhdr))
+      break; /*< nothing to scan */
+    /*
+     * Prefetch the object contents, as it is likely we will scan them
+     * soon.  This is done here, after the mark bit and pointer-free
+     * checks, so that no memory bandwidth is spent on the objects which
+     * are already marked or which are never scanned.  (`GC_mark_from`
+     * also prefetches the last candidate of each range earlier.)
+     */
+    PREFETCH(base);
+    mark_stack_top = GC_ms_push_obj_descr(base, hhdr->hb_descr, mark_stack_top,
+                                          mark_stack_limit);
   } while (0);
   return mark_stack_top;
 }
