@@ -856,7 +856,6 @@ GC_mark_from(mse *mark_stack_top, const mse *mark_stack, mse *mark_stack_limit)
           LOAD_PTR_OR_CONTINUE(q, current_p);
           FIXUP_POINTER(q);
           if (ADDR_LT(least_ha, q) && ADDR_LT(q, greatest_ha)) {
-            PREFETCH(q);
 #ifdef ENABLE_TRACE
             if (GC_trace_ptr == current_p) {
               GC_log_printf("GC #%lu: considering(3) %p -> %p\n",
@@ -997,6 +996,13 @@ GC_mark_from(mse *mark_stack_top, const mse *mark_stack, mse *mark_stack_limit)
           goto check_limit;
 #  endif
         if (ADDR_LT(least_ha, deferred) && ADDR_LT(deferred, greatest_ha)) {
+          /*
+           * Prefetch this candidate as soon as it is found, before it is
+           * known to be unmarked and not pointer-free.  If it is pushed,
+           * it is pushed last and popped next, so the scan of the rest
+           * of the range below is all the time there is for the fetch.
+           * This wastes at most one prefetch per range.
+           */
           PREFETCH(deferred);
           break;
         }
@@ -1031,11 +1037,6 @@ GC_mark_from(mse *mark_stack_top, const mse *mark_stack, mse *mark_stack_limit)
         FIXUP_POINTER(q);
         PREFETCH(current_p + PREF_DIST * CACHE_LINE_SIZE);
         if (ADDR_LT(least_ha, q) && ADDR_LT(q, greatest_ha)) {
-          /*
-           * Prefetch the contents of the object we just pushed.
-           * It is likely we will need them soon.
-           */
-          PREFETCH(q);
 #ifdef ENABLE_TRACE
           if (GC_trace_ptr == current_p) {
             GC_log_printf("GC #%lu: considering(1) %p -> %p\n",
@@ -1837,7 +1838,6 @@ GC_mark_and_push(void *obj, mse *mark_stack_top, mse *mark_stack_limit,
 {
   hdr *hhdr;
 
-  PREFETCH(obj);
   GET_HDR(obj, hhdr);
   if ((UNLIKELY(IS_FORWARDING_ADDR_OR_NIL(hhdr))
        && (!GC_all_interior_pointers
@@ -1862,7 +1862,6 @@ GC_mark_and_push_stack(ptr_t p)
   hdr *hhdr;
   ptr_t r = p;
 
-  PREFETCH(p);
   GET_HDR(p, hhdr);
   if (UNLIKELY(IS_FORWARDING_ADDR_OR_NIL(hhdr))) {
     if (NULL == hhdr || (r = (ptr_t)GC_base(p)) == NULL
