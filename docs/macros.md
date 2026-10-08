@@ -655,6 +655,14 @@ selects the policy based on `GC_free_space_divisor`.
 freeing it after moving its contents to a new object (see
 `GC_set_realloc_no_free()`).  The mode could be changed at run-time.
 
+`GC_NO_PUSH_PREFETCH` - Turns off the prefetch of an object when it is
+pushed onto the mark stack.  Instead, `GC_mark_from()`, `GC_mark_and_push()`
+and `GC_mark_and_push_stack()` prefetch the memory at every plausible heap
+pointer before the lookup of its block header, i.e. also the objects which
+are already marked or pointer-free (and thus are not scanned).  The last
+candidate pointer of a range scanned by `GC_mark_from()` is prefetched as
+soon as it is found either way.
+
 `GC_NO_THREAD_LOCAL_WARMUP` - Sets "no thread-local warm-up" mode on by
 default, i.e. a thread uses its thread-local free list of each small object
 size starting from its first allocation of that size (see
