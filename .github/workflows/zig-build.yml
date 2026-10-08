@@ -155,7 +155,7 @@ jobs:
     name: >-
       ${{ matrix.os }} Acton options block_size:${{ matrix.block_size }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 7
+    timeout-minutes: 15
 
     strategy:
       fail-fast: false
@@ -175,6 +175,19 @@ jobs:
       - name: Build and run tests
         run: >
           zig build
+          -Dblock_size=${{ matrix.block_size }}
+          -Ddisable_realloc_free
+          -Ddisable_thread_local_warmup
+          -Denable_gc_assertions
+          -Denable_mark_range_stealing
+          -Denable_werror
+          -Dinitial_mark_stack_size=1048576
+          test
+
+      - name: Build and run tests with the prefetch on push turned off
+        run: >
+          zig build
+          "-DCFLAGS_EXTRA=-DGC_NO_PUSH_PREFETCH"
           -Dblock_size=${{ matrix.block_size }}
           -Ddisable_realloc_free
           -Ddisable_thread_local_warmup

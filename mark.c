@@ -856,6 +856,7 @@ GC_mark_from(mse *mark_stack_top, const mse *mark_stack, mse *mark_stack_limit)
           LOAD_PTR_OR_CONTINUE(q, current_p);
           FIXUP_POINTER(q);
           if (ADDR_LT(least_ha, q) && ADDR_LT(q, greatest_ha)) {
+            PREFETCH_CANDIDATE(q);
 #ifdef ENABLE_TRACE
             if (GC_trace_ptr == current_p) {
               GC_log_printf("GC #%lu: considering(3) %p -> %p\n",
@@ -1037,6 +1038,7 @@ GC_mark_from(mse *mark_stack_top, const mse *mark_stack, mse *mark_stack_limit)
         FIXUP_POINTER(q);
         PREFETCH(current_p + PREF_DIST * CACHE_LINE_SIZE);
         if (ADDR_LT(least_ha, q) && ADDR_LT(q, greatest_ha)) {
+          PREFETCH_CANDIDATE(q);
 #ifdef ENABLE_TRACE
           if (GC_trace_ptr == current_p) {
             GC_log_printf("GC #%lu: considering(1) %p -> %p\n",
@@ -1838,6 +1840,7 @@ GC_mark_and_push(void *obj, mse *mark_stack_top, mse *mark_stack_limit,
 {
   hdr *hhdr;
 
+  PREFETCH_CANDIDATE(obj);
   GET_HDR(obj, hhdr);
   if ((UNLIKELY(IS_FORWARDING_ADDR_OR_NIL(hhdr))
        && (!GC_all_interior_pointers
@@ -1862,6 +1865,7 @@ GC_mark_and_push_stack(ptr_t p)
   hdr *hhdr;
   ptr_t r = p;
 
+  PREFETCH_CANDIDATE(p);
   GET_HDR(p, hhdr);
   if (UNLIKELY(IS_FORWARDING_ADDR_OR_NIL(hhdr))) {
     if (NULL == hhdr || (r = (ptr_t)GC_base(p)) == NULL
