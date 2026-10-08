@@ -212,6 +212,21 @@ GC_ms_push_obj_hdr(ptr_t obj, const hdr *hhdr, mse *mark_stack_top,
 #endif
 
 /*
+ * Prefetch the memory at a plausible heap pointer `p` before the lookup
+ * of its block header (in `GC_mark_from()`, `GC_mark_and_push()` and
+ * `GC_mark_and_push_stack()`).  This is a no-op unless
+ * `GC_NO_PUSH_PREFETCH` macro is defined, as by default
+ * `GC_ms_push_contents_hdr()` prefetches only the objects which it pushes
+ * onto the mark stack.  (The last candidate of a range scanned by
+ * `GC_mark_from()` is prefetched as soon as it is found either way.)
+ */
+#ifdef GC_NO_PUSH_PREFETCH
+#  define PREFETCH_CANDIDATE(p) PREFETCH(p)
+#else
+#  define PREFETCH_CANDIDATE(p) (void)0
+#endif
+
+/*
  * If the mark bit corresponding to `current` is not set, set it, and
  * push the contents of the object on the mark stack.  `current` points
  * to the beginning of the object.  We rely on the fact that the
@@ -325,6 +340,7 @@ GC_ms_push_contents_hdr(ptr_t current, hdr *hhdr, mse *mark_stack_top,
     GC_ASSERT(!HBLK_IS_FREE(hhdr));
     if (IS_PTRFREE(hhdr))
       break; /*< nothing to scan */
+#ifndef GC_NO_PUSH_PREFETCH
     /*
      * Prefetch the object contents, as it is likely we will scan them
      * soon.  This is done here, after the mark bit and pointer-free
@@ -333,6 +349,7 @@ GC_ms_push_contents_hdr(ptr_t current, hdr *hhdr, mse *mark_stack_top,
      * also prefetches the last candidate of each range earlier.)
      */
     PREFETCH(base);
+#endif
     mark_stack_top = GC_ms_push_obj_descr(base, hhdr->hb_descr, mark_stack_top,
                                           mark_stack_limit);
   } while (0);
