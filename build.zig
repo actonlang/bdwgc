@@ -46,6 +46,17 @@ comptime {
     }
 }
 
+// `LinkMode` is declared in `std.lang` as of zig 0.17, and in `std.builtin`
+// before.
+const LinkMode = if (@hasDecl(std, "lang")) std.lang.LinkMode else std.builtin.LinkMode;
+
+// Whether `optimize` is the debug mode.  The tags of `OptimizeMode` are
+// lowercase as of zig 0.17.
+fn isDebugMode(optimize: anytype) bool {
+    if (@hasField(@TypeOf(optimize), "debug")) return optimize == .debug;
+    return optimize == .Debug;
+}
+
 // The virtual dirty bits implementation used by the incremental and
 // generational collection modes.
 const DirtyTrackingBackend = enum {
@@ -66,7 +77,7 @@ pub fn build(b: *std.Build) void {
 
     // Customize build by passing "-D<option_name>[=false]" in command line.
     const enable_cplusplus = b.option(bool, "enable_cplusplus", "C++ support") orelse false;
-    const linkage = b.option(std.builtin.LinkMode, "linkage", "Build shared libraries (otherwise static ones)") orelse .dynamic;
+    const linkage = b.option(LinkMode, "linkage", "Build shared libraries (otherwise static ones)") orelse .dynamic;
     const build_cord = b.option(bool, "build_cord", "Build cord library") orelse true;
     const cflags_extra = b.option([]const u8, "CFLAGS_EXTRA", "Extra user-defined cflags") orelse "";
     // TODO: support `enable_docs`
@@ -256,7 +267,7 @@ pub fn build(b: *std.Build) void {
     if (!enable_gc_dump) {
         flags.append(b.allocator, "-D NO_DEBUGGING") catch unreachable;
     }
-    if (optimize != .Debug) {
+    if (!isDebugMode(optimize)) {
         flags.append(b.allocator, "-D NDEBUG") catch unreachable;
     }
 

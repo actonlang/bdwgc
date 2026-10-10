@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        zig_version: ["0.16.0"]
+        zig_version: ["0.17.0"]
         ttriple:
           - aarch64-freebsd-none
           - aarch64-maccatalyst-none
