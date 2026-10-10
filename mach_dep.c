@@ -81,6 +81,12 @@ GC_with_callee_saves_pushed(GC_with_callee_saves_func fn, ptr_t arg)
 #      endif
 
   if (getcontext_works >= 0) {
+    /*
+     * `getcontext()` fills only a part of the structure (296 of 4560 bytes
+     * with glibc on Linux/AArch64).  The rest would keep stale stack
+     * contents, which are scanned as if they were registers.  Clear it.
+     */
+    BZERO(&ctxt, sizeof(ctxt));
     if (getcontext(&ctxt) < 0) {
       WARN("getcontext failed: using another register retrieval method...\n",
            0);
