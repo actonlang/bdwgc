@@ -1237,6 +1237,13 @@ if(BUILD_TESTING)
             )
             add_test(NAME forktest COMMAND forktest)
 
+            add_executable(threadcanceltest tests/threadcancel.c ${NODIST_SRC})
+            target_link_libraries(
+                threadcanceltest
+                PRIVATE gc ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+            )
+            add_test(NAME threadcanceltest COMMAND threadcanceltest)
+
             add_executable(threadkeytest tests/threadkey.c ${NODIST_SRC})
             target_link_libraries(threadkeytest PRIVATE gc ${THREADDLLIBS_LIST})
             add_test(NAME threadkeytest COMMAND threadkeytest)
