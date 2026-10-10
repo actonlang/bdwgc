@@ -1578,9 +1578,13 @@ fork_prepare_proc(void)
    * finish it in the (one remaining thread in) the child process.
    */
 
-  LOCK();
+  /*
+   * Acquiring the allocator lock (`GC_lock()` might sleep in
+   * `nanosleep()`) and the following waits may include cancellation
+   * points.
+   */
   DISABLE_CANCEL(cancel_state);
-  /* The following waits may include cancellation points. */
+  LOCK();
   if (is_thread_registered_inner()) {
     /* `fork()` is called from a thread registered in the collector. */
     GC_wait_for_gc_completion(TRUE);
@@ -2499,8 +2503,14 @@ GC_unregister_my_thread(void)
             || THREAD_ID_EQUAL(GC_main_thread_id, thread_id_self()));
 #  endif
 
-  LOCK();
+  /*
+   * `GC_lock()` might sleep in `nanosleep()`, which is a cancellation
+   * point, thus cancellation is disabled before acquiring the allocator
+   * lock.  Otherwise, a pending cancellation request would terminate the
+   * thread here leaving it registered.
+   */
   DISABLE_CANCEL(cancel_state);
+  LOCK();
   /*
    * Wait for any collection that may be marking from our stack to complete
    * before we remove this thread.
@@ -2509,8 +2519,8 @@ GC_unregister_my_thread(void)
   me = GC_self_thread_inner();
   GC_ASSERT(THREAD_ID_EQUAL(me->id, thread_id_self()));
   GC_unregister_my_thread_inner(me);
-  RESTORE_CANCEL(cancel_state);
   UNLOCK();
+  RESTORE_CANCEL(cancel_state);
   return GC_SUCCESS;
 }
 
@@ -2694,12 +2704,20 @@ GC_thread_exit_proc(void *arg)
   GC_log_printf("Called GC_thread_exit_proc on %p, gc_thread= %p\n",
                 THREAD_ID_TO_VPTR(me->id), (void *)me);
 #    endif
-  LOCK();
+  /*
+   * Cancellation is disabled before acquiring the allocator lock, as
+   * `GC_lock()` might sleep in `nanosleep()`, which is a cancellation
+   * point.  When the thread start routine returns, this function is
+   * called by `pthread_cleanup_pop(1)` after it is removed from the
+   * cleanup stack, thus a pending cancellation request acted on here
+   * would terminate the thread without unregistering it.
+   */
   DISABLE_CANCEL(cancel_state);
+  LOCK();
   GC_wait_for_gc_completion(FALSE);
   GC_unregister_my_thread_inner(me);
-  RESTORE_CANCEL(cancel_state);
   UNLOCK();
+  RESTORE_CANCEL(cancel_state);
 }
 
 #    define GC_wrap_pthread_join WRAP_FUNC(pthread_join)
