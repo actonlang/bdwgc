@@ -9,7 +9,7 @@ jobs:
     name: >-
       ${{ matrix.os }} ${{ matrix.c_compiler }} ${{ matrix.cflags_extra }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 6
+    timeout-minutes: 20
 
     strategy:
       # Deliver the feedback for all matrix combinations.
@@ -63,4 +63,19 @@ jobs:
           ${{ matrix.curses_opt }}
 
       - name: Test enforcing mprotect-based VDB
-        run: sh -c 'GC_USE_GETWRITEWATCH=0 ./gctest'
+        shell: bash
+        run: |
+          for i in 1 2 3 4 5 6 7 8; do
+            rm -f gctest.gc.log
+            start=$(date +%s)
+            GC_PROMPT_DISABLED=1 GC_USE_GETWRITEWATCH=0 timeout 150 ./gctest
+            rc=$?
+            echo "run $i rc=$rc in $(( $(date +%s) - start )) s"
+            if [ $rc -ne 0 ]; then
+              echo "=== gctest.gc.log of run $i:"
+              cat gctest.gc.log 2>/dev/null || echo "(no log file)"
+              exit 1
+            fi
+          done
+          echo "=== tail of the last gctest.gc.log:"
+          tail -5 gctest.gc.log 2>/dev/null || true
