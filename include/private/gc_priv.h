@@ -4798,6 +4798,13 @@ GC_EXTERN GC_bool GC_dump_regularly;
 GC_EXTERN GC_bool GC_parallel_mark_disabled;
 
 /*
+ * The estimated bytes to scan per marker of a mark phase (see
+ * `GC_set_bytes_per_marker()`).  Zero lets every parallel mark phase use
+ * all the markers.  Protected by the allocator lock.
+ */
+GC_EXTERN size_t GC_bytes_per_marker;
+
+/*
  * The routines to deal with the mark lock and condition variables.
  * If the allocator lock is also acquired, it must be done first.
  * The mark lock is used to both protect some variables used by the
@@ -4824,15 +4831,19 @@ GC_INNER void GC_notify_all_marker(void);
 GC_INNER void GC_wait_marker(void);
 
 /*
- * The routines to wait for the start of a mark phase, and to notify the
- * marker threads waiting for it.  The caller holds the mark lock.
+ * The routines to wait for the start of a mark phase, and to notify
+ * `n` of the marker threads waiting for it (all of them if `n` is not
+ * less than `GC_markers_m1`).  The caller holds the mark lock.  If the
+ * marker threads do not wait on a condition variable of their own,
+ * then the notification wakes up every marker thread, and those which
+ * find the phase has all its markers already wait again.
  */
 #  if defined(GC_PTHREADS_PARAMARK) && !defined(GC_NO_IDLE_MARKER_CV)
 GC_INNER void GC_wait_idle_marker(void);
-GC_INNER void GC_notify_all_idle_markers(void);
+GC_INNER void GC_notify_idle_markers(unsigned n);
 #  else
 #    define GC_wait_idle_marker() GC_wait_marker()
-#    define GC_notify_all_idle_markers() GC_notify_all_marker()
+#    define GC_notify_idle_markers(n) ((void)(n), GC_notify_all_marker())
 #  endif
 
 /*

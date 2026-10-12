@@ -2586,6 +2586,7 @@ main(void)
   GC_set_rate(10);
   GC_set_max_prior_attempts(GC_get_max_prior_attempts());
   TEST_ASSERT(GC_get_rate() == 10);
+  GC_set_bytes_per_marker(GC_get_bytes_per_marker());
 #if defined(GC_WIN32_THREADS) && !defined(GC_PTHREADS)
   InitializeCriticalSection(&incr_cs);
 #endif

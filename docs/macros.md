@@ -650,6 +650,10 @@ maximum heap increment independent of the heap size.
 budget percentage (see `GC_set_alloc_budget_percent()`); zero (the default)
 selects the policy based on `GC_free_space_divisor`.
 
+`GC_BYTES_PER_MARKER=<value>` - Sets the default value of the bytes to scan
+per marker of a mark phase (see `GC_set_bytes_per_marker()`); zero (the
+default) lets every parallel mark phase use all the marker threads.
+
 `GC_REALLOC_NO_FREE` - Sets "no free on realloc" mode on by default, i.e.
 `GC_realloc` leaves a small collectable object to the collector instead of
 freeing it after moving its contents to a new object (see
@@ -687,10 +691,12 @@ soon as it is found either way.
 
 `GC_NO_IDLE_MARKER_CV` - Causes the marker threads to wait between mark phases
 on the condition variable of the markers in a phase, thus to be woken up by
-every notification of a phase and once more when it ends, and allows a marker
-thread to join a phase after its marking is complete.  By default, the marker
-threads wait between mark phases on a separate condition variable shared by
-them, which is notified only at the start of a parallel mark phase, and no
+every notification of a phase (all of them at its start, also those a phase
+with fewer markers does not need, see `GC_set_bytes_per_marker()`) and once
+more when it ends, and allows a marker thread to join a phase after its
+marking is complete.  By default, the marker threads wait between mark phases
+on a separate condition variable shared by them, which is notified only at the
+start of a parallel mark phase, as many times as the phase has helpers, and no
 marker thread joins a phase after the first marker finds its marking complete.
 An off switch for the latter.
 

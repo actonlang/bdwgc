@@ -395,6 +395,68 @@ GC_initiate_gc(void)
 #ifdef PARALLEL_MARK
 /* Initiate parallel marking. */
 STATIC void GC_do_parallel_mark(void);
+
+/*
+ * The number of markers of the current mark phase, including the
+ * collecting thread; one means that the collecting thread marks alone.
+ * Set on every entry to `MS_ROOTS_PUSHED` state, with the allocator lock
+ * held; read by the markers of a parallel mark phase (after acquiring
+ * the mark lock to join the phase, thus after it is set).
+ */
+STATIC unsigned GC_phase_markers = 1;
+
+/*
+ * Decide the number of markers of the mark phase whose roots have just
+ * been pushed: one per `GC_bytes_per_marker` bytes the phase is estimated
+ * to scan (rounded up), at least one and at most all the marker threads
+ * plus the collecting thread; all of them if `GC_bytes_per_marker` is
+ * zero.  An object reachable now was either live at the previous
+ * collection or allocated since then, so the bytes the phase scans are
+ * estimated by the size of the pointer-containing objects found live by
+ * the previous collection, plus the bytes allocated since then, plus the
+ * static data roots and the thread stacks pushed by this collection.
+ * The estimate is an upper bound except for objects kept only by
+ * conservative pointers to free or not yet swept objects, data pushed by
+ * client push or mark procedures, and the live objects of the previous
+ * collection that its mark counts missed (these counts can be low after
+ * parallel marking).  Called with the allocator lock held, after each
+ * push of the roots (thus again after a mark stack overflow).
+ */
+static unsigned
+markers_for_phase(void)
+{
+  size_t per_marker = GC_bytes_per_marker;
+  size_t live, allocd, roots, stacks, bound;
+  unsigned markers = (unsigned)GC_markers_m1 + 1;
+  unsigned res;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  if (!GC_parallel || 0 == per_marker)
+    return markers;
+  live = (size_t)GC_composite_in_use;
+  allocd = SIZET_SAT_ADD((size_t)GC_bytes_allocd,
+                         (size_t)AO_load(&GC_bytes_allocd_tmp));
+  roots = (size_t)GC_root_size;
+  stacks = (size_t)GC_total_stacksize;
+  bound = SIZET_SAT_ADD(SIZET_SAT_ADD(live, allocd),
+                        SIZET_SAT_ADD(roots, stacks));
+  if (bound / per_marker >= (size_t)markers) {
+    res = markers;
+  } else {
+    /* Round up, and use one marker at least. */
+    res = (unsigned)(bound / per_marker);
+    if (bound % per_marker != 0 || 0 == res)
+      res++;
+  }
+  if (!GC_parallel_mark_disabled) {
+    GC_COND_LOG_PRINTF("Marking with %u of %u markers: about %lu KiB to scan"
+                       " (live pointer data %lu, allocated %lu, roots %lu,"
+                       " stacks %lu KiB)\n",
+                       res, markers, TO_KiB_UL(bound), TO_KiB_UL(live),
+                       TO_KiB_UL(allocd), TO_KiB_UL(roots), TO_KiB_UL(stacks));
+  }
+  return res;
+}
 #endif
 
 #ifdef GC_DISABLE_INCREMENTAL
@@ -425,8 +487,12 @@ push_roots_and_advance(GC_bool push_all, ptr_t cold_gc_frame)
    */
   GC_objects_are_marked = TRUE;
   GC_push_roots(push_all, cold_gc_frame);
-  if (GC_mark_state != MS_INVALID)
+  if (GC_mark_state != MS_INVALID) {
     GC_mark_state = MS_ROOTS_PUSHED;
+#ifdef PARALLEL_MARK
+    GC_phase_markers = markers_for_phase();
+#endif
+  }
 }
 
 STATIC GC_on_mark_stack_empty_proc GC_on_mark_stack_empty = 0;
@@ -518,8 +584,11 @@ GC_mark_some(ptr_t cold_gc_frame)
      * TODO: For now, parallel marker is disabled if there is a chance that
      * marking could be interrupted by a client-supplied time limit or custom
      * stop function.
+     *
+     * A mark phase whose estimated size gives it one marker only (see
+     * `markers_for_phase()`) takes the serial path below as well.
      */
-    if (GC_parallel && !GC_parallel_mark_disabled) {
+    if (GC_parallel && !GC_parallel_mark_disabled && GC_phase_markers > 1) {
       GC_do_parallel_mark();
       GC_ASSERT(ADDR_LT((ptr_t)GC_mark_stack_top, GC_first_nonempty));
       GC_mark_stack_top = GC_mark_stack - 1;
@@ -593,7 +662,40 @@ GC_mark_some(ptr_t cold_gc_frame)
 
 #ifdef PARALLEL_MARK
 GC_INNER GC_bool GC_parallel_mark_disabled = FALSE;
+
+#  ifndef GC_BYTES_PER_MARKER
+#    define GC_BYTES_PER_MARKER 0
+#  endif
+
+GC_INNER size_t GC_bytes_per_marker = (size_t)GC_BYTES_PER_MARKER;
 #endif
+
+GC_API void GC_CALL
+GC_set_bytes_per_marker(size_t value)
+{
+#ifdef PARALLEL_MARK
+  LOCK();
+  GC_bytes_per_marker = value;
+  UNLOCK();
+#else
+  UNUSED_ARG(value);
+#endif
+}
+
+GC_API size_t GC_CALL
+GC_get_bytes_per_marker(void)
+{
+#ifdef PARALLEL_MARK
+  size_t value;
+
+  READER_LOCK();
+  value = GC_bytes_per_marker;
+  READER_UNLOCK();
+  return value;
+#else
+  return 0;
+#endif
+}
 
 #ifdef WRAP_MARK_SOME
 GC_INNER GC_bool
@@ -1503,11 +1605,11 @@ GC_mark_local(mse *local_mark_stack, int id)
     else {
       /*
        * Take a fair share of the global mark stack (half of it divided by
-       * the number of markers), not to steal so often in case of a huge
-       * mark stack (e.g. after pushing all the marked objects of the dirty
-       * pages in a generational collection).
+       * the number of markers of the phase), not to steal so often in case
+       * of a huge mark stack (e.g. after pushing all the marked objects of
+       * the dirty pages in a generational collection).
        */
-      size_t fair_share = n_on_stack / (2 * ((size_t)GC_markers_m1 + 1));
+      size_t fair_share = n_on_stack / (2 * (size_t)GC_phase_markers);
 
       if (fair_share > MAX_ENTRIES_TO_GET)
         fair_share = MAX_ENTRIES_TO_GET;
@@ -1548,12 +1650,14 @@ GC_do_parallel_mark(void)
   GC_VERBOSE_LOG_PRINTF("Starting marking for mark phase number %lu\n",
                         (unsigned long)GC_mark_no);
 
+  GC_ASSERT(GC_phase_markers > 1
+            && GC_phase_markers <= (unsigned)GC_markers_m1 + 1);
   GC_cptr_store(&GC_first_nonempty, (ptr_t)GC_mark_stack);
   AO_store(&GC_active_count, 0);
   AO_store(&GC_helper_count, 1);
   GC_help_wanted = TRUE;
-  /* Wake up potential helpers. */
-  GC_notify_all_idle_markers();
+  /* Wake up as many helpers as the phase has besides this thread. */
+  GC_notify_idle_markers(GC_phase_markers - 1);
   GC_mark_local(GC_main_local_mark_stack, 0);
 #  ifndef GC_NO_IDLE_MARKER_CV
   /* Cleared by the first marker which found the marking complete. */
@@ -1606,10 +1710,11 @@ GC_help_marker(word my_mark_no)
     GC_wait_idle_marker();
   }
   my_id = GC_helper_count;
-  if (GC_mark_no != my_mark_no || my_id > (unsigned)GC_markers_m1) {
+  if (GC_mark_no != my_mark_no || my_id >= (word)GC_phase_markers) {
     /*
-     * The second test is useful only if the original threads can also
-     * act as helpers.  Under Linux they cannot.
+     * The mark cycle is done, or the phase has all its markers already
+     * (see `markers_for_phase()`); in the latter case this thread waits
+     * for the next phase.
      */
     return;
   }

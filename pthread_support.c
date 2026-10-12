@@ -3418,11 +3418,24 @@ GC_wait_idle_marker(void)
 }
 
 GC_INNER void
-GC_notify_all_idle_markers(void)
+GC_notify_idle_markers(unsigned n)
 {
   GC_ASSERT(GC_parallel);
-  if (pthread_cond_broadcast(&idle_marker_cv) != 0)
-    ABORT("pthread_cond_broadcast failed");
+  if (n >= (unsigned)GC_markers_m1) {
+    if (pthread_cond_broadcast(&idle_marker_cv) != 0)
+      ABORT("pthread_cond_broadcast failed");
+    return;
+  }
+  /*
+   * A signaled thread no longer waits on the condition variable, thus
+   * each signal wakes up another waiting thread (if any is still waiting).
+   * A marker thread which is not waiting now tests `GC_help_wanted`
+   * before it waits, thus it cannot miss the phase.
+   */
+  for (; n > 0; n--) {
+    if (pthread_cond_signal(&idle_marker_cv) != 0)
+      ABORT("pthread_cond_signal failed");
+  }
 }
 #    endif
 

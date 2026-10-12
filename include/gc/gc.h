@@ -133,6 +133,28 @@ GC_API int GC_CALL GC_get_parallel(void);
  */
 GC_API void GC_CALL GC_set_markers_count(unsigned);
 
+/**
+ * Set/get the bytes to scan per marker of a mark phase.  When the roots
+ * of a mark phase are pushed, the collector estimates the bytes the
+ * phase scans by the sum of the size of the pointer-containing objects
+ * found live by the previous collection, the bytes allocated since then,
+ * the size of the static data roots and the size of the thread stacks.
+ * If the value is nonzero, then the phase is marked by one marker per
+ * that many bytes of the estimate (rounded up), i.e. by the collecting
+ * thread and as many of the marker threads as needed to reach that
+ * number, at least by the collecting thread and at most by all the
+ * marker threads; a phase with one marker is done by the collecting
+ * thread only.  Zero (the default unless `GC_BYTES_PER_MARKER` macro is
+ * defined to build the collector) lets every parallel mark phase use all
+ * the marker threads.  The value is read when the roots of a mark phase
+ * are pushed.  Has effect only if the collector is built with parallel
+ * marking support (the getter returns zero otherwise).  Both the setter
+ * and the getter acquire the allocator lock (in the reader mode in case
+ * of the getter).
+ */
+GC_API void GC_CALL GC_set_bytes_per_marker(size_t);
+GC_API size_t GC_CALL GC_get_bytes_per_marker(void);
+
 /*
  * Public R/W variables.  The supplied setter and getter functions are
  * preferred for new client code.
