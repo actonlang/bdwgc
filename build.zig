@@ -97,6 +97,7 @@ pub fn build(b: *std.Build) void {
     const alloc_budget_percent = b.option(u32, "alloc_budget_percent", "Collect after allocating this percentage of the live data size (0 keeps the policy based on the free space divisor)") orelse 0;
     const enable_mark_range_stealing = b.option(bool, "enable_mark_range_stealing", "Let parallel markers claim ranges of the global mark stack by CAS") orelse false;
     const enable_end_padding = b.option(bool, "enable_end_padding", "Pad objects so that a pointer just past the end of an object keeps it alive") orelse true;
+    const bytes_per_marker = b.option(u64, "bytes_per_marker", "Mark a mark phase by one marker per this many bytes it is estimated to scan (0 lets every parallel mark phase use all the markers)") orelse 0;
     const initial_mark_stack_size = b.option(u32, "initial_mark_stack_size", "Initial number of entries in the global mark stack, a power of two, 4096 at least (0 keeps the default of HBLKSIZE entries)") orelse 0;
     const tiny_freelists = b.option(u32, "tiny_freelists", "Number of tiny (thread-local) free lists per kind, i.e. objects of up to this number minus one granules use them (0 keeps the default)") orelse 0;
     const disable_realloc_free = b.option(bool, "disable_realloc_free", "Leave a small collectable object moved by GC_realloc to the collector instead of freeing it") orelse false;
@@ -391,6 +392,14 @@ pub fn build(b: *std.Build) void {
 
     if (!enable_end_padding) {
         flags.append(b.allocator, "-D DONT_ADD_BYTE_AT_END") catch unreachable;
+    }
+
+    if (bytes_per_marker != 0) {
+        // The value should fit in `size_t` of the target.
+        if (bytes_per_marker > std.math.shl(u64, 1, t.ptrBitWidth()) -% 1) {
+            @panic("bytes_per_marker is too big for the target: it should fit in size_t");
+        }
+        flags.append(b.allocator, b.fmt("-D GC_BYTES_PER_MARKER={d}", .{bytes_per_marker})) catch unreachable;
     }
 
     if (initial_mark_stack_size != 0) {
