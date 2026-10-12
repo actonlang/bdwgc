@@ -214,6 +214,11 @@ check_PROGRAMS += threadwarmuptest
 threadwarmuptest_SOURCES = tests/threadwarmup.c
 threadwarmuptest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
+TESTS += markercounttest$(EXEEXT)
+check_PROGRAMS += markercounttest
+markercounttest_SOURCES = tests/markercount.c
+markercounttest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+
 endif
 
 if CPLUSPLUS
@@ -309,6 +314,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f disclaimtest$(EXEEXT) || ./disclaimtest$(EXEEXT)
 	test ! -f forktest$(EXEEXT) || ./forktest$(EXEEXT)
 	test ! -f initfromthreadtest$(EXEEXT) || ./initfromthreadtest$(EXEEXT)
+	test ! -f markercounttest$(EXEEXT) || ./markercounttest$(EXEEXT)
 	test ! -f subthreadcreatetest$(EXEEXT) || ./subthreadcreatetest$(EXEEXT)
 	test ! -f threadcanceltest$(EXEEXT) || ./threadcanceltest$(EXEEXT)
 	test ! -f threadkeytest$(EXEEXT) || ./threadkeytest$(EXEEXT)
