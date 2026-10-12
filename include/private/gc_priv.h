@@ -4937,7 +4937,8 @@ void *GC_find_limit(void *p, int up);
 #if defined(NEED_FIND_LIMIT)                                 \
     || (defined(UNIX_LIKE) && !defined(NO_DEBUGGING))        \
     || (defined(USE_PROC_FOR_LIBRARIES) && defined(THREADS)) \
-    || (defined(WRAP_MARK_SOME) && defined(NO_SEH_AVAILABLE))
+    || (defined(WRAP_MARK_SOME) && defined(NO_SEH_AVAILABLE) \
+        && !defined(USE_VECTORED_FAULT_HANDLER))
 typedef void (*GC_fault_handler_t)(int);
 GC_INNER void GC_set_and_save_fault_handler(GC_fault_handler_t);
 #endif
@@ -4956,6 +4957,17 @@ GC_INNER void GC_setup_temporary_fault_handler(void);
 /* Undo the effect of `GC_setup_temporary_fault_handler`. */
 GC_INNER void GC_reset_fault_handler(void);
 #endif /* NEED_FIND_LIMIT || USE_PROC_FOR_LIBRARIES || WRAP_MARK_SOME */
+
+#ifdef USE_VECTORED_FAULT_HANDLER
+/*
+ * Install the vectored exception handler used by
+ * `GC_setup_temporary_fault_handler`.  Called by `GC_init`.
+ */
+GC_INNER void GC_add_vectored_fault_handler(void);
+
+/* Remove the handler installed by `GC_add_vectored_fault_handler`. */
+GC_INNER void GC_remove_vectored_fault_handler(void);
+#endif
 
 /* Some convenience macros for cancellation support. */
 #ifdef CANCEL_SAFE
