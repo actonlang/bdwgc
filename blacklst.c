@@ -158,9 +158,15 @@ GC_unpromote_black_lists(void)
 /*
  * It is safe to set a bit in a blacklist even without synchronization,
  * the only drawback is that we might have to redo black-listing sometimes.
+ * The bit is tested first: the markers of a parallel mark phase may
+ * black-list the same few pages over and over again, and a store, even
+ * of an unchanged word, takes the cache line away from the other markers.
  */
 #    define backlist_set_pht_entry_from_index(bl, index) \
-      set_pht_entry_from_index(bl, index)
+      do {                                               \
+        if (!get_pht_entry_from_index(bl, index))        \
+          set_pht_entry_from_index(bl, index);           \
+      } while (0)
 #  endif
 
 #  ifdef PRINT_BLACK_LIST
