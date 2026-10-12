@@ -3433,6 +3433,25 @@ extern GC_VAR_ATTR ptr_t GC_data_start;
 #  define NO_SEH_AVAILABLE
 #endif
 
+#if defined(WRAP_MARK_SOME) && defined(NO_SEH_AVAILABLE) && defined(MSWIN32) \
+    && !defined(MSWINRT_FLAVOR)                                              \
+    && (defined(I386) || defined(X86_64) || defined(AARCH64))
+/*
+ * Since its change "Remove registration of `_gnu_exception_handler` as
+ * UnhandledExceptionFilter" (June 2026), the MinGW-w64 runtime passes
+ * an access violation to the `SIGSEGV` handler (set by `signal()`) only
+ * in a thread which has an exception frame of the C runtime (the main
+ * thread and threads started by `_beginthreadex()`), but not in a thread
+ * created by `CreateThread()`.  Thus, `GC_mark_some` recovers from
+ * a fault by a vectored exception handler instead.  With this macro, the
+ * handler stays installed from `GC_init` to `GC_deinit`, and it resumes
+ * the faulting thread in a function which calls `longjmp` (the layout of
+ * `_JUMP_BUFFER` is needed for that) instead of calling `longjmp` itself,
+ * which would leave the handler registered after its removal.
+ */
+#  define USE_VECTORED_FAULT_HANDLER
+#endif
+
 #ifdef GC_WIN32_THREADS
 /* The number of copied registers in `copy_ptr_regs()`. */
 #  if defined(I386)

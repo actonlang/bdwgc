@@ -1058,7 +1058,124 @@ GC_set_and_save_fault_handler(GC_fault_handler_t h)
     || (defined(WRAP_MARK_SOME) && defined(NO_SEH_AVAILABLE))
 GC_INNER GC_VAR_ATTR JMP_BUF GC_jmp_buf;
 
-#  if defined(MSWIN32) && defined(NO_SEH_AVAILABLE)
+#  ifdef USE_VECTORED_FAULT_HANDLER
+/*
+ * The handle of the vectored exception handler.  The handler stays
+ * installed from `GC_init` to `GC_deinit` because adding and removing it
+ * costs more than a typical `GC_mark_some` call.
+ */
+static PVOID fault_veh_handle;
+
+/*
+ * The identifier of the thread which has set up the fault handler (while
+ * holding the allocator lock), or zero if the fault handler is not set up.
+ * The handler ignores the exceptions of all other threads.
+ */
+static volatile DWORD fault_handler_thread_id;
+
+STATIC void
+GC_fault_recover(void)
+{
+  LONGJMP(GC_jmp_buf, 1);
+}
+
+STATIC LONG WINAPI
+GC_fault_handler(PEXCEPTION_POINTERS exc_info)
+{
+  const EXCEPTION_RECORD *er = exc_info->ExceptionRecord;
+  PCONTEXT ctx = exc_info->ContextRecord;
+  const _JUMP_BUFFER *jb = (const _JUMP_BUFFER *)GC_jmp_buf;
+
+  if (fault_handler_thread_id != GetCurrentThreadId())
+    return EXCEPTION_CONTINUE_SEARCH;
+  if (er->ExceptionCode == STATUS_GUARD_PAGE_VIOLATION) {
+    MEMORY_BASIC_INFORMATION mbi;
+    ptr_t page = (ptr_t)(er->ExceptionInformation[1]
+                         & ~(ULONG_PTR)(GC_sysinfo.dwPageSize - 1));
+    DWORD old_protect;
+
+    /*
+     * The page is a guard page, e.g. of the stack of another thread.
+     * The fault has cleared its guard attribute, so set it again,
+     * otherwise the guard region of that stack would lose this page.
+     */
+    if (VirtualQuery(page, &mbi, sizeof(mbi)) == sizeof(mbi)
+        && mbi.State == MEM_COMMIT && (mbi.Protect & PAGE_GUARD) == 0)
+      (void)VirtualProtect(page, GC_sysinfo.dwPageSize,
+                           mbi.Protect | PAGE_GUARD, &old_protect);
+  } else if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) {
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+  fault_handler_thread_id = 0;
+
+  /*
+   * A `longjmp` out of a vectored handler would skip the release of the
+   * handler entry by the exception dispatcher, and then
+   * `RemoveVectoredExceptionHandler` would not remove the handler.
+   * Instead, resume the thread in `GC_fault_recover`, as if the latter
+   * were called by `GC_mark_some` at the point where `SETJMP` returned,
+   * i.e. with the stack pointer, the frame pointer and the return address
+   * saved in `GC_jmp_buf`.
+   */
+#    if defined(X86_64)
+  ctx->Rsp = jb->Rsp - sizeof(DWORD64);
+  *(DWORD64 *)ctx->Rsp = jb->Rip;
+  ctx->Rbp = jb->Rbp;
+  ctx->Rip = (DWORD64)(GC_funcptr_uint)GC_fault_recover;
+#    elif defined(AARCH64)
+  ctx->Sp = jb->Sp;
+  ctx->Fp = jb->Fp;
+  ctx->Lr = jb->Lr;
+  ctx->Pc = (DWORD64)(GC_funcptr_uint)GC_fault_recover;
+#    else
+  ctx->Esp = jb->Esp - sizeof(DWORD);
+  *(DWORD *)ctx->Esp = jb->Eip;
+  ctx->Ebp = jb->Ebp;
+  ctx->Eip = (DWORD)(GC_funcptr_uint)GC_fault_recover;
+#    endif
+  return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+GC_INNER void
+GC_add_vectored_fault_handler(void)
+{
+  GC_ASSERT(NULL == fault_veh_handle);
+  /*
+   * The handler is appended to the list of vectored handlers, so that
+   * other vectored handlers see an exception first, as they do in case of
+   * the SEH-based recovery.
+   */
+  fault_veh_handle
+      = AddVectoredExceptionHandler(0 /* `First` */, GC_fault_handler);
+  if (NULL == fault_veh_handle)
+    ABORT("AddVectoredExceptionHandler failed");
+}
+
+GC_INNER void
+GC_remove_vectored_fault_handler(void)
+{
+  if (fault_veh_handle != NULL) {
+    (void)RemoveVectoredExceptionHandler(fault_veh_handle);
+    fault_veh_handle = NULL;
+  }
+}
+
+GC_INNER void
+GC_setup_temporary_fault_handler(void)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  GC_ASSERT(fault_veh_handle != NULL);
+  fault_handler_thread_id = GetCurrentThreadId();
+}
+
+GC_INNER void
+GC_reset_fault_handler(void)
+{
+  fault_handler_thread_id = 0;
+}
+
+#  else
+#    if defined(MSWIN32) && defined(NO_SEH_AVAILABLE)
 static GC_VAR_ATTR PVOID fault_handler_veh;
 static GC_VAR_ATTR DWORD fault_handler_thread_id;
 static GC_VAR_ATTR unsigned fault_handler_nesting;
@@ -1081,14 +1198,14 @@ fault_handler_win32(PEXCEPTION_POINTERS ep)
     LONGJMP(GC_jmp_buf, 1);
   return EXCEPTION_CONTINUE_SEARCH;
 }
-#  else
+#    else
 STATIC void
 GC_fault_handler(int sig)
 {
   UNUSED_ARG(sig);
   LONGJMP(GC_jmp_buf, 1);
 }
-#  endif
+#    endif
 
 GC_INNER void
 GC_setup_temporary_fault_handler(void)
@@ -1098,36 +1215,39 @@ GC_setup_temporary_fault_handler(void)
    * at a time.
    */
   GC_ASSERT(I_HOLD_LOCK());
-#  if defined(MSWIN32) && defined(NO_SEH_AVAILABLE) && defined(WRAP_MARK_SOME)
+#    if defined(MSWIN32) && defined(NO_SEH_AVAILABLE) \
+        && defined(WRAP_MARK_SOME)
   fault_handler_thread_id = GetCurrentThreadId();
   if (fault_handler_nesting++ == 0) {
     fault_handler_veh
         = AddVectoredExceptionHandler(1 /*< first */, fault_handler_win32);
   }
-#  else
+#    else
   GC_set_and_save_fault_handler(GC_fault_handler);
-#  endif
+#    endif
 }
 
 GC_INNER void
 GC_reset_fault_handler(void)
 {
-#  if defined(MSWIN32) && defined(NO_SEH_AVAILABLE) && defined(WRAP_MARK_SOME)
+#    if defined(MSWIN32) && defined(NO_SEH_AVAILABLE) \
+        && defined(WRAP_MARK_SOME)
   GC_ASSERT(fault_handler_nesting > 0);
   if (--fault_handler_nesting == 0)
     RemoveVectoredExceptionHandler(fault_handler_veh);
-#  elif defined(USE_SEGV_SIGACT)
+#    elif defined(USE_SEGV_SIGACT)
   (void)sigaction(SIGSEGV, &old_segv_act, NULL);
-#    ifdef USE_BUS_SIGACT
+#      ifdef USE_BUS_SIGACT
   (void)sigaction(SIGBUS, &old_bus_act, NULL);
-#    endif
-#  else
+#      endif
+#    else
   (void)signal(SIGSEGV, old_segv_hand);
-#    ifdef HAVE_SIGBUS
+#      ifdef HAVE_SIGBUS
   (void)signal(SIGBUS, old_bus_hand);
+#      endif
 #    endif
-#  endif
 }
+#  endif
 #endif /* NEED_FIND_LIMIT || USE_PROC_FOR_LIBRARIES || WRAP_MARK_SOME */
 
 #if defined(NEED_FIND_LIMIT) \

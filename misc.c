@@ -1207,6 +1207,9 @@ GC_init(void)
 #if defined(MSWIN32) && !defined(GC_WINNT)
   GC_init_win32();
 #endif
+#ifdef USE_VECTORED_FAULT_HANDLER
+  GC_add_vectored_fault_handler();
+#endif
 #ifdef GC_READ_ENV_FILE
   GC_envfile_init();
 #endif
@@ -1781,6 +1784,9 @@ GC_deinit(void)
   if (!GC_is_initialized)
     return;
 
+#  ifdef USE_VECTORED_FAULT_HANDLER
+  GC_remove_vectored_fault_handler();
+#  endif
   BZERO(&GC_arrays, sizeof(GC_arrays)); /*< clears GC_is_initialized */
   GC_gc_no = 0;
   GC_dont_gc = FALSE;
