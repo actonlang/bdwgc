@@ -1268,6 +1268,13 @@ if(BUILD_TESTING)
         )
         add_test(NAME threadwarmuptest COMMAND threadwarmuptest)
 
+        add_executable(markercounttest tests/markercount.c ${NODIST_SRC})
+        target_link_libraries(
+            markercounttest
+            PRIVATE gc gc_build_flags ${THREADDLLIBS_LIST}
+        )
+        add_test(NAME markercounttest COMMAND markercounttest)
+
         if(NOT WIN32)
             add_executable(forktest tests/fork.c ${NODIST_SRC})
             target_link_libraries(
