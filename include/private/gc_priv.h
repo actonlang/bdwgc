@@ -3168,7 +3168,8 @@ GC_INNER void GC_push_conditional_static(void *b, void *t, GC_bool all);
 /*
  * Similar to `GC_push_conditional` but scans the whole region immediately.
  * `GC_mark_local` does not handle memory protection faults yet.
- * So, the static data regions are scanned immediately by `GC_push_roots`.
+ * So, if parallel marking is on, the static data regions and the ranges
+ * passed to `GC_push_all` are scanned immediately by `GC_push_roots`.
  */
 GC_INNER void GC_push_conditional_eager(void *bottom, void *top, GC_bool all);
 #endif

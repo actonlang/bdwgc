@@ -415,8 +415,16 @@ push_roots_and_advance(GC_bool push_all, ptr_t cold_gc_frame)
     /* Not ready to push. */
     return;
   }
-  GC_push_roots(push_all, cold_gc_frame);
+  /*
+   * `GC_push_roots` marks some objects immediately (e.g. those referenced
+   * from the registers, or from the static data regions if parallel
+   * marking is on).  If a fault interrupts it, then `GC_mark_some`
+   * invalidates the mark state, and the contents of these objects should
+   * be pushed by the rescan from the marked objects, thus set the flag
+   * beforehand.
+   */
   GC_objects_are_marked = TRUE;
+  GC_push_roots(push_all, cold_gc_frame);
   if (GC_mark_state != MS_INVALID)
     GC_mark_state = MS_ROOTS_PUSHED;
 }
@@ -1660,6 +1668,19 @@ GC_mark_init(void)
 GC_API void GC_CALL
 GC_push_all(void *bottom, void *top)
 {
+#if defined(WRAP_MARK_SOME) && defined(PARALLEL_MARK)
+  /*
+   * `GC_mark_some` recovers from a fault only on the thread holding the
+   * allocator lock, and not while the parallel markers run.  The range
+   * may disappear (e.g. a thread stack, or a range pushed by the client),
+   * thus scan it immediately, so that only heap objects get onto the mark
+   * stack.
+   */
+  if (GC_parallel) {
+    GC_push_conditional_eager(bottom, top, TRUE);
+    return;
+  }
+#endif
   GC_mark_stack_top
       = GC_ms_push_all(bottom, top, GC_mark_stack_top, GC_mark_stack_limit);
 }
