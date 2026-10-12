@@ -515,9 +515,12 @@ GC_API void GC_CALL GC_print_trace_inner(GC_word /* `gc_no` */);
 /**
  * Set the client for when mark stack is empty.  A client can use this
  * callback to process (un)marked objects and push additional work onto
- * the stack.  Useful for implementing ephemerons.  Both the setter and
- * the getter acquire the allocator lock (in the reader mode in case of
- * the getter).
+ * the stack.  Useful for implementing ephemerons.  The callback is not
+ * called for a mark phase done by the parallel marker, only for one done
+ * by the collecting thread alone, e.g. a phase with one marker (see
+ * `GC_set_bytes_per_marker()`), or one with a time limit or a custom stop
+ * function.  Both the setter and the getter acquire the allocator lock
+ * (in the reader mode in case of the getter).
  */
 typedef struct GC_ms_entry *(GC_CALLBACK *GC_on_mark_stack_empty_proc)(
     struct GC_ms_entry * /* `mark_stack_top` */,
