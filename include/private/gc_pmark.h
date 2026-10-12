@@ -77,9 +77,13 @@ GC_EXTERN unsigned GC_n_mark_procs;
  * This works roughly as follows:
  *   - The main mark stack never shrinks, but it can grow.
  *   - The initiating threads holds the allocator lock, sets
- *     `GC_help_wanted`.
+ *     `GC_help_wanted`, and wakes up as many idle marker threads as
+ *     the phase has helpers (all of them unless the bytes per marker,
+ *     see `GC_set_bytes_per_marker()`, limit the number of markers of
+ *     the phase).
  *   - Other threads:
- *     1. Update `GC_helper_count` (while holding the mark lock).
+ *     1. Update `GC_helper_count` (while holding the mark lock), unless
+ *        the phase has all its markers already.
  *     2. Allocate a local mark stack repeatedly:
  *        2.1. Steal a global mark stack entry by atomically replacing
  *             its descriptor with 0;
@@ -105,8 +109,8 @@ GC_EXTERN unsigned GC_n_mark_procs;
 /* `GC_mark_stack_top` is protected by the mark lock. */
 
 /*
- * `GC_notify_all_idle_markers()` is used when `GC_help_wanted` is set,
- * i.e. at the start of a parallel mark phase.  `GC_notify_all_marker()`
+ * `GC_notify_idle_markers()` is used when `GC_help_wanted` is set, i.e.
+ * at the start of a parallel mark phase.  `GC_notify_all_marker()`
  * is used when the last active marker becomes inactive, when something
  * is added to the global mark stack, and when the last helper leaves the
  * phase; only the markers in the phase and the thread which initiated

@@ -102,6 +102,13 @@ presence of the parallel collector by calling `GC_enable_incremental`, but
 the current implementation does not allow interruption of the parallel marker,
 so the latter is mostly avoided if the client sets the collection time limit.
 
+A mark phase may use fewer markers than there are marker threads.  If the
+bytes per marker are set (see `GC_set_bytes_per_marker`), then a mark phase is
+marked by one marker per that many bytes it is estimated to scan: a small
+phase is done by the collecting thread only, since waking up the marker
+threads would cost more than they save, and the marker threads which a phase
+does not need stay asleep.
+
 Gcj-style mark descriptors do not currently mix with the combination of local
 allocation and incremental collection. They should work correctly with one or
 the other, but not both.
