@@ -794,6 +794,7 @@ pub fn build(b: *std.Build) void {
             addTest(b, gc, test_step, flags, "forktest", "tests/fork.c");
         }
         addTest(b, gc, test_step, flags, "initfromthreadtest", "tests/initfromthread.c");
+        addTest(b, gc, test_step, flags, "markercounttest", "tests/markercount.c");
         addTest(b, gc, test_step, flags, "subthreadcreatetest", "tests/subthreadcreate.c");
         addTest(b, gc, test_step, flags, "threadleaktest", "tests/threadleak.c");
         addTest(b, gc, test_step, flags, "threadwarmuptest", "tests/threadwarmup.c");
