@@ -1402,6 +1402,30 @@ GC_init(void)
       }
     }
   }
+#ifdef PARALLEL_MARK
+  {
+    const char *str = GETENV("GC_BYTES_PER_MARKER");
+
+    if (str != NULL) {
+      word value = GC_parse_mem_size_arg(str);
+      const char *p = str;
+
+      /*
+       * A negative number is parsed as a huge one, which would make
+       * every mark phase serial; reject it.
+       */
+      while (*p != '\0' && *p != '-') {
+        p++;
+      }
+      if (GC_WORD_MAX == value || *p != '\0') {
+        WARN("Bad GC_BYTES_PER_MARKER value %s - ignoring\n", str);
+      } else {
+        /* "0" lets every parallel mark phase use all the markers. */
+        GC_bytes_per_marker = (size_t)value;
+      }
+    }
+  }
+#endif
   {
     const char *str = GETENV("GC_REALLOC_NO_FREE");
 

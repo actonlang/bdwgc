@@ -185,6 +185,9 @@ jobs:
           test
 
       - name: Build and run tests with the prefetch on push turned off
+        env:
+          # Use one marker per MiB of the estimated mark work.
+          GC_BYTES_PER_MARKER: "1M"
         run: >
           zig build
           "-DCFLAGS_EXTRA=-DGC_NO_PUSH_PREFETCH"
@@ -211,6 +214,8 @@ jobs:
           test
 
       - name: Build and run tests with speedups turned off
+        env:
+          GC_BYTES_PER_MARKER: "1M"
         run: >
           zig build
           "-DCFLAGS_EXTRA=-DGC_ATTR_ALWAYS_INLINE= -DGC_NO_CANCEL_STATE_SKIP

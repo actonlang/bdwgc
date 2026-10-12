@@ -71,6 +71,18 @@ the number of processor cores.  It is safer to adjust `GC_MARKERS` one than
 allocator lock implementation.  Has no effect unless the collector is built
 with `PARALLEL_MARK` macro defined.
 
+`GC_BYTES_PER_MARKER=<bytes>` - Sets the bytes to scan per marker of a mark
+phase: a mark phase is marked by one marker per that many bytes it is
+estimated to scan (rounded up), at least by the collecting thread and at most
+by all the marker threads.  The estimate is the size of the pointer-containing
+objects found live by the previous collection plus the bytes allocated since
+then plus the size of the static data roots and the thread stacks (see
+`GC_set_bytes_per_marker()`).  Optionally, may be specified with a multiplier
+suffix.  The special value "0" lets every parallel mark phase use all the
+marker threads.  Malformed values (including negative ones) are ignored (with
+a warning).  Has no effect unless the collector is built with parallel marking
+support.
+
 `GC_LARGE_ALLOC_WARN_INTERVAL=<n>` - Instructs the collector to print every
 n-th warning about very large block allocations, starting with the n-th one.
 Small values of `n` are generally benign, in that a bounded number of such
