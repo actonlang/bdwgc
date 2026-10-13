@@ -99,6 +99,7 @@ pub fn build(b: *std.Build) void {
     const enable_end_padding = b.option(bool, "enable_end_padding", "Pad objects so that a pointer just past the end of an object keeps it alive") orelse true;
     const bytes_per_marker = b.option(u64, "bytes_per_marker", "Mark a mark phase by one marker per this many bytes it is estimated to scan (0 lets every parallel mark phase use all the markers)") orelse 0;
     const initial_mark_stack_size = b.option(u32, "initial_mark_stack_size", "Initial number of entries in the global mark stack, a power of two, 4096 at least (0 keeps the default of HBLKSIZE entries)") orelse 0;
+    const tl_refill_max = b.option(u32, "tl_refill_max", "Maximum number of heap blocks taken by a single refill of a thread-local free list, in range 1..32 (unset keeps the default of 1)");
     const tiny_freelists = b.option(u32, "tiny_freelists", "Number of tiny (thread-local) free lists per kind, i.e. objects of up to this number minus one granules use them (0 keeps the default)") orelse 0;
     const disable_realloc_free = b.option(bool, "disable_realloc_free", "Leave a small collectable object moved by GC_realloc to the collector instead of freeing it") orelse false;
     const disable_thread_local_warmup = b.option(bool, "disable_thread_local_warmup", "Let a thread use its thread-local free list of each size from its first allocation of that size") orelse false;
@@ -425,6 +426,15 @@ pub fn build(b: *std.Build) void {
             std.debug.panic("tiny_freelists should be in range 2..{d} (or 0 for the default)", .{max_tiny_freelists});
         }
         flags.append(b.allocator, b.fmt("-D GC_TINY_FREELISTS={d}", .{tiny_freelists})) catch unreachable;
+    }
+
+    if (tl_refill_max) |n| {
+        // The value should be in range 1..`MAX_TL_REFILL_BLOCKS` (32, see
+        // `mallocx.c` file).
+        if (n < 1 or n > 32) {
+            @panic("tl_refill_max should be in range 1..32");
+        }
+        flags.append(b.allocator, b.fmt("-D GC_TL_REFILL_MAX={d}", .{n})) catch unreachable;
     }
 
     if (disable_realloc_free) {

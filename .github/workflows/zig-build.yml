@@ -199,6 +199,7 @@ jobs:
           -Denable_mark_range_stealing
           -Denable_werror
           -Dinitial_mark_stack_size=1048576
+          -Dtl_refill_max=16
           test
 
       - name: Build and run tests with the prefetch on push turned off
@@ -215,6 +216,7 @@ jobs:
           -Denable_mark_range_stealing
           -Denable_werror
           -Dinitial_mark_stack_size=1048576
+          -Dtl_refill_max=16
           test
 
       - name: Build and run tests with object padding turned off
@@ -228,6 +230,7 @@ jobs:
           -Denable_mark_range_stealing
           -Denable_werror
           -Dinitial_mark_stack_size=1048576
+          -Dtl_refill_max=16
           test
 
       - name: Build and run tests with speedups turned off
@@ -245,4 +248,5 @@ jobs:
           -Denable_mark_range_stealing
           -Denable_werror
           -Dinitial_mark_stack_size=1048576
+          -Dtl_refill_max=16
           test
