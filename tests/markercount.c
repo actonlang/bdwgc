@@ -655,6 +655,15 @@ main(void)
     printf("Skipped (the collections are disabled)\n");
     return 0;
   }
+  /*
+   * The checks assume that little is allocated between the collections
+   * of a step (see `MARGIN`).  With refills of several heap blocks, the
+   * first refill after a collection empties the thread-local free lists
+   * left unused a cycle, e.g. during the collections of `estimate_bound()`,
+   * and every free list refilled afterwards counts a whole heap block as
+   * allocated.  This overrides `GC_TL_REFILL_MAX` environment variable.
+   */
+  GC_set_tl_refill_max(1);
   GC_start_mark_threads();
   /* This is optional if `pthread_create()` is redirected. */
   GC_allow_register_threads();
