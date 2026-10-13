@@ -405,6 +405,30 @@ STATIC void GC_do_parallel_mark(void);
  */
 STATIC unsigned GC_phase_markers = 1;
 
+#  define MAX_LOGGED_MARKER_DECISIONS 8
+
+/*
+ * The decisions of `markers_for_phase()` made since the previous call of
+ * `GC_log_marker_decisions()`, to be logged by it (only the first
+ * `MAX_LOGGED_MARKER_DECISIONS` of them are kept).  Protected by the
+ * allocator lock.
+ */
+STATIC struct marker_decision {
+  unsigned markers;
+  unsigned max_markers;
+  size_t bound;
+  size_t live;
+  size_t allocd;
+  size_t roots;
+  size_t stacks;
+} GC_marker_decisions[MAX_LOGGED_MARKER_DECISIONS];
+
+/*
+ * The number of the decisions of `markers_for_phase()` made since the
+ * previous call of `GC_log_marker_decisions()`, including those not kept.
+ */
+STATIC unsigned GC_n_marker_decisions = 0;
+
 /*
  * Decide the number of markers of the mark phase whose roots have just
  * been pushed: one per `GC_bytes_per_marker` bytes the phase is estimated
@@ -420,7 +444,9 @@ STATIC unsigned GC_phase_markers = 1;
  * client push or mark procedures, and the live objects of the previous
  * collection that its mark counts missed (these counts can be low after
  * parallel marking).  Called with the allocator lock held, after each
- * push of the roots (thus again after a mark stack overflow).
+ * push of the roots (thus again after a mark stack overflow).  This may
+ * be with the world stopped, thus the decision is not logged here but
+ * kept for `GC_log_marker_decisions()`.
  */
 static unsigned
 markers_for_phase(void)
@@ -448,14 +474,47 @@ markers_for_phase(void)
     if (bound % per_marker != 0 || 0 == res)
       res++;
   }
-  if (!GC_parallel_mark_disabled) {
-    GC_COND_LOG_PRINTF("Marking with %u of %u markers: about %lu KiB to scan"
-                       " (live pointer data %lu, allocated %lu, roots %lu,"
-                       " stacks %lu KiB)\n",
-                       res, markers, TO_KiB_UL(bound), TO_KiB_UL(live),
-                       TO_KiB_UL(allocd), TO_KiB_UL(roots), TO_KiB_UL(stacks));
+  if (UNLIKELY(GC_print_stats) && !GC_parallel_mark_disabled) {
+    if (GC_n_marker_decisions < MAX_LOGGED_MARKER_DECISIONS) {
+      struct marker_decision *d = &GC_marker_decisions[GC_n_marker_decisions];
+
+      d->markers = res;
+      d->max_markers = markers;
+      d->bound = bound;
+      d->live = live;
+      d->allocd = allocd;
+      d->roots = roots;
+      d->stacks = stacks;
+    }
+    GC_n_marker_decisions++;
   }
   return res;
+}
+
+GC_INNER void
+GC_log_marker_decisions(void)
+{
+  unsigned i;
+  unsigned n = GC_n_marker_decisions;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  if (LIKELY(0 == n))
+    return;
+  GC_n_marker_decisions = 0;
+  for (i = 0; i < n && i < MAX_LOGGED_MARKER_DECISIONS; i++) {
+    const struct marker_decision *d = &GC_marker_decisions[i];
+
+    GC_log_printf("Marking with %u of %u markers: about %lu KiB to scan"
+                  " (live pointer data %lu, allocated %lu, roots %lu,"
+                  " stacks %lu KiB)\n",
+                  d->markers, d->max_markers, TO_KiB_UL(d->bound),
+                  TO_KiB_UL(d->live), TO_KiB_UL(d->allocd),
+                  TO_KiB_UL(d->roots), TO_KiB_UL(d->stacks));
+  }
+  if (n > MAX_LOGGED_MARKER_DECISIONS) {
+    GC_log_printf("%u more decisions on the number of markers not logged\n",
+                  n - MAX_LOGGED_MARKER_DECISIONS);
+  }
 }
 #endif
 
