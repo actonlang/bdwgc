@@ -870,6 +870,7 @@ GC_collect_a_little_inner(size_t n_blocks)
     GC_parallel_mark_disabled = FALSE;
 #endif
     EXIT_GC();
+    GC_log_marker_decisions();
 
     if (i < max_deficit && !GC_dont_gc) {
       GC_ASSERT(!GC_collection_in_progress());
@@ -1139,6 +1140,7 @@ GC_stopped_mark(GC_stop_func stop_func)
     }
   }
 #endif
+  GC_log_marker_decisions();
 
   EXIT_GC();
   if (0 == abandoned_at)
