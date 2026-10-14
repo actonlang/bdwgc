@@ -443,7 +443,12 @@ entries at once, a big object is counted as several entries).  Greatly
 reduces the marking cost if the global mark stack holds lots of small
 entries, e.g. in the generational mode (after pushing the marked objects of
 the dirty pages), but the full collection of some heap shapes might be
-slightly slower.  Ignored unless `PARALLEL_MARK` is defined.
+slightly slower.  During a parallel mark phase, the global mark stack is
+used as a ring: the markers put entries in the slots of the claimed ones,
+thus the stack needs to hold only the entries not claimed yet, rather than
+all the entries put on it in the phase.  The size of the global mark stack
+is rounded up to a power of two.  Ignored unless `PARALLEL_MARK` is
+defined.
 
 `GC_CACHE_LINE_SIZE=<n>` - Sets the size (in bytes) of the blocks of memory
 the processors keep coherent, i.e. of a cache line.  The data that several

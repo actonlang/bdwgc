@@ -1115,6 +1115,26 @@ if(BUILD_TESTING)
     target_link_libraries(mallocmanytest PRIVATE gc)
     add_test(NAME mallocmanytest COMMAND mallocmanytest)
 
+    # Likewise, the test includes the collector source.
+    add_executable(markstackgrowthtest tests/markstackgrowth.c ${NODIST_SRC})
+    if(MSVC)
+        target_sources(markstackgrowthtest PRIVATE extra/msvc_dbg.c)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+        target_sources(markstackgrowthtest PRIVATE sparc_mach_dep.S)
+    endif()
+    target_link_libraries(
+        markstackgrowthtest
+        PRIVATE ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+    )
+    if(enable_cplusplus AND NOT (BORLAND OR MSVC OR WATCOM))
+        set_target_properties(
+            markstackgrowthtest
+            PROPERTIES LINKER_LANGUAGE CXX
+        )
+    endif()
+    add_test(NAME markstackgrowthtest COMMAND markstackgrowthtest)
+
     add_executable(memaligntest tests/memalign.c ${NODIST_SRC})
     target_link_libraries(memaligntest PRIVATE gc)
     add_test(NAME memaligntest COMMAND memaligntest)

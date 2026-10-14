@@ -568,6 +568,26 @@ STATIC struct {
 STATIC volatile AO_t GC_n_local_mark_stack_overflows = 0;
 #endif
 
+#if defined(PARALLEL_MARK) && defined(STEAL_MARK_STACK_RANGES) \
+    && defined(GC_ASSERTIONS)
+#  define CHECK_MARK_RING
+
+/*
+ * The number of the entry held in each slot of the global mark stack
+ * during a parallel mark phase (see `GC_n_published`), written with the
+ * slot, and checked by each marker that claims entries.  Allocated with
+ * the global mark stack, after its last slot.
+ */
+STATIC volatile AO_t *GC_mark_ring_numbers = NULL;
+
+/* The entries claimed by the markers in the current parallel mark phase. */
+STATIC volatile AO_t GC_n_claimed = 0;
+
+#  define MARK_STACK_ENTRY_BYTES (sizeof(mse) + sizeof(AO_t))
+#else
+#  define MARK_STACK_ENTRY_BYTES sizeof(mse)
+#endif
+
 /*
  * The head of the list of the outgrown mark stacks, to be recycled into
  * the heap by `GC_after_marking()`.  A mark stack is outgrown with the
@@ -702,7 +722,6 @@ GC_mark_some(ptr_t cold_gc_frame)
      */
     if (GC_parallel && !GC_parallel_mark_disabled && GC_phase_markers > 1) {
       GC_do_parallel_mark();
-      GC_ASSERT(ADDR_LT((ptr_t)GC_mark_stack_top, GC_first_nonempty));
       GC_mark_stack_top = GC_mark_stack - 1;
       if (GC_mark_stack_too_small) {
         alloc_mark_stack(2 * GC_mark_stack_size);
@@ -1498,38 +1517,115 @@ GC_wait_for_markers_init(void)
 
 #  ifdef STEAL_MARK_STACK_RANGES
 /*
- * Try to claim the global mark stack entries starting at `mse` `low`
- * (the value of `GC_first_nonempty` observed by the caller) and copy them
- * into mark stack `local`; stop at `mse` `high` (the published top of the
- * global mark stack) or when we have `n_to_get` entries, counting a big
- * object as in `GC_steal_mark_stack`.  During a parallel mark phase the
- * entries between `GC_first_nonempty` and `GC_mark_stack_top` are never
- * modified (a marker only appends entries above `GC_mark_stack_top`) and
- * `GC_first_nonempty` never decreases, thus a single CAS of the latter
- * claims the whole range, and each entry is taken by exactly one marker.
- * Return the number of the claimed entries, or zero if another marker
- * has advanced `GC_first_nonempty` in the meantime.
+ * The index of the slot of the global mark stack that holds the entry
+ * numbered `i` during a parallel mark phase.
+ */
+#    define MARK_RING_INDEX(i) ((size_t)((i) & (AO_t)(GC_mark_stack_size - 1)))
+
+/*
+ * Copy `n` entries from `from` to `to`.  One of the two is a range of
+ * slots of the global mark stack.  A marker whose claim fails may read
+ * slots while a marker copying back its local mark stack writes them (see
+ * `GC_steal_mark_stack_range`), and discards what it read.  The race is
+ * benign, but the thread sanitizer would report it, thus each word is
+ * read and written atomically if the sanitizer is on.
+ */
+GC_INLINE void
+copy_mark_entries(mse *to, mse *from, size_t n)
+{
+#    ifdef THREAD_SANITIZER
+  size_t i;
+
+  for (i = 0; i < n; i++) {
+    GC_cptr_store(&to[i].mse_start, GC_cptr_load(&from[i].mse_start));
+    AO_store(&to[i].mse_descr, AO_load(&from[i].mse_descr));
+  }
+#    else
+  BCOPY(from, to, n * sizeof(mse));
+#    endif
+}
+
+/*
+ * Try to claim the entries of the global mark stack numbered from `first`
+ * (the value of `GC_first_unclaimed` observed by the caller) up to `end`
+ * (exclusive; the value of `GC_n_published` observed by the caller with an
+ * acquire load or holding the mark lock), or fewer if we have `n_to_get`
+ * entries, counting a big object as in `GC_steal_mark_stack`.  The entries
+ * are counted by their descriptors, copied into mark stack `local`, and
+ * then claimed by a CAS of `GC_first_unclaimed` from `first` with release
+ * ordering.  Return the number of the claimed entries, or zero if another
+ * marker has claimed entries since `first` was observed: then either the
+ * entries are not copied (if `GC_first_unclaimed` has moved by the end of
+ * the count), or the CAS fails and the copies are discarded.
+ *
+ * The CAS claims the copied entries exclusively, and they are the right
+ * ones.  `GC_first_unclaimed` never decreases during the phase, thus it
+ * equaled `first` from the load of the caller to a successful CAS, i.e.
+ * no entry from `first` on was claimed in the meantime.  A marker writes
+ * the slot of entry `j` (in `GC_return_mark_stack`) only after it has
+ * observed, with an acquire load, that `GC_first_unclaimed` exceeds
+ * `j - GC_mark_stack_size`, i.e. that the entry held in the slot before
+ * has been claimed.  Thus none of the slots counted and copied here was
+ * written between the release store of `GC_n_published` that published
+ * `end` and the CAS.  After a successful CAS, the release ordering makes
+ * the reads of the slots happen before any later write of them.  This
+ * relies on every write of `GC_first_unclaimed` during the phase being
+ * a CAS: the CAS of a later claim continues the release sequence of an
+ * earlier one, so a marker that observes the later claim also synchronizes
+ * with the earlier one.  A claim whose CAS fails may have read a slot that
+ * was being written (see `copy_mark_entries`); it discards what it read.
  */
 STATIC size_t
-GC_steal_mark_stack_range(mse *low, mse *high, mse *local, size_t n_to_get)
+GC_steal_mark_stack_range(AO_t first, AO_t end, mse *local, size_t n_to_get)
 {
-  mse *p;
+  AO_t k;
   size_t i = 0;
+  size_t n, first_slot, n_before_wrap;
+#    ifdef CHECK_MARK_RING
+  GC_bool numbers_differ = FALSE;
+#    endif
 
-  GC_ASSERT(ADDR_GE((ptr_t)high, (ptr_t)low)
-            && (word)(high - low + 1) <= GC_mark_stack_size);
-  for (p = low; ADDR_GE((ptr_t)high, (ptr_t)p) && i <= n_to_get; ++p) {
-    word descr = AO_load(&p->mse_descr);
+  GC_ASSERT((GC_signed_word)(end - first) > 0
+            && (word)(end - first) <= (word)GC_mark_stack_size);
+  for (k = first; k != end && i <= n_to_get; ++k) {
+    word descr = AO_load(&GC_mark_stack[MARK_RING_INDEX(k)].mse_descr);
 
     /* If this is a big object, count it as `descr / 256 + 1` objects. */
     ++i;
     if ((descr & GC_DS_TAGS) == GC_DS_LENGTH)
       i += (size_t)(descr >> 8);
   }
-  if (!GC_cptr_compare_and_swap(&GC_first_nonempty, (ptr_t)low, (ptr_t)p))
+  if (AO_load(&GC_first_unclaimed) != first) {
+    /* The CAS would fail. */
     return 0;
-  BCOPY(low, local, (size_t)(p - low) * sizeof(mse));
-  return (size_t)(p - low);
+  }
+  n = (size_t)(k - first);
+  first_slot = MARK_RING_INDEX(first);
+  n_before_wrap = GC_mark_stack_size - first_slot;
+  if (n_before_wrap >= n) {
+    copy_mark_entries(local, GC_mark_stack + first_slot, n);
+  } else {
+    copy_mark_entries(local, GC_mark_stack + first_slot, n_before_wrap);
+    copy_mark_entries(local + n_before_wrap, GC_mark_stack, n - n_before_wrap);
+  }
+#    ifdef CHECK_MARK_RING
+  {
+    AO_t j;
+
+    for (j = first; j != k; ++j) {
+      if (AO_load(&GC_mark_ring_numbers[MARK_RING_INDEX(j)]) != j)
+        numbers_differ = TRUE;
+    }
+  }
+#    endif
+  if (!AO_compare_and_swap_release(&GC_first_unclaimed, first, k))
+    return 0;
+#    ifdef CHECK_MARK_RING
+  /* A slot copied above was written for another entry. */
+  GC_ASSERT(!numbers_differ);
+  (void)AO_fetch_and_add(&GC_n_claimed, (AO_t)n);
+#    endif
+  return n;
 }
 
 #  else
@@ -1581,34 +1677,85 @@ GC_steal_mark_stack(mse *low, mse *high, mse *local, size_t n_to_get,
 }
 #  endif /* !STEAL_MARK_STACK_RANGES */
 
-/* Copy back a local mark stack.  `low` and `high` are inclusive bounds. */
+/*
+ * Copy back a local mark stack.  `low` and `high` are inclusive bounds.
+ * If `STEAL_MARK_STACK_RANGES`, the entries are put on the global mark
+ * stack used as a ring (see `GC_n_published`); there is room for them if
+ * the slots they take hold no unclaimed entries, i.e. the claimed entries
+ * leave their slots free.  Otherwise there is room only above
+ * `GC_mark_stack_top`.  Without room, the local mark stack is dropped and
+ * the mark state invalidated.
+ */
 STATIC void
 GC_return_mark_stack(mse *low, mse *high)
 {
+#  ifdef STEAL_MARK_STACK_RANGES
+  AO_t end, first;
+#  else
   mse *my_top;
   mse *my_start;
+#  endif
   size_t stack_size;
+  GC_bool has_room;
 
   if (ADDR_LT((ptr_t)high, (ptr_t)low))
     return;
   stack_size = high - low + 1;
   GC_acquire_mark_lock();
+#  ifdef STEAL_MARK_STACK_RANGES
+  /* Note: the concurrent modification is impossible. */
+  end = AO_load(&GC_n_published);
+  /*
+   * The acquire load orders the writes of the slots below after the reads
+   * of the markers that claimed the entries held there before (see
+   * `GC_steal_mark_stack_range`).
+   */
+  first = AO_load_acquire(&GC_first_unclaimed);
+  GC_ASSERT((word)(end - first) <= (word)GC_mark_stack_size);
+  has_room = (word)(end - first) + stack_size <= (word)GC_mark_stack_size;
+#  else
   /* Note: the concurrent modification is impossible. */
   my_top = GC_mark_stack_top;
   my_start = my_top + 1;
-  if ((word)(my_start - GC_mark_stack + stack_size)
-      > (word)GC_mark_stack_size) {
+  has_room = (word)(my_start - GC_mark_stack + stack_size)
+             <= (word)GC_mark_stack_size;
+#  endif
+  if (!has_room) {
     GC_mark_stack_events.n_no_room++;
     GC_mark_state = MS_INVALID;
     GC_mark_stack_too_small = TRUE;
     /* We drop the local mark stack.  We will fix things later. */
   } else {
+#  ifdef STEAL_MARK_STACK_RANGES
+    size_t first_slot = MARK_RING_INDEX(end);
+    size_t n_before_wrap = GC_mark_stack_size - first_slot;
+
+#    ifdef CHECK_MARK_RING
+    {
+      AO_t k;
+
+      for (k = end; k != end + (AO_t)stack_size; k++)
+        AO_store(&GC_mark_ring_numbers[MARK_RING_INDEX(k)], k);
+    }
+#    endif
+    if (n_before_wrap >= stack_size) {
+      copy_mark_entries(GC_mark_stack + first_slot, low, stack_size);
+    } else {
+      copy_mark_entries(GC_mark_stack + first_slot, low, n_before_wrap);
+      copy_mark_entries(GC_mark_stack, low + n_before_wrap,
+                        stack_size - n_before_wrap);
+    }
+    GC_ASSERT(AO_load(&GC_n_published) == end);
+    /* Ensures visibility of previously written stack contents. */
+    AO_store_release(&GC_n_published, end + (AO_t)stack_size);
+#  else
     BCOPY(low, my_start, stack_size * sizeof(mse));
     GC_ASSERT((mse *)GC_cptr_load((volatile ptr_t *)&GC_mark_stack_top)
               == my_top);
     /* Ensures visibility of previously written stack contents. */
     GC_cptr_store_release_write((volatile ptr_t *)&GC_mark_stack_top,
                                 (ptr_t)(my_top + stack_size));
+#  endif
   }
   GC_release_mark_lock();
   GC_notify_all_marker();
@@ -1631,6 +1778,22 @@ may_have_inactive_helpers(void)
 #  endif
 
 /*
+ * Whether the global mark stack has no entries left for the markers to
+ * take, during a parallel mark phase.  Exact if the mark lock is held
+ * (then the entries can only be taken, not added), a hint otherwise.
+ */
+#  ifdef STEAL_MARK_STACK_RANGES
+#    define GLOBAL_MARK_STACK_EMPTY()                   \
+      ((GC_signed_word)(AO_load(&GC_n_published)        \
+                        - AO_load(&GC_first_unclaimed)) \
+       <= 0)
+#  else
+#    define GLOBAL_MARK_STACK_EMPTY()                             \
+      ADDR_LT(GC_cptr_load((volatile ptr_t *)&GC_mark_stack_top), \
+              GC_cptr_load(&GC_first_nonempty))
+#  endif
+
+/*
  * Note: called only when the local and the main mark stacks are both
  * empty.
  */
@@ -1641,7 +1804,7 @@ has_inactive_helpers(void)
 
 #  ifdef STEAL_MARK_STACK_RANGES
   /*
-   * `GC_first_nonempty` is exact in this case, thus the global mark stack
+   * `GC_first_unclaimed` is exact in this case, thus the global mark stack
    * is observed empty much more often (e.g. during marking a tree), and
    * we are called after each `GC_mark_from()`; do not contend for the mark
    * lock while all the helpers are likely active.  A stale result only
@@ -1677,8 +1840,7 @@ GC_do_local_mark(mse *local_mark_stack, mse *local_top)
         return;
       }
     }
-    if (ADDR_LT(GC_cptr_load((volatile ptr_t *)&GC_mark_stack_top),
-                GC_cptr_load(&GC_first_nonempty))
+    if (GLOBAL_MARK_STACK_EMPTY()
         && ADDR_LT((ptr_t)(local_mark_stack + 1), (ptr_t)local_top)
         && has_inactive_helpers()) {
       /*
@@ -1717,38 +1879,54 @@ GC_do_local_mark(mse *local_mark_stack, mse *local_top)
 
 /*
  * Mark using the local mark stack until the global mark stack is empty and
- * there are no active workers.  Update `GC_first_nonempty` to reflect the
- * progress.  Caller holds the mark lock.  Caller has already incremented
- * `GC_helper_count`; we decrement it, and maintain `GC_active_count`.
+ * there are no active workers.  Update `GC_first_unclaimed` (or
+ * `GC_first_nonempty`) to reflect the progress.  Caller holds the mark
+ * lock.  Caller has already incremented `GC_helper_count`; we decrement it,
+ * and maintain `GC_active_count`.
  */
 STATIC void
 GC_mark_local(mse *local_mark_stack, int id)
 {
+#  ifndef STEAL_MARK_STACK_RANGES
   mse *my_first_nonempty;
+#  endif
 
   AO_store(&GC_active_count, GC_active_count + 1);
+#  ifdef STEAL_MARK_STACK_RANGES
+  GC_ASSERT((word)(AO_load(&GC_n_published) - AO_load(&GC_first_unclaimed))
+            <= (word)GC_mark_stack_size);
+#  else
   my_first_nonempty = (mse *)GC_cptr_load(&GC_first_nonempty);
   GC_ASSERT(ADDR_GE((ptr_t)my_first_nonempty, (ptr_t)GC_mark_stack));
   GC_ASSERT(
       ADDR_GE(GC_cptr_load((volatile ptr_t *)&GC_mark_stack_top) + sizeof(mse),
               (ptr_t)my_first_nonempty));
+#  endif
   GC_VERBOSE_LOG_PRINTF("Starting mark helper %d\n", id);
   GC_release_mark_lock();
   for (;;) {
     size_t n_on_stack, n_to_get;
-    mse *my_top, *local_top;
+    mse *local_top;
+    GC_bool looks_empty;
 #  ifdef STEAL_MARK_STACK_RANGES
+    AO_t first, end;
     size_t n_stolen;
 
     /*
-     * `GC_first_nonempty` is exact: all the entries below it are claimed,
-     * all the entries starting at it are not.  Note: it might be ahead of
-     * `GC_mark_stack_top` loaded below, then we recheck both holding the
-     * mark lock.
+     * `GC_first_unclaimed` is exact: all the entries numbered below it are
+     * claimed, all the entries starting at it are not.  Note: it might be
+     * ahead of `GC_n_published` loaded below, then we recheck both holding
+     * the mark lock.  It might also be behind the latter by more than the
+     * size of the mark stack, if other markers have claimed entries and
+     * put new ones on the stack in the meantime, then we load it again.
      */
-    my_first_nonempty = (mse *)GC_cptr_load(&GC_first_nonempty);
-    GC_ASSERT(ADDR_GE((ptr_t)my_first_nonempty, (ptr_t)GC_mark_stack));
+    first = AO_load(&GC_first_unclaimed);
+    end = AO_load_acquire(&GC_n_published);
+    looks_empty = (GC_signed_word)(end - first) <= 0;
+    if (!looks_empty && (word)(end - first) > (word)GC_mark_stack_size)
+      continue;
 #  else
+    mse *my_top;
     mse *global_first_nonempty = (mse *)GC_cptr_load(&GC_first_nonempty);
 
     GC_ASSERT(ADDR_GE((ptr_t)my_first_nonempty, (ptr_t)GC_mark_stack)
@@ -1772,52 +1950,53 @@ GC_mark_local(mse *local_mark_stack, int id)
      * Perhaps we should also update `GC_first_nonempty`, if it is less.
      * But that would require usage of the atomic updates.
      */
-#  endif
     my_top = (mse *)GC_cptr_load_acquire((volatile ptr_t *)&GC_mark_stack_top);
-    if (ADDR_LT((ptr_t)my_top, (ptr_t)my_first_nonempty)) {
+    looks_empty = ADDR_LT((ptr_t)my_top, (ptr_t)my_first_nonempty);
+#  endif
+    if (looks_empty) {
       GC_acquire_mark_lock();
       /*
        * Note: asynchronous modification is impossible here, since
        * we hold the mark lock.
        */
-      my_top = GC_mark_stack_top;
 #  ifdef STEAL_MARK_STACK_RANGES
+      end = AO_load(&GC_n_published);
       /*
-       * Any claimed range ends at or below the value of `GC_mark_stack_top`
-       * observed by the claiming marker, and `GC_mark_stack_top` does not
-       * decrease, thus `GC_first_nonempty` is not greater than `my_top + 1`
-       * now (but it may still increase).
+       * Any claimed range ends at or below the value of `GC_n_published`
+       * observed by the claiming marker, and `GC_n_published` does not
+       * decrease, thus `GC_first_unclaimed` is not greater than `end` now
+       * (but it may still increase).
        */
-      my_first_nonempty = (mse *)GC_cptr_load(&GC_first_nonempty);
-      GC_ASSERT(ADDR_GE((ptr_t)(my_top + 1), (ptr_t)my_first_nonempty));
-#  endif
+      first = AO_load(&GC_first_unclaimed);
+      GC_ASSERT((word)(end - first) <= (word)GC_mark_stack_size);
+      n_on_stack = (size_t)(end - first);
+#  else
+      my_top = GC_mark_stack_top;
       n_on_stack = my_top - my_first_nonempty + 1;
+#  endif
       if (0 == n_on_stack) {
         AO_store(&GC_active_count, GC_active_count - 1);
         GC_ASSERT(GC_active_count <= GC_helper_count);
         /* Other markers may redeposit objects on the stack. */
         if (0 == GC_active_count)
           GC_notify_all_marker();
-        while (GC_active_count > 0
-               && ADDR_LT((ptr_t)GC_mark_stack_top,
-                          GC_cptr_load(&GC_first_nonempty))) {
+        while (GC_active_count > 0 && GLOBAL_MARK_STACK_EMPTY()) {
           /*
            * We will be notified if either `GC_active_count` reaches zero,
            * or if more objects are pushed on the global mark stack.
            */
           GC_wait_marker();
         }
-        if (0 == GC_active_count
-            && ADDR_LT((ptr_t)GC_mark_stack_top,
-                       GC_cptr_load(&GC_first_nonempty))) {
+        if (0 == GC_active_count && GLOBAL_MARK_STACK_EMPTY()) {
           GC_bool need_to_notify = FALSE;
 
           /*
            * The above conditions cannot be falsified while we hold
-           * the mark lock, since neither `GC_active_count` nor
-           * `GC_mark_stack_top` can change.  `GC_first_nonempty` can
-           * only be incremented asynchronously.  Thus we know that
-           * both conditions are actually held simultaneously.
+           * the mark lock, since neither `GC_active_count` nor the end of
+           * the global mark stack (`GC_n_published` or `GC_mark_stack_top`)
+           * can change.  The entries can only be taken asynchronously.
+           * Thus we know that both conditions are actually held
+           * simultaneously.
            */
 #  ifndef GC_NO_IDLE_MARKER_CV
           /*
@@ -1846,7 +2025,11 @@ GC_mark_local(mse *local_mark_stack, int id)
         GC_release_mark_lock();
       }
     } else {
+#  ifdef STEAL_MARK_STACK_RANGES
+      n_on_stack = (size_t)(end - first);
+#  else
       n_on_stack = my_top - my_first_nonempty + 1;
+#  endif
     }
     n_to_get = ENTRIES_TO_GET;
     if (n_on_stack < 2 * ENTRIES_TO_GET) {
@@ -1867,8 +2050,8 @@ GC_mark_local(mse *local_mark_stack, int id)
       if (fair_share > n_to_get)
         n_to_get = fair_share;
     }
-    n_stolen = GC_steal_mark_stack_range(my_first_nonempty, my_top,
-                                         local_mark_stack, n_to_get);
+    n_stolen
+        = GC_steal_mark_stack_range(first, end, local_mark_stack, n_to_get);
     if (0 == n_stolen) {
       /* Another marker has claimed the entries; retry. */
       continue;
@@ -1903,7 +2086,29 @@ GC_do_parallel_mark(void)
 
   GC_ASSERT(GC_phase_markers > 1
             && GC_phase_markers <= (unsigned)GC_markers_m1 + 1);
+#  ifdef STEAL_MARK_STACK_RANGES
+  /*
+   * The entries pushed before the phase are numbered from zero; they are
+   * in the slots of the same indices.  No claim of the previous phase is
+   * in progress (its markers have all finished), thus `GC_first_unclaimed`
+   * may be written by a plain store here.
+   */
+  GC_ASSERT((GC_mark_stack_size & (GC_mark_stack_size - 1)) == 0);
+  AO_store(&GC_first_unclaimed, 0);
+  AO_store(&GC_n_published, (AO_t)(GC_mark_stack_top + 1 - GC_mark_stack));
+#    ifdef CHECK_MARK_RING
+  {
+    AO_t k;
+    AO_t n = AO_load(&GC_n_published);
+
+    for (k = 0; k < n; k++)
+      AO_store(&GC_mark_ring_numbers[k], k);
+    AO_store(&GC_n_claimed, 0);
+  }
+#    endif
+#  else
   GC_cptr_store(&GC_first_nonempty, (ptr_t)GC_mark_stack);
+#  endif
   AO_store(&GC_active_count, 0);
   AO_store(&GC_helper_count, 1);
   GC_help_wanted = TRUE;
@@ -1920,6 +2125,15 @@ GC_do_parallel_mark(void)
     GC_wait_marker();
   }
   /* `GC_helper_count` cannot be incremented while not `GC_help_wanted`. */
+#  ifdef STEAL_MARK_STACK_RANGES
+  /* Every entry put on the global mark stack has been claimed once. */
+  GC_ASSERT(AO_load(&GC_first_unclaimed) == AO_load(&GC_n_published));
+#    ifdef CHECK_MARK_RING
+  GC_ASSERT(AO_load(&GC_n_claimed) == AO_load(&GC_n_published));
+#    endif
+#  else
+  GC_ASSERT(ADDR_LT((ptr_t)GC_mark_stack_top, GC_first_nonempty));
+#  endif
   GC_VERBOSE_LOG_PRINTF("Finished marking for mark phase number %lu\n",
                         (unsigned long)GC_mark_no);
   GC_mark_no++;
@@ -1981,13 +2195,14 @@ GC_help_marker(word my_mark_no)
  * The size in bytes of the memory of a mark stack of `n` entries.  It is
  * at least `MINHINCR * HBLKSIZE`, which `GC_scratch_alloc()` gets from
  * the OS directly, without a warning if this fails, as a mark stack may
- * grow with the world stopped.  The memory after the last entry is not
- * used.  The size of `n` entries in bytes must fit in `size_t`.
+ * grow with the world stopped.  The memory after the `n` entries (of
+ * `MARK_STACK_ENTRY_BYTES` each) is not used.  Their size in bytes must
+ * fit in `size_t`.
  */
 static size_t
 mark_stack_bytes(size_t n)
 {
-  size_t bytes = n * sizeof(struct GC_ms_entry);
+  size_t bytes = n * MARK_STACK_ENTRY_BYTES;
 
   return bytes < (size_t)MINHINCR * HBLKSIZE ? (size_t)MINHINCR * HBLKSIZE
                                              : bytes;
@@ -1997,7 +2212,8 @@ mark_stack_bytes(size_t n)
  * Allocate or reallocate space for mark stack of size `n` entries.
  * The old mark stack is recycled into the heap by `GC_after_marking()`,
  * which also warns if a reallocation failed (the old mark stack is kept
- * then).
+ * then).  If `STEAL_MARK_STACK_RANGES`, `n` is rounded up to a power of
+ * two, as a parallel mark phase uses the mark stack as a ring.
  */
 static void
 alloc_mark_stack(size_t n)
@@ -2008,7 +2224,17 @@ alloc_mark_stack(size_t n)
 #endif
 
   GC_ASSERT(I_HOLD_LOCK());
-  if (UNLIKELY(n > GC_SIZE_MAX / sizeof(struct GC_ms_entry))) {
+#if defined(PARALLEL_MARK) && defined(STEAL_MARK_STACK_RANGES)
+  if ((n & (n - 1)) != 0) {
+    size_t p2 = 1;
+
+    while (p2 < n && p2 <= GC_SIZE_MAX / 2)
+      p2 <<= 1;
+    /* A size that cannot be rounded up fails below. */
+    n = p2 < n ? GC_SIZE_MAX : p2;
+  }
+#endif
+  if (UNLIKELY(n > GC_SIZE_MAX / MARK_STACK_ENTRY_BYTES)) {
     /* The size in bytes does not fit in `size_t`. */
     new_stack = NULL;
   } else {
@@ -2055,6 +2281,9 @@ alloc_mark_stack(size_t n)
     GC_mark_stack_size = n;
     GC_mark_stack_limit = new_stack + n;
   }
+#ifdef CHECK_MARK_RING
+  GC_mark_ring_numbers = (volatile AO_t *)GC_mark_stack_limit;
+#endif
   GC_mark_stack_top = GC_mark_stack - 1;
 }
 
@@ -2117,7 +2346,7 @@ GC_INNER void
 GC_mark_init(void)
 {
   GC_STATIC_ASSERT(INITIAL_MARK_STACK_SIZE
-                   <= GC_SIZE_MAX / sizeof(struct GC_ms_entry));
+                   <= GC_SIZE_MAX / MARK_STACK_ENTRY_BYTES);
   alloc_mark_stack(INITIAL_MARK_STACK_SIZE);
 }
 

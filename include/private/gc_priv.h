@@ -2723,12 +2723,40 @@ struct _GC_arrays {
    * size, thus no other field shares the lines of these groups.
    */
 
+#  ifdef STEAL_MARK_STACK_RANGES
+  /*
+   * Not updated during a parallel mark phase, whose markers use the global
+   * mark stack as a ring (see `GC_n_published`).
+   */
+  GC_ATTR_CACHE_ALIGNED mse *volatile _mark_stack_top;
+
+  /*
+   * During a parallel mark phase, the number of the first entry of the
+   * global mark stack not claimed by a marker yet.  Never decreases during
+   * a phase; written only by a CAS then.
+   */
+#    define GC_first_unclaimed GC_arrays._first_unclaimed
+  volatile AO_t _first_unclaimed;
+
+  /*
+   * During a parallel mark phase, the number of the entries put on the
+   * global mark stack in the phase, including those pushed before it.
+   * The entries are numbered from zero in the order they are put on the
+   * stack, and the entry numbered `i` is held in the slot
+   * `i % GC_mark_stack_size` (the size is a power of two), thus the stack
+   * is used as a ring.  Updated only with the mark lock held, but read
+   * asynchronously.
+   */
+#    define GC_n_published GC_arrays._n_published
+  volatile AO_t _n_published;
+#  else
   /* Updated only with the mark lock held, but read asynchronously. */
   GC_ATTR_CACHE_ALIGNED mse *volatile _mark_stack_top;
 
   /* The lowest entry on mark stack that may not be empty. */
-#  define GC_first_nonempty GC_arrays._first_nonempty
+#    define GC_first_nonempty GC_arrays._first_nonempty
   volatile ptr_t _first_nonempty;
+#  endif
 
   /*
    * Number of running helpers.  Updated only with the mark lock held,

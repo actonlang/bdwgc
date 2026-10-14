@@ -86,6 +86,13 @@ check_PROGRAMS += mallocmanytest
 mallocmanytest_SOURCES = tests/mallocmany.c
 mallocmanytest_LDADD = $(test_ldadd)
 
+# Likewise, the test includes the collector source.
+TESTS += markstackgrowthtest$(EXEEXT)
+check_PROGRAMS += markstackgrowthtest
+markstackgrowthtest_SOURCES = tests/markstackgrowth.c
+markstackgrowthtest_LDADD = $(nodist_libgc_la_OBJECTS) $(EXTRA_TEST_LIBS) \
+                            @addobjs@ $(THREADDLLIBS) $(UNWINDLIBS) $(ATOMIC_OPS_LIBS)
+
 TESTS += memaligntest$(EXEEXT)
 check_PROGRAMS += memaligntest
 memaligntest_SOURCES = tests/memalign.c
@@ -303,6 +310,7 @@ check-without-test-driver: $(TESTS)
 	./hugetest$(EXEEXT)
 	./leaktest$(EXEEXT)
 	./mallocmanytest$(EXEEXT)
+	./markstackgrowthtest$(EXEEXT)
 	./memaligntest$(EXEEXT)
 	./middletest$(EXEEXT)
 	./realloctest$(EXEEXT)
