@@ -825,6 +825,17 @@ GC_push_thread_structures(void)
 }
 
 #  if defined(MPROTECT_VDB) && defined(GC_WIN32_THREADS)
+/*
+ * Remove the write protection from the heap blocks of the object
+ * pointed to by `p`: the block holding a small object, or all the blocks
+ * spanned by a large one, which starts at a block boundary.
+ */
+static void
+unprotect_object_blocks(const void *p)
+{
+  GC_remove_protection(HBLKPTR(p), OBJ_SZ_TO_BLOCKS(GC_size(p)), FALSE);
+}
+
 GC_INNER void
 GC_win32_unprotect_thread(GC_thread t)
 {
@@ -836,14 +847,10 @@ GC_win32_unprotect_thread(GC_thread t)
   ) {
     GC_stack_context_t crtn = t->crtn;
 
-    if (crtn != &first_crtn) {
-      GC_ASSERT(SMALL_OBJ(GC_size(crtn)));
-      GC_remove_protection(HBLKPTR(crtn), 1, FALSE);
-    }
-    if (t != &first_thread) {
-      GC_ASSERT(SMALL_OBJ(GC_size(t)));
-      GC_remove_protection(HBLKPTR(t), 1, FALSE);
-    }
+    if (crtn != &first_crtn)
+      unprotect_object_blocks(crtn);
+    if (t != &first_thread)
+      unprotect_object_blocks(t);
   }
 }
 #  endif /* MPROTECT_VDB && GC_WIN32_THREADS */
