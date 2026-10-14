@@ -870,7 +870,7 @@ GC_collect_a_little_inner(size_t n_blocks)
     GC_parallel_mark_disabled = FALSE;
 #endif
     EXIT_GC();
-    GC_log_marker_decisions();
+    GC_after_marking();
 
     if (i < max_deficit && !GC_dont_gc) {
       GC_ASSERT(!GC_collection_in_progress());
@@ -1140,7 +1140,7 @@ GC_stopped_mark(GC_stop_func stop_func)
     }
   }
 #endif
-  GC_log_marker_decisions();
+  GC_after_marking();
 
   EXIT_GC();
   if (0 == abandoned_at)
@@ -1415,6 +1415,7 @@ GC_finish_collection(void)
 #endif
 #ifndef GC_NO_FINALIZATION
   GC_finalize();
+  GC_after_marking();
 #endif
 #ifndef NO_CLOCK
   if (GC_print_stats)

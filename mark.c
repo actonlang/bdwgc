@@ -409,7 +409,7 @@ STATIC unsigned GC_phase_markers = 1;
 
 /*
  * The decisions of `markers_for_phase()` made since the previous call of
- * `GC_log_marker_decisions()`, to be logged by it (only the first
+ * `GC_after_marking()`, to be logged by it (only the first
  * `MAX_LOGGED_MARKER_DECISIONS` of them are kept).  Protected by the
  * allocator lock.
  */
@@ -425,7 +425,7 @@ STATIC struct marker_decision {
 
 /*
  * The number of the decisions of `markers_for_phase()` made since the
- * previous call of `GC_log_marker_decisions()`, including those not kept.
+ * previous call of `GC_after_marking()`, including those not kept.
  */
 STATIC unsigned GC_n_marker_decisions = 0;
 
@@ -446,7 +446,7 @@ STATIC unsigned GC_n_marker_decisions = 0;
  * parallel marking).  Called with the allocator lock held, after each
  * push of the roots (thus again after a mark stack overflow).  This may
  * be with the world stopped, thus the decision is not logged here but
- * kept for `GC_log_marker_decisions()`.
+ * kept for `GC_after_marking()`.
  */
 static unsigned
 markers_for_phase(void)
@@ -491,8 +491,9 @@ markers_for_phase(void)
   return res;
 }
 
-GC_INNER void
-GC_log_marker_decisions(void)
+/* Log the decisions recorded by `markers_for_phase()`. */
+static void
+log_marker_decisions(void)
 {
   unsigned i;
   unsigned n = GC_n_marker_decisions;
@@ -528,6 +529,58 @@ STATIC struct hblk *GC_push_next_marked(struct hblk *h);
 STATIC struct hblk *GC_push_next_marked_uncollectable(struct hblk *h);
 
 static void alloc_mark_stack(size_t);
+
+/*
+ * The events of the mark stacks since the previous call of
+ * `GC_after_marking()`, which logs them.  They happen inside
+ * `GC_mark_some()` or the marking of the finalizable objects, thus maybe
+ * with the world stopped.  Protected by the allocator lock, except as
+ * noted.
+ */
+STATIC struct {
+  /* The overflows of the global mark stack. */
+  word n_overflows;
+
+  /* The size of the global mark stack at the last overflow. */
+  size_t overflow_size;
+
+  /*
+   * The local mark stacks dropped because the global one had no room for
+   * them.  Updated with the mark lock held (by any marker).
+   */
+  word n_no_room;
+
+  /* The times the global mark stack grew. */
+  word n_grown;
+
+  /* The size of the global mark stack after it grew. */
+  size_t grown_size;
+
+  /* The size of the last failed growth of the global mark stack, or 0. */
+  size_t failed_size;
+} GC_mark_stack_events;
+
+#ifdef PARALLEL_MARK
+/*
+ * The overflows of the local mark stacks since the previous call of
+ * `GC_after_marking()`.  Updated by the markers without a lock.
+ */
+STATIC volatile AO_t GC_n_local_mark_stack_overflows = 0;
+#endif
+
+/*
+ * The head of the list of the outgrown mark stacks, to be recycled into
+ * the heap by `GC_after_marking()`.  A mark stack is outgrown with the
+ * world maybe stopped, and recycling it may log.  The link and the size
+ * are stored at the start of the outgrown mark stack.  Protected by the
+ * allocator lock.
+ */
+struct outgrown_mark_stack {
+  struct outgrown_mark_stack *next;
+  size_t bytes;
+};
+
+STATIC struct outgrown_mark_stack *GC_outgrown_mark_stacks = NULL;
 
 static void
 push_roots_and_advance(GC_bool push_all, ptr_t cold_gc_frame)
@@ -862,6 +915,20 @@ GC_invalidate_mark_state(void)
   GC_mark_stack_top = GC_mark_stack - 1;
 }
 
+/*
+ * Request a larger global mark stack after it overflowed, and record the
+ * overflow for `GC_after_marking()`.  Only the thread holding the
+ * allocator lock marks on the global mark stack.
+ */
+GC_INLINE void
+global_mark_stack_overflow(void)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  GC_mark_stack_too_small = TRUE;
+  GC_mark_stack_events.n_overflows++;
+  GC_mark_stack_events.overflow_size = GC_mark_stack_size;
+}
+
 STATIC mse *
 GC_signal_mark_stack_overflow(mse *msp, const mse *mark_stack_limit)
 {
@@ -878,21 +945,22 @@ GC_signal_mark_stack_overflow(mse *msp, const mse *mark_stack_limit)
    * a time limit, or during the mark state recovery after an overflow.
    */
   if (!GC_parallel || mark_stack_limit == GC_mark_stack_limit) {
-    GC_mark_stack_too_small = TRUE;
-  } else if (discards > LOCAL_MARK_STACK_SIZE / 8) {
-    /*
-     * `GC_MARK_STACK_DISCARDS` depends on `INITIAL_MARK_STACK_SIZE` (which
-     * could be defined by the client), thus it might exceed the capacity
-     * of a local mark stack.
-     */
-    discards = LOCAL_MARK_STACK_SIZE / 8;
+    global_mark_stack_overflow();
+  } else {
+    (void)AO_fetch_and_add1(&GC_n_local_mark_stack_overflows);
+    if (discards > LOCAL_MARK_STACK_SIZE / 8) {
+      /*
+       * `GC_MARK_STACK_DISCARDS` depends on `INITIAL_MARK_STACK_SIZE`
+       * (which could be defined by the client), thus it might exceed
+       * the capacity of a local mark stack.
+       */
+      discards = LOCAL_MARK_STACK_SIZE / 8;
+    }
   }
 #else
   UNUSED_ARG(mark_stack_limit);
-  GC_mark_stack_too_small = TRUE;
+  global_mark_stack_overflow();
 #endif
-  GC_COND_LOG_PRINTF("Mark stack overflow; current size: %lu entries\n",
-                     (unsigned long)GC_mark_stack_size);
 #ifdef GC_ASSERTIONS
   {
     /* The overflowing mark stack is the global one, or a local one. */
@@ -1504,7 +1572,7 @@ GC_return_mark_stack(mse *low, mse *high)
   my_start = my_top + 1;
   if ((word)(my_start - GC_mark_stack + stack_size)
       > (word)GC_mark_stack_size) {
-    GC_COND_LOG_PRINTF("No room to copy back mark stack\n");
+    GC_mark_stack_events.n_no_room++;
     GC_mark_state = MS_INVALID;
     GC_mark_stack_too_small = TRUE;
     /* We drop the local mark stack.  We will fix things later. */
@@ -1884,8 +1952,26 @@ GC_help_marker(word my_mark_no)
 #endif /* PARALLEL_MARK */
 
 /*
+ * The size in bytes of the memory of a mark stack of `n` entries.  It is
+ * at least `MINHINCR * HBLKSIZE`, which `GC_scratch_alloc()` gets from
+ * the OS directly, without a warning if this fails, as a mark stack may
+ * grow with the world stopped.  The memory after the last entry is not
+ * used.  The size of `n` entries in bytes must fit in `size_t`.
+ */
+static size_t
+mark_stack_bytes(size_t n)
+{
+  size_t bytes = n * sizeof(struct GC_ms_entry);
+
+  return bytes < (size_t)MINHINCR * HBLKSIZE ? (size_t)MINHINCR * HBLKSIZE
+                                             : bytes;
+}
+
+/*
  * Allocate or reallocate space for mark stack of size `n` entries.
- * May silently fail.
+ * The old mark stack is recycled into the heap by `GC_after_marking()`,
+ * which also warns if a reallocation failed (the old mark stack is kept
+ * then).
  */
 static void
 alloc_mark_stack(size_t n)
@@ -1900,7 +1986,7 @@ alloc_mark_stack(size_t n)
     /* The size in bytes does not fit in `size_t`. */
     new_stack = NULL;
   } else {
-    new_stack = (mse *)GC_scratch_alloc(n * sizeof(struct GC_ms_entry));
+    new_stack = (mse *)GC_scratch_alloc(mark_stack_bytes(n));
   }
 #ifdef GWW_VDB
   /*
@@ -1918,18 +2004,22 @@ alloc_mark_stack(size_t n)
       if (recycle_old)
 #endif
       {
-        /* Recycle old space. */
-        GC_scratch_recycle_inner(
-            GC_mark_stack, GC_mark_stack_size * sizeof(struct GC_ms_entry));
+        /* Recycle old space in `GC_after_marking()`. */
+        struct outgrown_mark_stack *old
+            = (struct outgrown_mark_stack *)GC_mark_stack;
+
+        old->next = GC_outgrown_mark_stacks;
+        old->bytes = mark_stack_bytes(GC_mark_stack_size);
+        GC_outgrown_mark_stacks = old;
       }
       GC_mark_stack = new_stack;
       GC_mark_stack_size = n;
       /* FIXME: Do we need some way to reset `GC_mark_stack_size`? */
       GC_mark_stack_limit = new_stack + n;
-      GC_COND_LOG_PRINTF("Grew mark stack to %lu frames\n",
-                         (unsigned long)GC_mark_stack_size);
+      GC_mark_stack_events.n_grown++;
+      GC_mark_stack_events.grown_size = n;
     } else {
-      WARN("Failed to grow mark stack to %" WARN_PRIuPTR " frames\n", n);
+      GC_mark_stack_events.failed_size = n;
     }
   } else if (NULL == new_stack) {
     GC_err_printf("No space for mark stack\n");
@@ -1940,6 +2030,61 @@ alloc_mark_stack(size_t n)
     GC_mark_stack_limit = new_stack + n;
   }
   GC_mark_stack_top = GC_mark_stack - 1;
+}
+
+/* Log the events recorded in `GC_mark_stack_events`, and clear them. */
+static void
+log_mark_stack_events(void)
+{
+#ifdef PARALLEL_MARK
+  word n_local = (word)AO_load(&GC_n_local_mark_stack_overflows);
+
+  if (n_local != 0)
+    AO_store(&GC_n_local_mark_stack_overflows, 0);
+#endif
+  if (UNLIKELY(GC_mark_stack_events.failed_size != 0)) {
+    WARN("Failed to grow mark stack to %" WARN_PRIuPTR " frames\n",
+         (word)GC_mark_stack_events.failed_size);
+  }
+  if (UNLIKELY(GC_print_stats)) {
+    if (GC_mark_stack_events.n_overflows != 0) {
+      GC_log_printf("Mark stack overflow (%lu times, at %lu entries)\n",
+                    (unsigned long)GC_mark_stack_events.n_overflows,
+                    (unsigned long)GC_mark_stack_events.overflow_size);
+    }
+#ifdef PARALLEL_MARK
+    if (n_local != 0) {
+      GC_log_printf("Local mark stack overflow (%lu times)\n",
+                    (unsigned long)n_local);
+    }
+#endif
+    if (GC_mark_stack_events.n_no_room != 0) {
+      GC_log_printf("No room to copy back mark stack (%lu times)\n",
+                    (unsigned long)GC_mark_stack_events.n_no_room);
+    }
+    if (GC_mark_stack_events.n_grown != 0) {
+      GC_log_printf("Grew mark stack to %lu frames (%lu times)\n",
+                    (unsigned long)GC_mark_stack_events.grown_size,
+                    (unsigned long)GC_mark_stack_events.n_grown);
+    }
+  }
+  BZERO(&GC_mark_stack_events, sizeof(GC_mark_stack_events));
+}
+
+GC_INNER void
+GC_after_marking(void)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+#ifdef PARALLEL_MARK
+  log_marker_decisions();
+#endif
+  log_mark_stack_events();
+  while (GC_outgrown_mark_stacks != NULL) {
+    struct outgrown_mark_stack *old = GC_outgrown_mark_stacks;
+
+    GC_outgrown_mark_stacks = old->next;
+    GC_scratch_recycle_inner(old, old->bytes);
+  }
 }
 
 GC_INNER void

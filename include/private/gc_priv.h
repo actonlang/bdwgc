@@ -3155,20 +3155,19 @@ GC_INNER void GC_invalidate_mark_state(void);
  */
 GC_INNER GC_bool GC_mark_some(ptr_t cold_gc_frame);
 
-#ifdef PARALLEL_MARK
 /*
- * Log the decisions on the number of markers of a mark phase that
- * `GC_mark_some()` made since the previous call (if `GC_print_stats` is
- * on).  `GC_mark_some()` only records them, since it may run with the
- * world stopped, and formatting a message then could wait forever for
- * a lock of the C library held by a stopped thread (e.g. the locale lock
- * taken by `vsnprintf()` on Darwin).  Called with the allocator lock
- * held and the world running, after the calls of `GC_mark_some()`.
+ * Do the work deferred by the marking since the previous call: log the
+ * decisions on the number of markers of a mark phase and the events of
+ * the mark stacks (overflows, growth; if `GC_print_stats` is on, except
+ * for the warning about a failed growth), and recycle the outgrown mark
+ * stacks into the heap.  `GC_mark_some()` only records these, since it
+ * may run with the world stopped, and formatting a message then could
+ * wait forever for a lock of the C library held by a stopped thread
+ * (e.g. the locale lock taken by `vsnprintf()` on Darwin).  Called with
+ * the allocator lock held and the world running, after the calls of
+ * `GC_mark_some()` and after the marking of the finalizable objects.
  */
-GC_INNER void GC_log_marker_decisions(void);
-#else
-#  define GC_log_marker_decisions() (void)0
-#endif
+GC_INNER void GC_after_marking(void);
 
 /*
  * Initiate a garbage collection.  Initiates a full collection if the
