@@ -331,7 +331,7 @@ GC_complete_ongoing_collection(void)
     while (!GC_mark_some(NULL)) {
       /* Empty. */
     }
-    GC_log_marker_decisions();
+    GC_after_marking();
   }
 }
 
