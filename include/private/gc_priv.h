@@ -3173,6 +3173,23 @@ GC_INNER void GC_clear_marks(void);
 GC_INNER void GC_invalidate_mark_state(void);
 
 /*
+ * The mark stack to which the entries of the global mark stack were
+ * moved when it overflowed during serial marking, or `NULL`.  It becomes
+ * the global mark stack at the next call of
+ * `GC_switch_to_next_mark_stack()`.  Protected by the allocator lock.
+ */
+GC_EXTERN mse *GC_next_mark_stack;
+
+/*
+ * Make the next mark stack the global one: append the entries of the
+ * global mark stack to the ones moved to the next mark stack, and put
+ * the global mark stack on the list of the outgrown mark stacks.  Called
+ * with the allocator lock held, where no caller keeps the bounds of the
+ * global mark stack in local variables.
+ */
+GC_INNER void GC_switch_to_next_mark_stack(void);
+
+/*
  * Perform a small amount of marking.  We try to touch roughly a page
  * of memory.  Returns quickly if no collection is in progress.
  * Returns `TRUE` if we just finished a mark phase.
@@ -3186,13 +3203,14 @@ GC_INNER GC_bool GC_mark_some(ptr_t cold_gc_frame);
 #ifndef GC_NO_FINALIZATION
 /*
  * Push the contents of all the marked objects in the heap and mark from
- * them, serially, until this ends without a mark stack overflow, then
- * set the mark state to `MS_NONE`.  The roots are not pushed.  Called
- * with the allocator lock held, the mark stack empty and the mark state
- * `MS_INVALID` after an overflow of the mark stack while marking from
- * a finalizable object after the marking of the current collection was
- * complete.  The objects which are reachable but not marked then are
- * reachable from the marked objects whose entries the overflow dropped.
+ * them, serially, until this ends without dropping mark stack entries,
+ * then set the mark state to `MS_NONE`.  The roots are not pushed.
+ * Called with the allocator lock held, the mark stack empty and the mark
+ * state `MS_INVALID` after an overflow of the mark stack dropped entries
+ * while marking from a finalizable object after the marking of the
+ * current collection was complete.  The objects which are reachable but
+ * not marked then are reachable from the marked objects whose entries
+ * the overflow dropped.
  */
 GC_INNER void GC_rescan_marked_objects(void);
 #endif

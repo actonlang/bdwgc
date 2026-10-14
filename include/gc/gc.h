@@ -191,7 +191,10 @@ GC_API GC_on_heap_resize_proc GC_CALL GC_get_on_heap_resize(void);
 
 /**
  * Invoked when new memory space is obtained from the OS.  Called with the
- * allocator lock held.  If `space` argument is `NULL`, this means a failure
+ * allocator lock held.  This includes the memory of a larger mark stack,
+ * which is obtained during the marking, maybe with the world stopped and
+ * inside a client mark procedure (when it pushes an entry onto a full
+ * mark stack).  If `space` argument is `NULL`, this means a failure
  * to the get the memory.  The argument of `GC_set_on_os_get_mem()` may be 0
  * (means no notifier).  Both the setter and the getter acquire the allocator
  * lock (in the reader mode in case of the getter).
