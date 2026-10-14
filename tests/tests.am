@@ -56,6 +56,11 @@ expandfailtest_SOURCES = tests/expandfail.c
 expandfailtest_LDADD = $(nodist_libgc_la_OBJECTS) $(EXTRA_TEST_LIBS) \
                        @addobjs@ $(THREADDLLIBS) $(UNWINDLIBS) $(ATOMIC_OPS_LIBS)
 
+TESTS += finalizemarktest$(EXEEXT)
+check_PROGRAMS += finalizemarktest
+finalizemarktest_SOURCES = tests/finalizemark.c
+finalizemarktest_LDADD = $(test_ldadd)
+
 TESTS += heapgrowthtest$(EXEEXT)
 check_PROGRAMS += heapgrowthtest
 heapgrowthtest_SOURCES = tests/heapgrowth.c
@@ -292,6 +297,7 @@ check-without-test-driver: $(TESTS)
 	./dbgfunctest$(EXEEXT)
 	./endpaddingtest$(EXEEXT)
 	./expandfailtest$(EXEEXT)
+	./finalizemarktest$(EXEEXT)
 	./heapgrowthtest$(EXEEXT)
 	./heaplimittest$(EXEEXT)
 	./hugetest$(EXEEXT)

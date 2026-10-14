@@ -771,6 +771,7 @@ pub fn build(b: *std.Build) void {
         .filename2 = if (t.abi == .msvc) "extra/msvc_dbg.c" else null,
         .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
     });
+    addTest(b, gc, test_step, flags, "finalizemarktest", "tests/finalizemark.c");
     addTest(b, gc, test_step, flags, "heapgrowthtest", "tests/heapgrowth.c");
     addTest(b, gc, test_step, flags, "heaplimittest", "tests/heaplimit.c");
     addTest(b, gc, test_step, flags, "hugetest", "tests/huge.c");
