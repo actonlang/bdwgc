@@ -113,6 +113,13 @@ check_PROGRAMS += reallocfreetest
 reallocfreetest_SOURCES = tests/reallocfree.c
 reallocfreetest_LDADD = $(test_ldadd)
 
+# Likewise, the test includes the collector source.
+TESTS += serialgrowthtest$(EXEEXT)
+check_PROGRAMS += serialgrowthtest
+serialgrowthtest_SOURCES = tests/serialgrowth.c
+serialgrowthtest_LDADD = $(nodist_libgc_la_OBJECTS) $(EXTRA_TEST_LIBS) \
+                         @addobjs@ $(THREADDLLIBS) $(UNWINDLIBS) $(ATOMIC_OPS_LIBS)
+
 TESTS += sizemaptest$(EXEEXT)
 check_PROGRAMS += sizemaptest
 sizemaptest_SOURCES = tests/sizemap.c
@@ -127,6 +134,13 @@ TESTS += stopfunctest$(EXEEXT)
 check_PROGRAMS += stopfunctest
 stopfunctest_SOURCES = tests/stopfunc.c
 stopfunctest_LDADD = $(test_ldadd)
+
+# The test includes the collector source instead of linking `libgc`.
+TESTS += switchedstacktest$(EXEEXT)
+check_PROGRAMS += switchedstacktest
+switchedstacktest_SOURCES = tests/switchedstack.c
+switchedstacktest_LDADD = $(nodist_libgc_la_OBJECTS) $(EXTRA_TEST_LIBS) \
+                          @addobjs@ $(THREADDLLIBS) $(UNWINDLIBS) $(ATOMIC_OPS_LIBS)
 
 TESTS += typedtest$(EXEEXT)
 check_PROGRAMS += typedtest
@@ -315,10 +329,12 @@ check-without-test-driver: $(TESTS)
 	./middletest$(EXEEXT)
 	./realloctest$(EXEEXT)
 	./reallocfreetest$(EXEEXT)
+	./serialgrowthtest$(EXEEXT)
 	./sizemaptest$(EXEEXT)
 	./smashtest$(EXEEXT)
 	./staticrootstest$(EXEEXT)
 	./stopfunctest$(EXEEXT)
+	./switchedstacktest$(EXEEXT)
 	./typedtest$(EXEEXT)
 	./unmaptest$(EXEEXT)
 	./untouchedtest$(EXEEXT)

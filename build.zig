@@ -787,9 +787,21 @@ pub fn build(b: *std.Build) void {
     addTest(b, gc, test_step, flags, "middletest", "tests/middle.c");
     addTest(b, gc, test_step, flags, "realloctest", "tests/realloc.c");
     addTest(b, gc, test_step, flags, "reallocfreetest", "tests/reallocfree.c");
+    // Likewise, `serialgrowthtest` includes the collector source.
+    addTestExt(b, gc, test_step, flags, "serialgrowthtest", "tests/serialgrowth.c", .{
+        .link_gc = false,
+        .filename2 = if (t.abi == .msvc) "extra/msvc_dbg.c" else null,
+        .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
+    });
     addTest(b, gc, test_step, flags, "sizemaptest", "tests/sizemap.c");
     addTest(b, gc, test_step, flags, "smashtest", "tests/smash.c");
     addTest(b, gc, test_step, flags, "stopfunctest", "tests/stopfunc.c");
+    // Likewise, `switchedstacktest` includes the collector source.
+    addTestExt(b, gc, test_step, flags, "switchedstacktest", "tests/switchedstack.c", .{
+        .link_gc = false,
+        .filename2 = if (t.abi == .msvc) "extra/msvc_dbg.c" else null,
+        .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
+    });
     addTest(b, gc, test_step, flags, "typedtest", "tests/typed.c");
     // Likewise, `unmaptest` includes the collector source.
     addTestExt(b, gc, test_step, flags, "unmaptest", "tests/unmap.c", .{
