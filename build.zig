@@ -777,6 +777,12 @@ pub fn build(b: *std.Build) void {
     addTest(b, gc, test_step, flags, "hugetest", "tests/huge.c");
     addTest(b, gc, test_step, flags, "leaktest", "tests/leak.c");
     addTest(b, gc, test_step, flags, "mallocmanytest", "tests/mallocmany.c");
+    // Likewise, `markstackgrowthtest` includes the collector source.
+    addTestExt(b, gc, test_step, flags, "markstackgrowthtest", "tests/markstackgrowth.c", .{
+        .link_gc = false,
+        .filename2 = if (t.abi == .msvc) "extra/msvc_dbg.c" else null,
+        .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
+    });
     addTest(b, gc, test_step, flags, "memaligntest", "tests/memalign.c");
     addTest(b, gc, test_step, flags, "middletest", "tests/middle.c");
     addTest(b, gc, test_step, flags, "realloctest", "tests/realloc.c");
