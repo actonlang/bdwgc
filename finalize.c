@@ -309,18 +309,37 @@ GC_unregister_disappearing_link(void **link)
 /*
  * Mark from one finalizable object using the specified mark procedure.
  * May not mark the object pointed to by `real_ptr` (i.e, it is the job
- * of the caller, if appropriate).  Note that this is called with the
- * mutator running.  This is safe only if the mutator (client) gets
- * the allocator lock to reveal hidden pointers.
+ * of the caller, if appropriate).  If no collection is in progress, then
+ * all the objects reachable from the object are marked on return, also
+ * after an overflow of the mark stack; otherwise the caller completes
+ * the collection.  Note that this is called with the mutator running.
+ * This is safe only if the mutator (client) gets the allocator lock to
+ * reveal hidden pointers.
  */
 GC_INLINE void
 GC_mark_fo(ptr_t real_ptr, finalization_mark_proc fo_mark_proc)
 {
+  GC_bool in_progress;
+
   GC_ASSERT(I_HOLD_LOCK());
-  fo_mark_proc(real_ptr);
-  /* Process objects pushed by the mark procedure. */
-  while (!GC_mark_stack_empty())
-    MARK_FROM_MARK_STACK();
+  in_progress = GC_collection_in_progress();
+  for (;;) {
+    fo_mark_proc(real_ptr);
+    /* Process objects pushed by the mark procedure. */
+    while (!GC_mark_stack_empty())
+      MARK_FROM_MARK_STACK();
+    if (LIKELY(GC_mark_state == MS_NONE) || in_progress)
+      break;
+
+    /*
+     * The mark stack overflowed.  The dropped entries are of marked
+     * objects whose descendants may be unmarked, thus mark from all the
+     * marked objects again.  The object at `real_ptr` may be unmarked,
+     * thus mark from it again too.
+     */
+    GC_rescan_marked_objects();
+    GC_after_marking();
+  }
 }
 
 /* Complete a collection in progress, if any. */
@@ -403,7 +422,6 @@ GC_mark_togglerefs(void)
       /* Push and mark the object. */
       GC_mark_fo((ptr_t)obj, GC_normal_finalize_mark_proc);
       GC_set_mark_bit(obj);
-      GC_complete_ongoing_collection();
     }
   }
 }

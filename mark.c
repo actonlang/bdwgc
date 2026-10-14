@@ -915,6 +915,32 @@ GC_invalidate_mark_state(void)
   GC_mark_stack_top = GC_mark_stack - 1;
 }
 
+#ifndef GC_NO_FINALIZATION
+GC_INNER void
+GC_rescan_marked_objects(void)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  GC_ASSERT(GC_mark_stack_empty());
+  GC_ASSERT(GC_mark_state == MS_INVALID);
+  do {
+    struct hblk *h;
+
+    if (GC_mark_stack_too_small)
+      alloc_mark_stack(2 * GC_mark_stack_size);
+    GC_mark_state = MS_PARTIALLY_INVALID;
+    /* Start from the first heap block in use. */
+    h = GC_next_block(NULL, FALSE);
+    while (h != NULL) {
+      h = GC_push_next_marked(h);
+      while (!GC_mark_stack_empty())
+        MARK_FROM_MARK_STACK();
+    }
+    /* An overflow during the scan sets the state to `MS_INVALID`. */
+  } while (GC_mark_state == MS_INVALID);
+  GC_mark_state = MS_NONE;
+}
+#endif /* !GC_NO_FINALIZATION */
+
 /*
  * Request a larger global mark stack after it overflowed, and record the
  * overflow for `GC_after_marking()`.  Only the thread holding the

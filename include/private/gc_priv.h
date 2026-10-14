@@ -3155,6 +3155,20 @@ GC_INNER void GC_invalidate_mark_state(void);
  */
 GC_INNER GC_bool GC_mark_some(ptr_t cold_gc_frame);
 
+#ifndef GC_NO_FINALIZATION
+/*
+ * Push the contents of all the marked objects in the heap and mark from
+ * them, serially, until this ends without a mark stack overflow, then
+ * set the mark state to `MS_NONE`.  The roots are not pushed.  Called
+ * with the allocator lock held, the mark stack empty and the mark state
+ * `MS_INVALID` after an overflow of the mark stack while marking from
+ * a finalizable object after the marking of the current collection was
+ * complete.  The objects which are reachable but not marked then are
+ * reachable from the marked objects whose entries the overflow dropped.
+ */
+GC_INNER void GC_rescan_marked_objects(void);
+#endif
+
 /*
  * Do the work deferred by the marking since the previous call: log the
  * decisions on the number of markers of a mark phase and the events of

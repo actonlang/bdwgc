@@ -1091,6 +1091,10 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME expandfailtest COMMAND expandfailtest)
 
+    add_executable(finalizemarktest tests/finalizemark.c ${NODIST_SRC})
+    target_link_libraries(finalizemarktest PRIVATE gc)
+    add_test(NAME finalizemarktest COMMAND finalizemarktest)
+
     add_executable(heapgrowthtest tests/heapgrowth.c ${NODIST_SRC})
     target_link_libraries(heapgrowthtest PRIVATE gc)
     add_test(NAME heapgrowthtest COMMAND heapgrowthtest)
