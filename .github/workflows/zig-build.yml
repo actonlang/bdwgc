@@ -185,6 +185,25 @@ jobs:
           -Dtl_refill_max=16
           test
 
+      - name: Build and run tests with static linkage
+        # Acton links the collector statically, compiled file by file, with
+        # the large configuration and thread-local free lists for objects of
+        # up to 2 KiB (128 granules).
+        run: >
+          zig build
+          -Dblock_size=${{ matrix.block_size }}
+          -Ddisable_realloc_free
+          -Ddisable_thread_local_warmup
+          -Denable_gc_assertions
+          -Denable_large_config
+          -Denable_mark_range_stealing
+          -Denable_werror
+          -Dinitial_mark_stack_size=1048576
+          -Dlinkage=static
+          -Dtiny_freelists=129
+          -Dtl_refill_max=16
+          test
+
       - name: Build and run tests with the prefetch on push turned off
         env:
           # Use one marker per MiB of the estimated mark work.
