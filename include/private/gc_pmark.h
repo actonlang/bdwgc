@@ -446,10 +446,26 @@ GC_ms_push_contents_hdr(ptr_t current, hdr *hhdr, mse *mark_stack_top,
 GC_INNER mse *GC_mark_from(mse *mark_stack_top, const mse *mark_stack,
                            mse *mark_stack_limit);
 
-#define MARK_FROM_MARK_STACK()                                       \
-  GC_mark_stack_top = GC_mark_from(GC_mark_stack_top, GC_mark_stack, \
-                                   GC_mark_stack + GC_mark_stack_size);
+/*
+ * Mark from the global mark stack, by `GC_mark_from()`.  If the global
+ * mark stack overflowed meanwhile and its entries were moved to the next
+ * mark stack, then make the latter the global one, since no caller keeps
+ * the bounds of the global mark stack here.  Every call of
+ * `GC_mark_from()` on the global mark stack is done by this macro.
+ */
+#define MARK_FROM_MARK_STACK()                                            \
+  do {                                                                    \
+    GC_mark_stack_top = GC_mark_from(GC_mark_stack_top, GC_mark_stack,    \
+                                     GC_mark_stack + GC_mark_stack_size); \
+    if (UNLIKELY(GC_next_mark_stack != NULL))                             \
+      GC_switch_to_next_mark_stack();                                     \
+  } while (0)
 
+/*
+ * Test whether the global mark stack is empty.  It is not empty while
+ * entries wait in the next mark stack: the push which overflowed it
+ * wrote an entry at its bottom, which only `GC_mark_from()` pops.
+ */
 #define GC_mark_stack_empty() \
   ADDR_LT((ptr_t)GC_mark_stack_top, (ptr_t)GC_mark_stack)
 

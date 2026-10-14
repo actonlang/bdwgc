@@ -325,14 +325,19 @@ GC_mark_fo(ptr_t real_ptr, finalization_mark_proc fo_mark_proc)
   in_progress = GC_collection_in_progress();
   for (;;) {
     fo_mark_proc(real_ptr);
+    if (UNLIKELY(GC_next_mark_stack != NULL)) {
+      /* The pushes of the mark procedure overflowed the mark stack. */
+      GC_switch_to_next_mark_stack();
+    }
     /* Process objects pushed by the mark procedure. */
     while (!GC_mark_stack_empty())
       MARK_FROM_MARK_STACK();
+    GC_ASSERT(NULL == GC_next_mark_stack);
     if (LIKELY(GC_mark_state == MS_NONE) || in_progress)
       break;
 
     /*
-     * The mark stack overflowed.  The dropped entries are of marked
+     * An overflow of the mark stack dropped entries.  These are of marked
      * objects whose descendants may be unmarked, thus mark from all the
      * marked objects again.  The object at `real_ptr` may be unmarked,
      * thus mark from it again too.
@@ -1311,6 +1316,11 @@ GC_enqueue_all_finalizers(void)
   }
   /* All entries are deleted from the hash table. */
   GC_fo_entries = 0;
+  /*
+   * Log the events of the marking from the finalizable objects and recycle
+   * the outgrown mark stacks, also if no collection was completed.
+   */
+  GC_after_marking();
 }
 
 static int invoke_finalizers_internal(GC_bool all);

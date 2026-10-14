@@ -1151,6 +1151,23 @@ if(BUILD_TESTING)
     target_link_libraries(reallocfreetest PRIVATE gc)
     add_test(NAME reallocfreetest COMMAND reallocfreetest)
 
+    # Likewise, the test includes the collector source.
+    add_executable(serialgrowthtest tests/serialgrowth.c ${NODIST_SRC})
+    if(MSVC)
+        target_sources(serialgrowthtest PRIVATE extra/msvc_dbg.c)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+        target_sources(serialgrowthtest PRIVATE sparc_mach_dep.S)
+    endif()
+    target_link_libraries(
+        serialgrowthtest
+        PRIVATE ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+    )
+    if(enable_cplusplus AND NOT (BORLAND OR MSVC OR WATCOM))
+        set_target_properties(serialgrowthtest PROPERTIES LINKER_LANGUAGE CXX)
+    endif()
+    add_test(NAME serialgrowthtest COMMAND serialgrowthtest)
+
     add_executable(sizemaptest tests/sizemap.c ${NODIST_SRC})
     target_link_libraries(sizemaptest PRIVATE gc)
     add_test(NAME sizemaptest COMMAND sizemaptest)
@@ -1162,6 +1179,23 @@ if(BUILD_TESTING)
     add_executable(stopfunctest tests/stopfunc.c ${NODIST_SRC})
     target_link_libraries(stopfunctest PRIVATE gc)
     add_test(NAME stopfunctest COMMAND stopfunctest)
+
+    # The test includes the collector source instead of linking `gc`.
+    add_executable(switchedstacktest tests/switchedstack.c ${NODIST_SRC})
+    if(MSVC)
+        target_sources(switchedstacktest PRIVATE extra/msvc_dbg.c)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+        target_sources(switchedstacktest PRIVATE sparc_mach_dep.S)
+    endif()
+    target_link_libraries(
+        switchedstacktest
+        PRIVATE ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+    )
+    if(enable_cplusplus AND NOT (BORLAND OR MSVC OR WATCOM))
+        set_target_properties(switchedstacktest PROPERTIES LINKER_LANGUAGE CXX)
+    endif()
+    add_test(NAME switchedstacktest COMMAND switchedstacktest)
 
     add_executable(typedtest tests/typed.c ${NODIST_SRC})
     target_link_libraries(typedtest PRIVATE gc)
