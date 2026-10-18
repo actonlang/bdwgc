@@ -40,6 +40,18 @@
  * stack and its parallel mark phase, if any (none with one marker), should
  * put more entries on the global mark stack than it has slots.  A fallback
  * to dropping local mark stacks instead of reusing the slots fails this.
+ *
+ * With `STEAL_MARK_STACK_RANGES`, a parallel mark phase also grows the
+ * ring instead of dropping a local mark stack for which it has no room,
+ * thus no collection should drop one.  The test checks this, and then
+ * makes the global mark stack its initial size again and refuses the
+ * first request of memory from the OS in a collection (the test includes
+ * the collector source for this).  If the collection marks in parallel
+ * and a marker has no room on the ring, then this is the request of the
+ * growth of the ring, and the local mark stacks without room are dropped;
+ * otherwise it is the request of a larger mark stack in serial marking,
+ * and entries of the global mark stack are dropped.  Either way, the
+ * marking is completed from the marked objects.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -57,6 +69,26 @@
 #  define GC_NOT_DLL
 #endif
 #include "private/gc_priv.h"
+
+/* Whether to refuse the next request of memory from the OS. */
+static GC_bool refuse_next_get_mem;
+
+/* The number of the requests refused. */
+static unsigned n_refused;
+
+static ptr_t
+get_test_memory(size_t bytes)
+{
+  if (refuse_next_get_mem) {
+    refuse_next_get_mem = FALSE;
+    n_refused++;
+    return NULL;
+  }
+  return (ptr_t)GET_MEM(bytes);
+}
+
+#undef GET_MEM
+#define GET_MEM(bytes) get_test_memory(bytes)
 
 #if defined(CPPCHECK) && GC_GNUC_PREREQ(12, 0)
 /*
@@ -150,6 +182,14 @@ static GC_hidden_pointer *graph_table;
  */
 static word n_no_room;
 
+#ifdef GROW_MARK_RING
+/* The growths of the ring during the parallel mark phases of a collection. */
+static word n_ring_grown;
+#endif
+
+/* The overflows of the global mark stack which dropped entries. */
+static word n_overflows;
+
 #if defined(PARALLEL_MARK) && defined(STEAL_MARK_STACK_RANGES)
 #  define CHECK_RING
 
@@ -178,6 +218,10 @@ on_collection_event(GC_EventType e)
   case GC_EVENT_MARK_END:
     /* `GC_after_marking()`, which clears the counter, is not called yet. */
     n_no_room += GC_mark_stack_events.n_no_room;
+    n_overflows += GC_mark_stack_events.n_overflows;
+#ifdef GROW_MARK_RING
+    n_ring_grown += GC_mark_stack_events.n_ring_grown;
+#endif
 #ifdef CHECK_RING
     n_phases = GC_mark_no - mark_no_at_start;
     n_ring_entries = (size_t)AO_load(&GC_n_published);
@@ -362,6 +406,49 @@ check_graph(void)
   return n_bad;
 }
 
+#ifdef GROW_MARK_RING
+/*
+ * Collect from a global mark stack of `stack_size` entries, refusing the
+ * first request of memory from the OS, and check the shapes.
+ */
+static void
+check_refused_growth(size_t stack_size)
+{
+  size_t list_bad, graph_bad;
+
+  LOCK();
+  alloc_mark_stack(stack_size);
+  GC_after_marking();
+  UNLOCK();
+  n_no_room = 0;
+  n_overflows = 0;
+  n_ring_grown = 0;
+  n_refused = 0;
+  refuse_next_get_mem = TRUE;
+  GC_gcollect();
+  refuse_next_get_mem = FALSE;
+  GC_disable();
+  reuse_memory();
+  list_bad = check_list();
+  graph_bad = check_graph();
+  GC_enable();
+  printf("First request of memory refused, from a mark stack of %lu"
+         " entries: %lu list objects and %lu graph nodes reclaimed, %lu"
+         " requests refused, %lu local mark stacks dropped, %lu overflows"
+         " dropping entries, %lu growths of the ring, mark stack of %lu"
+         " entries\n",
+         (unsigned long)stack_size, (unsigned long)list_bad,
+         (unsigned long)graph_bad, (unsigned long)n_refused,
+         (unsigned long)n_no_room, (unsigned long)n_overflows,
+         (unsigned long)n_ring_grown, (unsigned long)GC_mark_stack_size);
+  TEST_ASSERT(0 == list_bad);
+  TEST_ASSERT(0 == graph_bad);
+  /* A refused request makes the collector drop entries. */
+  TEST_ASSERT(n_refused <= 1);
+  TEST_ASSERT(0 == n_refused || n_no_room > 0 || n_overflows > 0);
+}
+#endif
+
 #ifdef CHECK_RING
 static void
 check_ring(size_t stack_size)
@@ -452,6 +539,9 @@ main(void)
     size_t list_bad, graph_bad;
 
     n_no_room = 0;
+#ifdef GROW_MARK_RING
+    n_ring_grown = 0;
+#endif
     GC_gcollect();
     /* No collection runs until the objects are checked. */
     GC_disable();
@@ -473,7 +563,16 @@ main(void)
              (unsigned long)ring_size);
     }
 #endif
+#ifdef GROW_MARK_RING
+    printf("Collection %d: %lu growths of the ring\n", i,
+           (unsigned long)n_ring_grown);
+    /* The ring grows instead. */
+    TEST_ASSERT(0 == n_no_room);
+#endif
   }
+#ifdef GROW_MARK_RING
+  check_refused_growth(stack_size);
+#endif
 #ifdef CHECK_RING
   /* A ring of at least two local mark stacks. */
   check_ring(stack_size < 2 * LOCAL_MARK_STACK_SIZE
