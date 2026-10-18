@@ -115,8 +115,9 @@ redefining thread primitives to invoke the `GC_` wrappers instead.
 
 `GC_MARKERS=<n>` - Tested by `gc.h` file.  Sets the desired number of marker
 threads.  If not defined or defined to zero, then the collector decides based
-on the number of total CPU cores.  Has no effect unless the collector is built
-with `PARALLEL_MARK` macro defined.
+on the number of CPU cores, leaving out some or all of the efficiency cores
+(see [scale.md](scale.md)).  Has no effect unless the collector is built with
+`PARALLEL_MARK` macro defined.
 
 ## Macros tested at collector build
 

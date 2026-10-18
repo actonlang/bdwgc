@@ -1421,6 +1421,262 @@ GC_get_nprocs_present(void)
 }
 #  endif /* LINUX && ARM32 */
 
+#  if defined(PARALLEL_MARK) && defined(DARWIN)
+/*
+ * Return the number of the processors which are not efficiency cores if
+ * some of the `nprocs` processors are efficiency cores, otherwise 0.
+ * The efficiency cores are those of the performance levels named
+ * "Efficiency" (e.g. an Apple M6 has the levels "Super", "Performance"
+ * and "Efficiency").
+ */
+STATIC int
+GC_get_performance_nprocs(int nprocs)
+{
+  int levels, level;
+  int result = 0;
+  int n_efficiency = 0;
+  size_t len = sizeof(levels);
+
+  /* The names below have room for one digit of the level. */
+  if (sysctlbyname("hw.nperflevels", &levels, &len, NULL, 0) != 0 || levels < 2
+      || levels > 10)
+    return 0;
+  for (level = 0; level < levels; level++) {
+    char count_name[] = "hw.perflevel0.logicalcpu";
+    char level_name[] = "hw.perflevel0.name";
+    char value[32];
+    int n;
+
+    /* Replace the digit of the level in the names. */
+    count_name[sizeof("hw.perflevel") - 1] = (char)('0' + level);
+    level_name[sizeof("hw.perflevel") - 1] = (char)('0' + level);
+    len = sizeof(n);
+    if (sysctlbyname(count_name, &n, &len, NULL, 0) != 0 || n < 0)
+      return 0;
+    len = sizeof(value) - 1;
+    if (sysctlbyname(level_name, value, &len, NULL, 0) != 0)
+      return 0;
+    value[len] = '\0';
+    if (strcmp(value, "Efficiency") == 0) {
+      n_efficiency += n;
+    } else {
+      result += n;
+    }
+  }
+  return n_efficiency > 0 && result > 0 && result < nprocs ? result : 0;
+}
+
+#  elif defined(PARALLEL_MARK) && defined(LINUX)
+#    define SYSFS_PATH_SZ 256
+#    define SYSFS_BUF_SZ 256
+
+/*
+ * Read the file whose path is the concatenation of `sysfs`, `s1`, the
+ * decimal digits of `n` (unless it is negative) and `s2` into `buf` of
+ * `buf_sz` bytes, and terminate the contents with '\0'.  Return `FALSE`
+ * if the file cannot be read, or if its path or its contents does not
+ * fit.
+ */
+STATIC GC_bool
+GC_read_sysfs_file(const char *sysfs, const char *s1, int n, const char *s2,
+                   char *buf, size_t buf_sz)
+{
+  char path[SYSFS_PATH_SZ];
+  char digits[12];
+  const char *parts[4];
+  size_t path_len = 0;
+  int i, f, len;
+
+  i = (int)sizeof(digits) - 1;
+  digits[i] = '\0';
+  if (n >= 0) {
+    do {
+      digits[--i] = (char)('0' + n % 10);
+      n /= 10;
+    } while (n > 0);
+  }
+  parts[0] = sysfs;
+  parts[1] = s1;
+  parts[2] = &digits[i];
+  parts[3] = s2;
+  for (i = 0; i < 4; i++) {
+    size_t part_len = strlen(parts[i]);
+
+    if (path_len + part_len >= sizeof(path))
+      return FALSE;
+    BCOPY(parts[i], &path[path_len], part_len);
+    path_len += part_len;
+  }
+  path[path_len] = '\0';
+
+  f = open(path, O_RDONLY);
+  if (f < 0)
+    return FALSE;
+  len = (int)STAT_READ(f, buf, buf_sz);
+  close(f);
+  if (len <= 0 || (size_t)len >= buf_sz)
+    return FALSE;
+  buf[len] = '\0';
+  return TRUE;
+}
+
+/*
+ * Parse the decimal number at `*ps`, and advance `*ps` past it.  Return
+ * -1 if there is no number there, or if it is too big for a processor
+ * number or a capacity.
+ */
+STATIC int
+GC_parse_sysfs_number(const char **ps)
+{
+  const char *s = *ps;
+  int n = 0;
+
+  if (*s < '0' || *s > '9')
+    return -1;
+  do {
+    if (n >= 100000000)
+      return -1;
+    n = n * 10 + (*s - '0');
+    s++;
+  } while (*s >= '0' && *s <= '9');
+  *ps = s;
+  return n;
+}
+
+/*
+ * Return the number of the processors in the list `s` (e.g.
+ * "0-7,16-23\n"), or -1 if `s` is not such a list.
+ */
+STATIC int
+GC_count_sysfs_cpu_list(const char *s)
+{
+  int count = 0;
+
+  while (*s != '\0' && *s != '\n') {
+    int first = GC_parse_sysfs_number(&s);
+    int last = first;
+
+    if (first < 0)
+      return -1;
+    if ('-' == *s) {
+      s++;
+      last = GC_parse_sysfs_number(&s);
+      if (last < first)
+        return -1;
+    }
+    count += last - first + 1;
+    if (',' == *s)
+      s++;
+  }
+  return count;
+}
+
+/*
+ * The kernel scales the capacities of the processors so that the highest
+ * one is this.
+ */
+#    define SYSFS_MAX_CAPACITY 1024
+
+/*
+ * Return the number of the processors which are not efficiency cores if
+ * some of the `nprocs` processors are efficiency cores, otherwise 0.
+ * `sysfs` is the root of the sysfs tree (normally "/sys").  An Intel
+ * hybrid processor lists its performance cores in `devices/cpu_core/cpus`
+ * file and its efficiency cores in `devices/cpu_atom/cpus` file.
+ * Otherwise, the processors of the lowest capacity in
+ * `devices/system/cpu/cpu<N>/cpu_capacity` files (e.g. of ARM processors)
+ * are efficiency cores if that capacity is less than 3/4 of the highest
+ * one.  Processors whose capacities differ less, e.g. only by their
+ * maximum frequencies, are not.  The result is 0 as well once
+ * `MAX_MARKERS` processors are found to have the highest capacity.
+ */
+STATIC int
+GC_sysfs_performance_nprocs(const char *sysfs, int nprocs)
+{
+  char buf[SYSFS_BUF_SZ];
+  int i, n_core;
+  int min_capacity = -1;
+  int max_capacity = 0;
+  int n_min = 0;
+  int n_max_capacity = 0;
+
+  if (GC_read_sysfs_file(sysfs, "/devices/cpu_atom/cpus", -1, "", buf,
+                         sizeof(buf))
+      && GC_count_sysfs_cpu_list(buf) > 0
+      && GC_read_sysfs_file(sysfs, "/devices/cpu_core/cpus", -1, "", buf,
+                            sizeof(buf))
+      && (n_core = GC_count_sysfs_cpu_list(buf)) > 0)
+    return n_core < nprocs ? n_core : 0;
+
+  for (i = 0; i < nprocs; i++) {
+    const char *s = buf;
+    int capacity;
+
+    if (!GC_read_sysfs_file(sysfs, "/devices/system/cpu/cpu", i,
+                            "/cpu_capacity", buf, sizeof(buf)))
+      return 0;
+    capacity = GC_parse_sysfs_number(&s);
+    if (capacity < 0)
+      return 0;
+    if (capacity >= SYSFS_MAX_CAPACITY && ++n_max_capacity >= MAX_MARKERS) {
+      /*
+       * Once `MAX_MARKERS` processors have the highest capacity, the
+       * number of markers is `MAX_MARKERS` whatever the capacities of the
+       * remaining processors are, thus they are not read (that matters on
+       * a server of many processors).
+       */
+      return 0;
+    }
+    if (capacity < min_capacity || min_capacity < 0) {
+      min_capacity = capacity;
+      n_min = 1;
+    } else if (capacity == min_capacity) {
+      n_min++;
+    }
+    if (capacity > max_capacity)
+      max_capacity = capacity;
+  }
+  return min_capacity >= 0 && min_capacity * 4 < max_capacity * 3
+             ? nprocs - n_min
+             : 0;
+}
+
+#    define GC_get_performance_nprocs(nprocs) \
+      GC_sysfs_performance_nprocs("/sys", nprocs)
+#  endif
+
+#  if defined(PARALLEL_MARK) && (defined(DARWIN) || defined(LINUX))
+/*
+ * The least percentage of all the processors which the default number of
+ * markers is based on if some of them are efficiency cores.  The markers
+ * take entries from the shared mark stack, which markers with work refill
+ * from their local mark stacks, thus markers on efficiency cores still add
+ * to the marking throughput.  That matters where the performance cores are
+ * few, e.g. 2 two-thread performance cores and 10 efficiency cores.
+ */
+#    define NPROCS_FOR_MARKERS_MIN_PERCENT 40
+
+/*
+ * Return the number of the processors which the default number of
+ * markers is based on, given that `performance_nprocs` of the `nprocs`
+ * processors are not efficiency cores (0 if no processor is an
+ * efficiency core).  This is `nprocs` if `performance_nprocs` is 0,
+ * `performance_nprocs` if it is at least `NPROCS_FOR_MARKERS_MIN_PERCENT`
+ * percent of `nprocs`, and otherwise that percentage of `nprocs` rounded
+ * up, i.e. the performance cores and as many efficiency cores as are
+ * needed to reach it.
+ */
+STATIC int
+GC_nprocs_for_markers(int performance_nprocs, int nprocs)
+{
+  int min_nprocs = (nprocs * NPROCS_FOR_MARKERS_MIN_PERCENT + 99) / 100;
+
+  if (0 == performance_nprocs)
+    return nprocs;
+  return performance_nprocs > min_nprocs ? performance_nprocs : min_nprocs;
+}
+#  endif
+
 #  if defined(CAN_HANDLE_FORK) && defined(THREAD_SANITIZER)
 #    include "private/gc_pmark.h" /*< for `MS_NONE` */
 
@@ -1981,6 +2237,10 @@ STATIC int GC_nprocs = 1;
 GC_INNER void
 GC_thr_init(void)
 {
+#    if defined(PARALLEL_MARK) && (defined(DARWIN) || defined(LINUX))
+  GC_bool nprocs_from_env;
+#    endif
+
   GC_ASSERT(I_HOLD_LOCK());
   GC_ASSERT(!GC_thr_initialized);
   ASSERT_ALIGNMENT(&GC_threads);
@@ -2017,6 +2277,9 @@ GC_thr_init(void)
     if (nprocs_string != NULL)
       GC_nprocs = atoi(nprocs_string);
   }
+#    if defined(PARALLEL_MARK) && (defined(DARWIN) || defined(LINUX))
+  nprocs_from_env = GC_nprocs > 0;
+#    endif
   if (GC_nprocs <= 0
 #    if defined(LINUX) && defined(ARM32)
       /* Workaround for some Linux/arm kernels. */
@@ -2051,9 +2314,25 @@ GC_thr_init(void)
       } else if (0 == markers) {
         /*
          * Unless the client sets the desired number of parallel markers,
-         * it is determined based on the number of CPU cores.
+         * it is determined based on the number of CPU cores, leaving out
+         * some or all of the efficiency cores unless `GC_NPROCS`
+         * environment variable is set.
          */
         markers = GC_nprocs;
+#      if defined(DARWIN) || defined(LINUX)
+        if (!nprocs_from_env) {
+          int performance_nprocs = GC_get_performance_nprocs(GC_nprocs);
+
+          markers = GC_nprocs_for_markers(performance_nprocs, GC_nprocs);
+          if (markers < GC_nprocs) {
+            GC_COND_LOG_PRINTF("Counting %d of %d processors for markers:"
+                               " efficiency cores %s excluded\n",
+                               markers, GC_nprocs,
+                               markers > performance_nprocs ? "partly"
+                                                            : "fully");
+          }
+        }
+#      endif
 #      ifdef GC_MIN_MARKERS
         /* This is primarily for targets without `getenv()`. */
         if (markers < GC_MIN_MARKERS)

@@ -58,15 +58,18 @@ effect unless the collector is built with `KEEP_BACK_PTRS` macro defined.
 every collection.  Useful for mapping root addresses to source for deciphering
 leak reports.
 
-`GC_NPROCS=<n>` (Linux only) - Explicitly sets the number of processor cores
-that the collector should expect to use.  Note that setting this to "1", when
-multiple CPU cores are available, will preserve correctness, but may lead to
-really horrible performance, since the allocator lock implementation will
-immediately yield without first spinning.  Has no effect for a single-threaded
-collector build.
+`GC_NPROCS=<n>` - Explicitly sets the number of processor cores that the
+collector should expect to use.  Unless the number of marker threads is set
+otherwise (e.g. by `GC_MARKERS`), it is based on this number, with no
+efficiency cores left out (see [scale.md](scale.md)).  Note that setting this
+to "1", when multiple CPU cores are available, will preserve correctness, but
+may lead to really horrible performance, since the allocator lock
+implementation will immediately yield without first spinning.  Has no effect
+for a single-threaded collector build, or for one with Win32 threads.
 
 `GC_MARKERS=<n>` - Sets the number of marker threads.  This is normally set to
-the number of processor cores.  It is safer to adjust `GC_MARKERS` one than
+the number of processor cores, leaving out some or all of the efficiency cores
+(see [scale.md](scale.md)).  It is safer to adjust `GC_MARKERS` one than
 `GC_NPROCS`, since the former environment variable has no impact on the
 allocator lock implementation.  Has no effect unless the collector is built
 with `PARALLEL_MARK` macro defined.
