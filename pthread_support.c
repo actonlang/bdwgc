@@ -1252,6 +1252,64 @@ GC_get_nprocs(void)
 }
 
 #  elif defined(LINUX)
+#    define PROC_STAT_BUF_SZ 1024
+
+/*
+ * Return one plus the maximum `N` of the lines "cpu<N>" of `/proc/stat`
+ * pseudo-file read from the descriptor `f`.  These lines follow the line
+ * of the totals of all the processors ("cpu" without a number) at the
+ * beginning of the file, thus the reading stops at the first line which
+ * does not start with "cpu".
+ */
+STATIC int
+GC_parse_proc_stat(int f)
+{
+  char stat_buf[PROC_STAT_BUF_SZ];
+  /*
+   * Some old kernels only have a single "cpu nnnn ..." entry in
+   * `/proc/stat` pseudo-file.  We identify those as uniprocessors.
+   */
+  int result = 1;
+  /* The number of the characters of the current line read, up to 4. */
+  int line_pos = 0;
+  int cpu_no = 0;
+
+  for (;;) {
+    int i;
+    int len = (int)STAT_READ(f, stat_buf, sizeof(stat_buf));
+
+    if (len <= 0) {
+      if (len < 0)
+        WARN("Failed to read /proc/stat, errno= %" WARN_PRIdPTR "\n",
+             (GC_signed_word)errno);
+      break;
+    }
+    for (i = 0; i < len; ++i) {
+      char c = stat_buf[i];
+
+      if (c == '\n') {
+        line_pos = 0;
+        cpu_no = 0;
+      } else if (line_pos < 3) {
+        if (c != "cpu"[line_pos])
+          return result;
+        line_pos++;
+      } else if (3 == line_pos) {
+        /* The bound keeps a malformed number from overflowing. */
+        if (c >= '0' && c <= '9' && cpu_no < 100000) {
+          cpu_no = cpu_no * 10 + (c - '0');
+          if (cpu_no >= result)
+            result = cpu_no + 1;
+        } else {
+          /* Skip the rest of the line. */
+          line_pos++;
+        }
+      }
+    }
+  }
+  return result;
+}
+
 /* Return the number of processors. */
 STATIC int
 GC_get_nprocs(void)
@@ -1259,50 +1317,18 @@ GC_get_nprocs(void)
   /*
    * Should be just `return sysconf(_SC_NPROCESSORS_ONLN)` but that
    * appears to be buggy in many cases.  We look for lines "cpu<N>" in
-   * `/proc/stat` pseudo-file.  No need to read the entire `/proc/stat`
-   * pseudo-file to get maximum "cpu<N>" such as:
-   *   - the requested lines are located at the beginning of the file;
-   *   - the lines with "cpu<N>" where `N` is greater than `MAX_MARKERS`
-   *     are not needed.
+   * `/proc/stat` pseudo-file.
    */
-#    define PROC_STAT_BUF_SZ ((1 + MAX_MARKERS) * 100)
-  char stat_buf[PROC_STAT_BUF_SZ + 1]; /*< the size should be enough */
-  int f;
-  int result, i, len;
+  int f = open("/proc/stat", O_RDONLY);
+  int result;
 
-  f = open("/proc/stat", O_RDONLY);
   if (f < 0) {
     WARN("Could not open /proc/stat\n", 0);
     /* Assume an uniprocessor. */
     return 1;
   }
-  len = STAT_READ(f, stat_buf, sizeof(stat_buf) - 1);
-  /* Unlikely that we need to retry because of an incomplete read here. */
-  if (len < 0) {
-    WARN("Failed to read /proc/stat, errno= %" WARN_PRIdPTR "\n",
-         (GC_signed_word)errno);
-    close(f);
-    return 1;
-  }
-  /* Avoid potential buffer overrun by `atoi()`. */
-  stat_buf[len] = '\0';
-
+  result = GC_parse_proc_stat(f);
   close(f);
-
-  /*
-   * Some old kernels only have a single "cpu nnnn ..." entry in
-   * `/proc/stat` pseudo-file.  We identify those as uniprocessors.
-   */
-  result = 1;
-
-  for (i = 0; i < len - 4; ++i) {
-    if (stat_buf[i] == '\n' && stat_buf[i + 1] == 'c' && stat_buf[i + 2] == 'p'
-        && stat_buf[i + 3] == 'u') {
-      int cpu_no = atoi(&stat_buf[i + 4]);
-      if (cpu_no >= result)
-        result = cpu_no + 1;
-    }
-  }
   return result;
 }
 
