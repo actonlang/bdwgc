@@ -39,6 +39,13 @@ check_PROGRAMS += allocbudgettest
 allocbudgettest_SOURCES = tests/allocbudget.c
 allocbudgettest_LDADD = $(test_ldadd)
 
+# The test includes the collector source instead of linking `libgc`.
+TESTS += cpucounttest$(EXEEXT)
+check_PROGRAMS += cpucounttest
+cpucounttest_SOURCES = tests/cpucount.c
+cpucounttest_LDADD = $(nodist_libgc_la_OBJECTS) $(EXTRA_TEST_LIBS) \
+                     @addobjs@ $(THREADDLLIBS) $(UNWINDLIBS) $(ATOMIC_OPS_LIBS)
+
 TESTS += dbgfunctest$(EXEEXT)
 check_PROGRAMS += dbgfunctest
 dbgfunctest_SOURCES = tests/dbgfunc.c
@@ -315,6 +322,7 @@ check-without-test-driver: export GC_PROMPT_DISABLED=1
 check-without-test-driver: $(TESTS)
 	./gctest$(EXEEXT)
 	./allocbudgettest$(EXEEXT)
+	./cpucounttest$(EXEEXT)
 	./dbgfunctest$(EXEEXT)
 	./endpaddingtest$(EXEEXT)
 	./expandfailtest$(EXEEXT)
