@@ -743,8 +743,13 @@ GC_array_mark_proc(word *addr, mse *mark_stack_top, mse *mark_stack_limit,
      * overflow, since it replaces the original array entry.
      */
 #ifdef PARALLEL_MARK
-    /* We might be using a `local_mark_stack` in the parallel collection. */
-    if (GC_mark_stack + GC_mark_stack_size == mark_stack_limit)
+    /*
+     * We might be using a `local_mark_stack` in the parallel collection.
+     * The global mark stack may grow during a parallel mark phase (see
+     * `grow_mark_ring()` in `mark.c`), thus its limit is loaded atomically.
+     */
+    if ((mse *)GC_cptr_load((volatile ptr_t *)&GC_mark_stack_limit)
+        == mark_stack_limit)
 #endif
     {
       GC_mark_stack_too_small = TRUE;

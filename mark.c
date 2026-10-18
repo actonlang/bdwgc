@@ -1774,7 +1774,10 @@ copy_mark_entries(mse *to, mse *from, size_t n)
  *   `GC_mark_ring_numbers`) change during a phase only in
  *   `grow_mark_ring()`, by the collecting thread holding the mark lock.
  *   A marker copying back its local mark stack reads them holding the
- *   mark lock.
+ *   mark lock.  A marker that tells a local mark stack from the global
+ *   one by its limit (`GC_signal_mark_stack_overflow()`, and
+ *   `GC_array_mark_proc()` of typed arrays) loads `GC_mark_stack_limit`
+ *   atomically (it is stored atomically).
  * - A marker claiming entries without the mark lock finds the ring by
  *   `GC_mark_ring_log2` (the base-2 logarithm of its size), loaded with
  *   acquire ordering after `GC_n_published`, and `GC_mark_ring_bases`.
@@ -2775,8 +2778,9 @@ set_mark_stack(mse *new_stack, size_t n, GC_bool in_phase)
   GC_mark_stack_size = n;
   /* FIXME: Do we need some way to reset `GC_mark_stack_size`? */
 #ifdef GROW_MARK_RING
-  /* A marker may read it during a phase (see `GC_signal_mark_stack_overflow`). */
-  GC_cptr_store((volatile ptr_t *)&GC_mark_stack_limit, (ptr_t)(new_stack + n));
+  /* A marker may read it during a phase (see `grow_mark_ring()`). */
+  GC_cptr_store((volatile ptr_t *)&GC_mark_stack_limit,
+                (ptr_t)(new_stack + n));
 #else
   UNUSED_ARG(in_phase);
   GC_mark_stack_limit = new_stack + n;
