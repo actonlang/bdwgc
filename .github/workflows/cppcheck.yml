@@ -89,6 +89,7 @@ jobs:
         run: >
           ~/cppcheck-install/bin/cppcheck --error-exitcode=2 --quiet
           -D CPPCHECK -I include -I libatomic_ops/src
-          -i tests/expandfail.c -i tests/markstackgrowth.c
-          -i tests/serialgrowth.c -i tests/switchedstack.c -i tests/unmap.c
+          -i tests/cpucount.c -i tests/expandfail.c
+          -i tests/markstackgrowth.c -i tests/serialgrowth.c
+          -i tests/switchedstack.c -i tests/unmap.c
           --check-level=exhaustive --safety ${{ matrix.args }}

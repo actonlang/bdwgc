@@ -1064,6 +1064,25 @@ if(BUILD_TESTING)
     target_link_libraries(allocbudgettest PRIVATE gc)
     add_test(NAME allocbudgettest COMMAND allocbudgettest)
 
+    # The test includes the collector source instead of linking `gc`.
+    add_executable(cpucounttest tests/cpucount.c ${NODIST_SRC})
+    if(MSVC)
+        target_sources(cpucounttest PRIVATE extra/msvc_dbg.c)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+        target_sources(cpucounttest PRIVATE sparc_mach_dep.S)
+    endif()
+    target_link_libraries(
+        cpucounttest
+        PRIVATE ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+    )
+    if(enable_cplusplus AND NOT (BORLAND OR MSVC OR WATCOM))
+        # The collector source is compiled as C++ (by `-x c++` above),
+        # thus the test is linked by the C++ compiler (with its runtime).
+        set_target_properties(cpucounttest PROPERTIES LINKER_LANGUAGE CXX)
+    endif()
+    add_test(NAME cpucounttest COMMAND cpucounttest)
+
     add_executable(dbgfunctest tests/dbgfunc.c ${NODIST_SRC})
     target_link_libraries(dbgfunctest PRIVATE gc)
     add_test(NAME dbgfunctest COMMAND dbgfunctest)
