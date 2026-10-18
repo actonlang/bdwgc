@@ -114,9 +114,34 @@ allocation and incremental collection. They should work correctly with one or
 the other, but not both.
 
 The number of marker threads is set on startup to the number of available
-processor cores (or to the value of either `GC_MARKERS` or `GC_NPROCS`
-environment variable, if provided). If only a single processor is detected,
-parallel marking is disabled.
+processor cores, leaving out some or all of the efficiency cores (see below),
+or to the value of either `GC_MARKERS` or `GC_NPROCS` environment variable, if
+provided, up to `MAX_MARKERS` (16 by default). If this gives a single marker
+thread (e.g. on a single processor), parallel marking is disabled.
+
+If some processor cores are efficiency cores, then they are left out (unless
+`GC_NPROCS` is set), since they mark the same work more slowly. On macOS, the
+efficiency cores are those of the performance levels named "Efficiency"
+(`hw.perflevel<N>.name` and `hw.perflevel<N>.logicalcpu` system control
+values). On Linux, an Intel hybrid processor lists its performance cores in
+`/sys/devices/cpu_core/cpus` and its efficiency cores in
+`/sys/devices/cpu_atom/cpus` files. Otherwise, the processors of the lowest
+capacity in `/sys/devices/system/cpu/cpu<N>/cpu_capacity` files (e.g. on ARM)
+are efficiency cores if that capacity is less than 3/4 of the highest one, thus
+cores which differ only by their maximum frequencies are all counted.
+
+At least 40% of all the processors (hardware threads) are counted, though. If
+the processors which are not efficiency cores are fewer than that, then the
+count is 40% of all the processors, rounded up: these processors and as many
+efficiency cores as are needed. The markers take entries from the shared mark
+stack, which markers with work refill from their local mark stacks, thus
+markers on efficiency cores still add to the marking throughput where the other
+processors are few. E.g. 10 of the 14 processors of an Apple M4 Pro (10
+performance and 4 efficiency cores) are counted, and 6 of the 14 processors of
+an Intel CPU with 2 two-thread performance cores and 10 efficiency cores (4
+processors are not efficiency cores, and 40% of 14 is 5.6). If `GC_PRINT_STATS`
+environment variable is set, the collector logs the count when it leaves out
+efficiency cores, and whether it leaves out all of them.
 
 Note that setting `GC_NPROCS` environment variable to 1 also causes some
 lock acquisitions inside the collector to immediately yield the processor
