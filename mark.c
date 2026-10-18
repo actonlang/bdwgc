@@ -1834,11 +1834,17 @@ STATIC struct {
 STATIC unsigned GC_n_phase_outgrown_rings = 0;
 
 /*
- * The number of the entries that the helpers waiting for room on the
- * ring want to copy back (the largest of these), or zero if no helper
- * waits, and the number of the waiting helpers.  Written holding the mark
- * lock, by the waiting helpers; `GC_mark_ring_room_wanted` is read by the
- * collecting thread without the mark lock as a hint.
+ * The request of room on the ring: the number of the entries that the
+ * helpers waiting for room want to copy back (the largest of the requests
+ * made since the collecting thread last served the request), or zero if
+ * there is no request; and the number of the waiting helpers.  A helper
+ * that finds no room makes or raises the request; the collecting thread
+ * clears it when it serves it (grows the ring, or finds the room made by
+ * the claims), and notifies the markers, thus every waiting helper
+ * rechecks the room and makes a new request if it still has none; the
+ * last waiting helper to leave clears it as well.  Written holding the
+ * mark lock; `GC_mark_ring_room_wanted` is read by the collecting thread
+ * without the mark lock as a hint.
  */
 STATIC volatile AO_t GC_mark_ring_room_wanted = 0;
 STATIC unsigned GC_mark_ring_waiters = 0;
@@ -1881,10 +1887,10 @@ mark_ring_lacks_room(size_t n)
  * above), at least twice as large, unless the ring has room for `n`
  * entries besides the unclaimed ones by the time the mark lock is
  * acquired.  Called by the collecting thread (which holds the allocator
- * lock), without holding the mark lock.  Notifies the markers.  If the
- * memory of the new ring cannot be obtained, then sets
- * `GC_mark_ring_growth_failed` (the markers without room drop their local
- * mark stacks then).
+ * lock), without holding the mark lock.  Clears the request of room and
+ * notifies the markers.  If the memory of the new ring cannot be obtained,
+ * then sets `GC_mark_ring_growth_failed` (the markers without room drop
+ * their local mark stacks then).
  */
 static void
 grow_mark_ring(size_t n)
@@ -1942,14 +1948,18 @@ grow_mark_ring(size_t n)
     AO_store_release(&GC_mark_ring_log2, (AO_t)new_log2);
     GC_mark_stack_events.n_ring_grown++;
   }
+  /* The request of room, if any, is served; the waiting helpers recheck. */
+  AO_store(&GC_mark_ring_room_wanted, 0);
   GC_release_mark_lock();
   GC_notify_all_marker();
 }
 
 /*
- * Grow the ring if a helper waits for room on it, and the ring still has
- * no room for it.  Called by the collecting thread without holding the
- * mark lock.
+ * Serve the request of room on the ring, if any: grow the ring if it
+ * still has no room for the request, otherwise clear the request and
+ * notify the markers (the claims have made room, or the growth failed,
+ * and the waiting helpers may not know it yet).  Called by the collecting
+ * thread without holding the mark lock.
  */
 static void
 serve_mark_ring_room_wanted(void)
@@ -1962,11 +1972,12 @@ serve_mark_ring_room_wanted(void)
   GC_acquire_mark_lock();
   n = (size_t)AO_load(&GC_mark_ring_room_wanted);
   grow = n != 0 && !GC_mark_ring_growth_failed && mark_ring_lacks_room(n);
+  if (!grow)
+    AO_store(&GC_mark_ring_room_wanted, 0);
   GC_release_mark_lock();
   if (grow) {
     grow_mark_ring(n);
-  } else {
-    /* The claims have made room; a waiting helper may not know it yet. */
+  } else if (n != 0) {
     GC_notify_all_marker();
   }
 }
@@ -2167,9 +2178,11 @@ GC_return_mark_stack(mse *low, mse *high)
     } else {
       /*
        * This helper stays active (counted in `GC_active_count`), thus the
-       * phase does not end while it waits.  The collecting thread grows
-       * the ring at its next check of the request (see `GC_mark_local`
-       * and `GC_do_local_mark`), or wakes up for it if it waits.
+       * phase does not end while it waits.  The collecting thread serves
+       * the request at its next check of it (see `GC_mark_local` and
+       * `GC_do_local_mark`), or wakes up for it if it waits.  Serving
+       * clears the request, thus this helper makes it again if it still
+       * has no room when woken up.
        */
       if (AO_load(&GC_mark_ring_room_wanted) < (AO_t)stack_size) {
         AO_store(&GC_mark_ring_room_wanted, (AO_t)stack_size);
