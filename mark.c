@@ -540,6 +540,7 @@ STATIC struct hblk *GC_push_next_marked_uncollectable(struct hblk *h);
 
 static void alloc_mark_stack(size_t);
 static size_t mark_stack_bytes(size_t);
+static void set_mark_stack(mse *, size_t, GC_bool);
 
 /*
  * The events of the mark stacks since the previous call of
@@ -568,6 +569,14 @@ STATIC struct {
    */
   word n_no_room;
 
+  /*
+   * The times the global mark stack, used as a ring, grew during
+   * a parallel mark phase, and the times a marker waited for that.
+   * Updated with the mark lock held (by any marker).
+   */
+  word n_ring_grown;
+  word n_room_waits;
+
   /* The times the global mark stack grew. */
   word n_grown;
 
@@ -584,6 +593,15 @@ STATIC struct {
  * `GC_after_marking()`.  Updated by the markers without a lock.
  */
 STATIC volatile AO_t GC_n_local_mark_stack_overflows = 0;
+#endif
+
+#if defined(PARALLEL_MARK) && defined(STEAL_MARK_STACK_RANGES)
+/*
+ * A parallel mark phase grows the global mark stack, used as a ring,
+ * instead of dropping a local mark stack for which it has no room (see
+ * `grow_mark_ring()`).
+ */
+#  define GROW_MARK_RING
 #endif
 
 #if defined(PARALLEL_MARK) && defined(STEAL_MARK_STACK_RANGES) \
@@ -1151,8 +1169,20 @@ GC_signal_mark_stack_overflow(mse *msp, const mse *mark_stack_limit)
    * stack is still used by the serial marking even if `GC_parallel`,
    * e.g. if the parallel marker is disabled because of a stop function or
    * a time limit, or during the mark state recovery after an overflow.
+   * The limit of the global mark stack may change during a parallel mark
+   * phase (see `grow_mark_ring()`), but it never equals the limit of
+   * a local mark stack.
    */
-  if (GC_parallel && mark_stack_limit != GC_mark_stack_limit) {
+#  ifdef GROW_MARK_RING
+  GC_bool is_local
+      = GC_parallel
+        && mark_stack_limit
+               != (mse *)GC_cptr_load((volatile ptr_t *)&GC_mark_stack_limit);
+#  else
+  GC_bool is_local = GC_parallel && mark_stack_limit != GC_mark_stack_limit;
+#  endif
+
+  if (is_local) {
     (void)AO_fetch_and_add1(&GC_n_local_mark_stack_overflows);
     if (discards > LOCAL_MARK_STACK_SIZE / 8) {
       /*
@@ -1175,12 +1205,16 @@ GC_signal_mark_stack_overflow(mse *msp, const mse *mark_stack_limit)
 #ifdef GC_ASSERTIONS
   {
     /* The overflowing mark stack is the global one, or a local one. */
-    const mse *mark_stack = GC_mark_stack;
+    const mse *mark_stack;
 
 #  ifdef PARALLEL_MARK
-    if (mark_stack_limit != GC_mark_stack_limit)
+    if (is_local) {
       mark_stack = mark_stack_limit - LOCAL_MARK_STACK_SIZE;
+    } else
 #  endif
+    /* else */ {
+      mark_stack = GC_mark_stack;
+    }
     /* The new top should remain inside the mark stack. */
     GC_ASSERT((word)(msp - mark_stack) >= discards);
   }
@@ -1208,9 +1242,11 @@ GC_mark_from(mse *mark_stack_top, const mse *mark_stack, mse *mark_stack_limit)
 
   /*
    * A call on the global mark stack is made by `MARK_FROM_MARK_STACK()`,
-   * which switches to the next mark stack after each such call.
+   * which switches to the next mark stack after each such call.  There is
+   * no next mark stack during a parallel mark phase, whose markers do not
+   * read `GC_mark_stack` here thus (it may change in the phase).
    */
-  GC_ASSERT(mark_stack != GC_mark_stack || NULL == GC_next_mark_stack);
+  GC_ASSERT(NULL == GC_next_mark_stack || mark_stack != GC_mark_stack);
   /*
    * Every marker calls this function often.  A store, even of the unchanged
    * value, would take the cache line holding the flag away from the other
@@ -1689,7 +1725,8 @@ GC_wait_for_markers_init(void)
 #  ifdef STEAL_MARK_STACK_RANGES
 /*
  * The index of the slot of the global mark stack that holds the entry
- * numbered `i` during a parallel mark phase.
+ * numbered `i` during a parallel mark phase.  Used holding the mark lock
+ * (the ring may grow during the phase, see `grow_mark_ring()`).
  */
 #    define MARK_RING_INDEX(i) ((size_t)((i) & (AO_t)(GC_mark_stack_size - 1)))
 
@@ -1714,6 +1751,224 @@ copy_mark_entries(mse *to, mse *from, size_t n)
 #    else
   BCOPY(from, to, n * sizeof(mse));
 #    endif
+}
+
+/*
+ * Growth of the ring during a parallel mark phase.
+ *
+ * A marker that has no room on the ring for its local mark stack (the
+ * unclaimed entries and those of the local mark stack would be more than
+ * the ring has slots) does not drop the local mark stack.  The collecting
+ * thread, which holds the allocator lock, thus may allocate, replaces the
+ * ring with a larger one: holding the mark lock, it copies the unclaimed
+ * entries into the new ring, each to the slot of its number there, and
+ * makes the new ring the global mark stack.  It does so when it has no
+ * room itself, and when a helper asks for room; such a helper waits,
+ * keeping its local mark stack, until there is room, or until the growth
+ * has failed.  Only if the memory of a new ring cannot be obtained are
+ * local mark stacks dropped, and the mark state invalidated, as without
+ * the growth.
+ *
+ * Invariants:
+ * - `GC_mark_stack`, `GC_mark_stack_size`, `GC_mark_stack_limit` (and
+ *   `GC_mark_ring_numbers`) change during a phase only in
+ *   `grow_mark_ring()`, by the collecting thread holding the mark lock.
+ *   A marker copying back its local mark stack reads them holding the
+ *   mark lock.
+ * - A marker claiming entries without the mark lock finds the ring by
+ *   `GC_mark_ring_log2` (the base-2 logarithm of its size), loaded with
+ *   acquire ordering after `GC_n_published`, and `GC_mark_ring_bases`.
+ *   The rings of a phase have different sizes, thus the base of a size is
+ *   stored once in a phase, before the release store of the size that
+ *   publishes it.
+ * - The release store of `GC_mark_ring_log2` in `grow_mark_ring()`
+ *   happens before the mark lock is released there, thus before every
+ *   later store of `GC_n_published` (which is done holding the mark lock,
+ *   with release ordering).  A marker that loads, with acquire ordering,
+ *   a value of `GC_n_published` stored after a growth thus loads the new
+ *   ring (or a later one) afterwards.  A marker that loads an old ring
+ *   has loaded a value of `GC_n_published` not greater than the one at
+ *   the growth.
+ * - No slot of an outgrown ring is written after the growth, and the
+ *   ring is neither reused nor recycled before the end of the phase.
+ *   A claim of the entries numbered from `first` to `end` (exclusive) that
+ *   reads an old ring thus reads entries that were put on that ring (`end`
+ *   is at most `GC_n_published` at the growth), and the protocol of
+ *   `GC_steal_mark_stack_range()` with the size of the old ring shows
+ *   that their slots were not rewritten while they were read.
+ * - The new ring holds the entries numbered from `f`, the value of
+ *   `GC_first_unclaimed` loaded by the growth, to `e`, the value of
+ *   `GC_n_published` then (it does not change while the mark lock is
+ *   held); they are copied before the release store of the size.  The
+ *   later entries are put on the new ring by the markers copying back.
+ *   A claim that reads the new ring and succeeds claims entries from
+ *   `first >= f`: its CAS found `GC_first_unclaimed` equal to `first`,
+ *   and `GC_first_unclaimed` (which never decreases) was at least `f`
+ *   before the new ring was published.  As `e - f` is at most the size of
+ *   the old ring, which is at most half the size of the new one, the
+ *   copied entries take distinct slots, and the room check of a copy back
+ *   (the unclaimed entries and the new ones fit in the ring) keeps the
+ *   protocol of `GC_steal_mark_stack_range()` valid with the new size.
+ */
+
+/*
+ * The base-2 logarithm of the size of the ring of the current parallel
+ * mark phase, and the rings of the phase by that logarithm.  Written by
+ * the collecting thread holding the mark lock (see above).
+ */
+STATIC volatile AO_t GC_mark_ring_log2 = 0;
+STATIC mse *GC_mark_ring_bases[CPP_WORDSZ];
+
+/*
+ * The rings outgrown during the current parallel mark phase.  A marker
+ * may read such a ring until the end of the phase, thus it is put on the
+ * list of the outgrown mark stacks (which reuses its first slot) only
+ * then, by `GC_do_parallel_mark()`.  Every growth at least doubles the
+ * size, thus a phase outgrows fewer than `CPP_WORDSZ` rings.  Accessed by
+ * the collecting thread only.
+ */
+STATIC struct {
+  mse *stack;
+  size_t n;
+} GC_phase_outgrown_rings[CPP_WORDSZ];
+STATIC unsigned GC_n_phase_outgrown_rings = 0;
+
+/*
+ * The number of the entries that the helpers waiting for room on the
+ * ring want to copy back (the largest of these), or zero if no helper
+ * waits, and the number of the waiting helpers.  Written holding the mark
+ * lock, by the waiting helpers; `GC_mark_ring_room_wanted` is read by the
+ * collecting thread without the mark lock as a hint.
+ */
+STATIC volatile AO_t GC_mark_ring_room_wanted = 0;
+STATIC unsigned GC_mark_ring_waiters = 0;
+
+/*
+ * Whether the ring could not grow in the current parallel mark phase.
+ * Protected by the mark lock.
+ */
+STATIC GC_bool GC_mark_ring_growth_failed = FALSE;
+
+/* The base-2 logarithm of `n`, a power of two. */
+static unsigned
+log2_of_pow2(size_t n)
+{
+  unsigned k = 0;
+
+  GC_ASSERT(n != 0 && (n & (n - 1)) == 0);
+  while (((size_t)1 << k) != n)
+    k++;
+  return k;
+}
+
+/*
+ * Whether the ring has no room for `n` entries besides the unclaimed
+ * ones.  The caller holds the mark lock.
+ */
+static GC_bool
+mark_ring_lacks_room(size_t n)
+{
+  AO_t end = AO_load(&GC_n_published);
+  AO_t first = AO_load(&GC_first_unclaimed);
+
+  GC_ASSERT((word)(end - first) <= (word)GC_mark_stack_size);
+  return (word)(end - first) + n > (word)GC_mark_stack_size;
+}
+
+/*
+ * Replace the ring of the current parallel mark phase with one that has
+ * room for `n` entries besides the entries the old ring can hold (see
+ * above), at least twice as large, unless the ring has room for `n`
+ * entries besides the unclaimed ones by the time the mark lock is
+ * acquired.  Called by the collecting thread (which holds the allocator
+ * lock), without holding the mark lock.  Notifies the markers.  If the
+ * memory of the new ring cannot be obtained, then sets
+ * `GC_mark_ring_growth_failed` (the markers without room drop their local
+ * mark stacks then).
+ */
+static void
+grow_mark_ring(size_t n)
+{
+  const size_t max_size = GC_SIZE_MAX / MARK_STACK_ENTRY_BYTES;
+  size_t old_size = GC_mark_stack_size;
+  size_t new_size = max_size;
+  mse *new_ring = NULL;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  /* The ring changes only here, by this thread. */
+  if (LIKELY(old_size <= max_size / 2 && n <= max_size - old_size)) {
+    for (new_size = 2 * old_size; new_size < old_size + n; new_size <<= 1) {
+      if (UNLIKELY(new_size > max_size / 2)) {
+        new_size = max_size;
+        break;
+      }
+    }
+    if (LIKELY(new_size < max_size))
+      new_ring = (mse *)GC_scratch_alloc(mark_stack_bytes(new_size));
+  }
+  GC_acquire_mark_lock();
+  if (UNLIKELY(!mark_ring_lacks_room(n))) {
+    /* Room was made by the claims meanwhile; recycle the memory unused. */
+    if (new_ring != NULL)
+      add_outgrown_mark_stack(new_ring, new_size);
+  } else if (UNLIKELY(NULL == new_ring)) {
+    GC_mark_ring_growth_failed = TRUE;
+    GC_mark_stack_events.failed_size = new_size;
+  } else {
+    mse *old_ring = GC_mark_stack;
+    AO_t end = AO_load(&GC_n_published);
+    AO_t k = AO_load(&GC_first_unclaimed);
+    unsigned new_log2 = log2_of_pow2(new_size);
+#    ifdef CHECK_MARK_RING
+    volatile AO_t *old_numbers = GC_mark_ring_numbers;
+    volatile AO_t *new_numbers = (volatile AO_t *)(new_ring + new_size);
+#    endif
+
+    /*
+     * The slots of the unclaimed entries are not written while the mark
+     * lock is held; entries claimed meanwhile are copied in vain.
+     */
+    for (; k != end; k++) {
+      size_t old_slot = (size_t)(k & (AO_t)(old_size - 1));
+      size_t new_slot = (size_t)(k & (AO_t)(new_size - 1));
+
+      copy_mark_entries(new_ring + new_slot, old_ring + old_slot, 1);
+#    ifdef CHECK_MARK_RING
+      AO_store(&new_numbers[new_slot], AO_load(&old_numbers[old_slot]));
+#    endif
+    }
+    set_mark_stack(new_ring, new_size, TRUE);
+    GC_mark_ring_bases[new_log2] = new_ring;
+    AO_store_release(&GC_mark_ring_log2, (AO_t)new_log2);
+    GC_mark_stack_events.n_ring_grown++;
+  }
+  GC_release_mark_lock();
+  GC_notify_all_marker();
+}
+
+/*
+ * Grow the ring if a helper waits for room on it, and the ring still has
+ * no room for it.  Called by the collecting thread without holding the
+ * mark lock.
+ */
+static void
+serve_mark_ring_room_wanted(void)
+{
+  size_t n;
+  GC_bool grow;
+
+  if (LIKELY(0 == AO_load(&GC_mark_ring_room_wanted)))
+    return;
+  GC_acquire_mark_lock();
+  n = (size_t)AO_load(&GC_mark_ring_room_wanted);
+  grow = n != 0 && !GC_mark_ring_growth_failed && mark_ring_lacks_room(n);
+  GC_release_mark_lock();
+  if (grow) {
+    grow_mark_ring(n);
+  } else {
+    /* The claims have made room; a waiting helper may not know it yet. */
+    GC_notify_all_marker();
+  }
 }
 
 /*
@@ -1752,14 +2007,28 @@ GC_steal_mark_stack_range(AO_t first, AO_t end, mse *local, size_t n_to_get)
   AO_t k;
   size_t i = 0;
   size_t n, first_slot, n_before_wrap;
+  /*
+   * The ring, loaded after `end` (see `grow_mark_ring()`).  The entries
+   * up to `end` are on it, or were on an outgrown ring of the phase.
+   */
+  unsigned ring_log2 = (unsigned)AO_load_acquire(&GC_mark_ring_log2);
+  size_t ring_size = (size_t)1 << ring_log2;
+  mse *ring = GC_mark_ring_bases[ring_log2];
 #    ifdef CHECK_MARK_RING
+  volatile AO_t *numbers = (volatile AO_t *)(ring + ring_size);
   GC_bool numbers_differ = FALSE;
 #    endif
 
-  GC_ASSERT((GC_signed_word)(end - first) > 0
-            && (word)(end - first) <= (word)GC_mark_stack_size);
+  GC_ASSERT((GC_signed_word)(end - first) > 0);
+  if (UNLIKELY((word)(end - first) > (word)ring_size)) {
+    /*
+     * Other markers have claimed entries and put new ones on the ring
+     * since `first` was loaded; the CAS would fail.
+     */
+    return 0;
+  }
   for (k = first; k != end && i <= n_to_get; ++k) {
-    word descr = AO_load(&GC_mark_stack[MARK_RING_INDEX(k)].mse_descr);
+    word descr = AO_load(&ring[(size_t)(k & (AO_t)(ring_size - 1))].mse_descr);
 
     /* If this is a big object, count it as `descr / 256 + 1` objects. */
     ++i;
@@ -1771,20 +2040,20 @@ GC_steal_mark_stack_range(AO_t first, AO_t end, mse *local, size_t n_to_get)
     return 0;
   }
   n = (size_t)(k - first);
-  first_slot = MARK_RING_INDEX(first);
-  n_before_wrap = GC_mark_stack_size - first_slot;
+  first_slot = (size_t)(first & (AO_t)(ring_size - 1));
+  n_before_wrap = ring_size - first_slot;
   if (n_before_wrap >= n) {
-    copy_mark_entries(local, GC_mark_stack + first_slot, n);
+    copy_mark_entries(local, ring + first_slot, n);
   } else {
-    copy_mark_entries(local, GC_mark_stack + first_slot, n_before_wrap);
-    copy_mark_entries(local + n_before_wrap, GC_mark_stack, n - n_before_wrap);
+    copy_mark_entries(local, ring + first_slot, n_before_wrap);
+    copy_mark_entries(local + n_before_wrap, ring, n - n_before_wrap);
   }
 #    ifdef CHECK_MARK_RING
   {
     AO_t j;
 
     for (j = first; j != k; ++j) {
-      if (AO_load(&GC_mark_ring_numbers[MARK_RING_INDEX(j)]) != j)
+      if (AO_load(&numbers[(size_t)(j & (AO_t)(ring_size - 1))]) != j)
         numbers_differ = TRUE;
     }
   }
@@ -1853,15 +2122,19 @@ GC_steal_mark_stack(mse *low, mse *high, mse *local, size_t n_to_get,
  * If `STEAL_MARK_STACK_RANGES`, the entries are put on the global mark
  * stack used as a ring (see `GC_n_published`); there is room for them if
  * the slots they take hold no unclaimed entries, i.e. the claimed entries
- * leave their slots free.  Otherwise there is room only above
- * `GC_mark_stack_top`.  Without room, the local mark stack is dropped and
- * the mark state invalidated.
+ * leave their slots free.  Without room, the ring grows first (see
+ * `grow_mark_ring()`): the collecting thread (whose local mark stack is
+ * `GC_main_local_mark_stack`) grows it, a helper asks the collecting
+ * thread for room and waits.  Otherwise there is room only above
+ * `GC_mark_stack_top`.  Without room (or if the ring cannot grow), the
+ * local mark stack is dropped and the mark state invalidated.
  */
 STATIC void
 GC_return_mark_stack(mse *low, mse *high)
 {
 #  ifdef STEAL_MARK_STACK_RANGES
   AO_t end, first;
+  GC_bool waited = FALSE;
 #  else
   mse *my_top;
   mse *my_start;
@@ -1874,16 +2147,45 @@ GC_return_mark_stack(mse *low, mse *high)
   stack_size = high - low + 1;
   GC_acquire_mark_lock();
 #  ifdef STEAL_MARK_STACK_RANGES
-  /* Note: the concurrent modification is impossible. */
-  end = AO_load(&GC_n_published);
-  /*
-   * The acquire load orders the writes of the slots below after the reads
-   * of the markers that claimed the entries held there before (see
-   * `GC_steal_mark_stack_range`).
-   */
-  first = AO_load_acquire(&GC_first_unclaimed);
-  GC_ASSERT((word)(end - first) <= (word)GC_mark_stack_size);
-  has_room = (word)(end - first) + stack_size <= (word)GC_mark_stack_size;
+  for (;;) {
+    /* Note: the concurrent modification is impossible. */
+    end = AO_load(&GC_n_published);
+    /*
+     * The acquire load orders the writes of the slots below after the
+     * reads of the markers that claimed the entries held there before
+     * (see `GC_steal_mark_stack_range`).
+     */
+    first = AO_load_acquire(&GC_first_unclaimed);
+    GC_ASSERT((word)(end - first) <= (word)GC_mark_stack_size);
+    has_room = (word)(end - first) + stack_size <= (word)GC_mark_stack_size;
+    if (has_room || GC_mark_ring_growth_failed)
+      break;
+    if (low == GC_main_local_mark_stack) {
+      GC_release_mark_lock();
+      grow_mark_ring(stack_size);
+      GC_acquire_mark_lock();
+    } else {
+      /*
+       * This helper stays active (counted in `GC_active_count`), thus the
+       * phase does not end while it waits.  The collecting thread grows
+       * the ring at its next check of the request (see `GC_mark_local`
+       * and `GC_do_local_mark`), or wakes up for it if it waits.
+       */
+      if (AO_load(&GC_mark_ring_room_wanted) < (AO_t)stack_size) {
+        AO_store(&GC_mark_ring_room_wanted, (AO_t)stack_size);
+        /* The collecting thread may wait for entries on the ring. */
+        GC_notify_all_marker();
+      }
+      if (!waited) {
+        GC_mark_stack_events.n_room_waits++;
+        waited = TRUE;
+      }
+      GC_mark_ring_waiters++;
+      GC_wait_marker();
+      if (0 == --GC_mark_ring_waiters)
+        AO_store(&GC_mark_ring_room_wanted, 0);
+    }
+  }
 #  else
   /* Note: the concurrent modification is impossible. */
   my_top = GC_mark_stack_top;
@@ -2011,6 +2313,10 @@ GC_do_local_mark(mse *local_mark_stack, mse *local_top)
         return;
       }
     }
+#  ifdef GROW_MARK_RING
+    if (local_mark_stack == GC_main_local_mark_stack)
+      serve_mark_ring_room_wanted();
+#  endif
     if (GLOBAL_MARK_STACK_EMPTY()
         && ADDR_LT((ptr_t)(local_mark_stack + 1), (ptr_t)local_top)
         && has_inactive_helpers()) {
@@ -2083,19 +2389,21 @@ GC_mark_local(mse *local_mark_stack, int id)
     AO_t first, end;
     size_t n_stolen;
 
+    /* The collecting thread grows the ring for the waiting helpers. */
+    if (0 == id)
+      serve_mark_ring_room_wanted();
     /*
      * `GC_first_unclaimed` is exact: all the entries numbered below it are
      * claimed, all the entries starting at it are not.  Note: it might be
      * ahead of `GC_n_published` loaded below, then we recheck both holding
      * the mark lock.  It might also be behind the latter by more than the
      * size of the mark stack, if other markers have claimed entries and
-     * put new ones on the stack in the meantime, then we load it again.
+     * put new ones on the stack in the meantime, then the claim fails
+     * (see `GC_steal_mark_stack_range`), and we load it again.
      */
     first = AO_load(&GC_first_unclaimed);
     end = AO_load_acquire(&GC_n_published);
     looks_empty = (GC_signed_word)(end - first) <= 0;
-    if (!looks_empty && (word)(end - first) > (word)GC_mark_stack_size)
-      continue;
 #  else
     mse *my_top;
     mse *global_first_nonempty = (mse *)GC_cptr_load(&GC_first_nonempty);
@@ -2151,10 +2459,16 @@ GC_mark_local(mse *local_mark_stack, int id)
         /* Other markers may redeposit objects on the stack. */
         if (0 == GC_active_count)
           GC_notify_all_marker();
-        while (GC_active_count > 0 && GLOBAL_MARK_STACK_EMPTY()) {
+        while (GC_active_count > 0 && GLOBAL_MARK_STACK_EMPTY()
+#  ifdef GROW_MARK_RING
+               && (id != 0 || 0 == AO_load(&GC_mark_ring_room_wanted))
+#  endif
+        ) {
           /*
            * We will be notified if either `GC_active_count` reaches zero,
-           * or if more objects are pushed on the global mark stack.
+           * or if more objects are pushed on the global mark stack, or
+           * (the collecting thread) if a helper waits for room on the
+           * ring (it is active, thus the loop below continues).
            */
           GC_wait_marker();
         }
@@ -2268,6 +2582,17 @@ GC_do_parallel_mark(void)
   GC_ASSERT((GC_mark_stack_size & (GC_mark_stack_size - 1)) == 0);
   AO_store(&GC_first_unclaimed, 0);
   AO_store(&GC_n_published, (AO_t)(GC_mark_stack_top + 1 - GC_mark_stack));
+  {
+    unsigned ring_log2 = log2_of_pow2(GC_mark_stack_size);
+
+    /* The markers join the phase holding the mark lock. */
+    GC_mark_ring_bases[ring_log2] = GC_mark_stack;
+    AO_store(&GC_mark_ring_log2, (AO_t)ring_log2);
+    GC_ASSERT(0 == AO_load(&GC_mark_ring_room_wanted)
+              && 0 == GC_mark_ring_waiters);
+    GC_mark_ring_growth_failed = FALSE;
+    GC_ASSERT(0 == GC_n_phase_outgrown_rings);
+  }
 #    ifdef CHECK_MARK_RING
   {
     AO_t k;
@@ -2308,6 +2633,17 @@ GC_do_parallel_mark(void)
 #  endif
   GC_VERBOSE_LOG_PRINTF("Finished marking for mark phase number %lu\n",
                         (unsigned long)GC_mark_no);
+#  ifdef GROW_MARK_RING
+  /* No marker reads the rings outgrown in the phase any more. */
+  GC_ASSERT(0 == AO_load(&GC_mark_ring_room_wanted)
+            && 0 == GC_mark_ring_waiters);
+  while (GC_n_phase_outgrown_rings > 0) {
+    GC_n_phase_outgrown_rings--;
+    add_outgrown_mark_stack(
+        GC_phase_outgrown_rings[GC_n_phase_outgrown_rings].stack,
+        GC_phase_outgrown_rings[GC_n_phase_outgrown_rings].n);
+  }
+#  endif
   GC_mark_no++;
   GC_release_mark_lock();
 #  ifdef GC_NO_IDLE_MARKER_CV
@@ -2383,11 +2719,12 @@ mark_stack_bytes(size_t n)
 /*
  * Make `new_stack`, of `n` entries, the global mark stack, and put the
  * old one, if any, on the list of the outgrown mark stacks (to be
- * recycled into the heap by `GC_after_marking()`).  The mark stack top
- * is not set.
+ * recycled into the heap by `GC_after_marking()`), at the end of the
+ * phase if `in_phase` (a growth of the ring during a parallel mark phase,
+ * see `grow_mark_ring()`).  The mark stack top is not set.
  */
 static void
-set_mark_stack(mse *new_stack, size_t n)
+set_mark_stack(mse *new_stack, size_t n, GC_bool in_phase)
 {
 #ifdef GWW_VDB
   /*
@@ -2404,7 +2741,19 @@ set_mark_stack(mse *new_stack, size_t n)
     if (recycle_old)
 #endif
     {
-      add_outgrown_mark_stack(GC_mark_stack, GC_mark_stack_size);
+#ifdef GROW_MARK_RING
+      if (in_phase) {
+        GC_ASSERT(GC_n_phase_outgrown_rings < CPP_WORDSZ);
+        GC_phase_outgrown_rings[GC_n_phase_outgrown_rings].stack
+            = GC_mark_stack;
+        GC_phase_outgrown_rings[GC_n_phase_outgrown_rings].n
+            = GC_mark_stack_size;
+        GC_n_phase_outgrown_rings++;
+      } else
+#endif
+      /* else */ {
+        add_outgrown_mark_stack(GC_mark_stack, GC_mark_stack_size);
+      }
     }
     GC_mark_stack_events.n_grown++;
     GC_mark_stack_events.grown_size = n;
@@ -2412,7 +2761,13 @@ set_mark_stack(mse *new_stack, size_t n)
   GC_mark_stack = new_stack;
   GC_mark_stack_size = n;
   /* FIXME: Do we need some way to reset `GC_mark_stack_size`? */
+#ifdef GROW_MARK_RING
+  /* A marker may read it during a phase (see `GC_signal_mark_stack_overflow`). */
+  GC_cptr_store((volatile ptr_t *)&GC_mark_stack_limit, (ptr_t)(new_stack + n));
+#else
+  UNUSED_ARG(in_phase);
   GC_mark_stack_limit = new_stack + n;
+#endif
 #ifdef CHECK_MARK_RING
   GC_mark_ring_numbers = (volatile AO_t *)GC_mark_stack_limit;
 #endif
@@ -2451,7 +2806,7 @@ alloc_mark_stack(size_t n)
   }
   GC_mark_stack_too_small = FALSE;
   if (new_stack != NULL) {
-    set_mark_stack(new_stack, n);
+    set_mark_stack(new_stack, n, FALSE);
   } else if (GC_mark_stack != NULL) {
     GC_mark_stack_events.failed_size = n;
   } else {
@@ -2475,7 +2830,7 @@ GC_switch_to_next_mark_stack(void)
   n += GC_n_moved_entries;
   GC_next_mark_stack = NULL;
   GC_n_moved_entries = 0;
-  set_mark_stack(next, GC_next_mark_stack_size);
+  set_mark_stack(next, GC_next_mark_stack_size, FALSE);
   GC_mark_stack_top = next + n - 1;
 }
 
@@ -2514,6 +2869,13 @@ log_mark_stack_events(void)
     if (GC_mark_stack_events.n_no_room != 0) {
       GC_log_printf("No room to copy back mark stack (%lu times)\n",
                     (unsigned long)GC_mark_stack_events.n_no_room);
+    }
+    if (GC_mark_stack_events.n_ring_grown != 0
+        || GC_mark_stack_events.n_room_waits != 0) {
+      GC_log_printf("Grew mark stack in parallel marking %lu times,"
+                    " markers waited for room %lu times\n",
+                    (unsigned long)GC_mark_stack_events.n_ring_grown,
+                    (unsigned long)GC_mark_stack_events.n_room_waits);
     }
     if (GC_mark_stack_events.n_grown != 0) {
       GC_log_printf("Grew mark stack to %lu frames (%lu times)\n",
