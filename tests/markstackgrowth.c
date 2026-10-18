@@ -51,7 +51,10 @@
  * growth of the ring, and the local mark stacks without room are dropped;
  * otherwise it is the request of a larger mark stack in serial marking,
  * and entries of the global mark stack are dropped.  Either way, the
- * marking is completed from the marked objects.
+ * marking is completed from the marked objects.  Whether a parallel mark
+ * phase runs out of room depends on how fast the other markers claim the
+ * entries, thus the test repeats the collection until a request has been
+ * refused, a few times at most.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -252,12 +255,14 @@ graph_ref(size_t i, unsigned k)
   return (size_t)(x % graph_nodes);
 }
 
-static void
-make_list(void)
+/* Return the first node of a new list of `len` nodes. */
+static void **
+new_list(size_t len)
 {
+  void **first = NULL;
   size_t i;
 
-  for (i = list_len; i > 0; i--) {
+  for (i = len; i > 0; i--) {
     void **node = (void **)GC_MALLOC(2 * sizeof(void *));
     void **payload = (void **)GC_MALLOC(sizeof(void *));
     GC_word *leaf = (GC_word *)GC_MALLOC_ATOMIC(2 * sizeof(GC_word));
@@ -269,9 +274,16 @@ make_list(void)
     leaf[1] = (GC_word)(i - 1);
     GC_ptr_store_and_dirty(payload, leaf);
     GC_ptr_store_and_dirty(&node[0], payload);
-    GC_ptr_store_and_dirty(&node[1], list);
-    list = node;
+    GC_ptr_store_and_dirty(&node[1], first);
+    first = node;
   }
+  return first;
+}
+
+static void
+make_list(void)
+{
+  list = new_list(list_len);
 }
 
 static void
@@ -307,12 +319,13 @@ make_graph(void)
  * list and of the graph, twice as many as there are of each, so that the
  * blocks of these objects are swept and any reclaimed object is reused.
  */
+/* Allocate the objects of `n` nodes of a list. */
 static void
-reuse_memory(void)
+reuse_list_memory(size_t n)
 {
   size_t i;
 
-  for (i = 0; i < 2 * list_len; i++) {
+  for (i = 0; i < n; i++) {
     GC_word *leaf = (GC_word *)GC_MALLOC_ATOMIC(2 * sizeof(GC_word));
     void **node = (void **)GC_MALLOC(2 * sizeof(void *));
     void **payload = (void **)GC_MALLOC(sizeof(void *));
@@ -323,6 +336,14 @@ reuse_memory(void)
     leaf[0] = ~(GC_word)0;
     leaf[1] = ~(GC_word)0;
   }
+}
+
+static void
+reuse_memory(void)
+{
+  size_t i;
+
+  reuse_list_memory(2 * list_len);
   for (i = 0; i < 2 * graph_nodes; i++) {
     struct graph_node_s *node = GC_NEW(struct graph_node_s);
 
@@ -352,33 +373,38 @@ is_object(const void *p)
 }
 
 /*
- * Return the number of the nodes of the list whose objects were found
- * reclaimed; the rest of the list from the first node found reclaimed
- * cannot be followed, and counts as reclaimed.
+ * Return the number of the nodes of the list of `len` nodes starting at
+ * `node` whose objects were found reclaimed; the rest of the list from the
+ * first node found reclaimed cannot be followed, and counts as reclaimed.
  */
 static size_t
-check_list(void)
+check_list_from(void **node, size_t len)
 {
-  void **node = list;
   size_t i;
 
-  for (i = 0; i < list_len; i++) {
+  for (i = 0; i < len; i++) {
     void **payload;
     const GC_word *leaf;
 
     if (NULL == node || !is_object(node))
-      return list_len - i;
+      return len - i;
     payload = (void **)node[0];
     if (NULL == payload || !is_object(payload))
-      return list_len - i;
+      return len - i;
     leaf = (const GC_word *)payload[0];
     if (NULL == leaf || !is_object(leaf) || leaf[0] != (LEAF_MAGIC ^ i)
         || leaf[1] != i)
-      return list_len - i;
+      return len - i;
     node = (void **)node[1];
   }
   TEST_ASSERT(NULL == node);
   return 0;
+}
+
+static size_t
+check_list(void)
+{
+  return check_list_from(list, list_len);
 }
 
 /* Return the number of the nodes of the graph found reclaimed. */
@@ -407,45 +433,116 @@ check_graph(void)
 }
 
 #ifdef GROW_MARK_RING
+/* The collections tried at most until a refused request drops entries. */
+#  define N_REFUSAL_TRIES 10
+
+/*
+ * The lists marked in parallel by `check_refused_growth()`: their first
+ * nodes, their number and their length.
+ */
+static void ***volatile wide_lists;
+static size_t n_wide_lists;
+static size_t wide_list_len;
+
+/*
+ * Return the number of the nodes of the lists of `wide_lists` found
+ * reclaimed.
+ */
+static size_t
+check_wide_lists(void)
+{
+  size_t n_bad = 0;
+  size_t j;
+
+  for (j = 0; j < n_wide_lists; j++)
+    n_bad += check_list_from(wide_lists[j], wide_list_len);
+  return n_bad;
+}
+
 /*
  * Collect from a global mark stack of `stack_size` entries, refusing the
- * first request of memory from the OS, and check the shapes.
+ * first request of memory from the OS, and check the shapes; repeat until
+ * the refused request has made the collector drop entries, a few times at
+ * most.  A refused request of a larger ring drops nothing if the claims
+ * have made room meanwhile.
+ *
+ * Besides the list and the graph, the collections mark twice as many
+ * lists as there are markers, each long enough to fill a local mark stack
+ * twice.  If the collection marks in parallel, then these lists soon keep
+ * every marker busy, so that no marker waits for entries, and none shares
+ * its local mark stack; the marker of a list thus fills its local mark
+ * stack to half, and copies it back.  If the ring has fewer slots than
+ * half a local mark stack, then such a copy back has no room, and the
+ * growth of the ring requests memory.
  */
 static void
 check_refused_growth(size_t stack_size)
 {
-  size_t list_bad, graph_bad;
+  size_t wide_bad = 0;
+  size_t j;
+  int i;
 
-  LOCK();
-  alloc_mark_stack(stack_size);
-  GC_after_marking();
-  UNLOCK();
-  n_no_room = 0;
-  n_overflows = 0;
-  n_ring_grown = 0;
-  n_refused = 0;
-  refuse_next_get_mem = TRUE;
-  GC_gcollect();
-  refuse_next_get_mem = FALSE;
+  n_wide_lists = 2 * (size_t)(GC_get_parallel() + 1);
+  wide_list_len = 2 * (size_t)LOCAL_MARK_STACK_SIZE;
   GC_disable();
-  reuse_memory();
-  list_bad = check_list();
-  graph_bad = check_graph();
+  wide_lists = (void ***)GC_MALLOC(n_wide_lists * sizeof(void **));
+  CHECK_OUT_OF_MEMORY(wide_lists);
+  for (j = 0; j < n_wide_lists; j++)
+    GC_ptr_store_and_dirty(&wide_lists[j], new_list(wide_list_len));
   GC_enable();
-  printf("First request of memory refused, from a mark stack of %lu"
-         " entries: %lu list objects and %lu graph nodes reclaimed, %lu"
-         " requests refused, %lu local mark stacks dropped, %lu overflows"
-         " dropping entries, %lu growths of the ring, mark stack of %lu"
-         " entries\n",
-         (unsigned long)stack_size, (unsigned long)list_bad,
-         (unsigned long)graph_bad, (unsigned long)n_refused,
-         (unsigned long)n_no_room, (unsigned long)n_overflows,
-         (unsigned long)n_ring_grown, (unsigned long)GC_mark_stack_size);
-  TEST_ASSERT(0 == list_bad);
-  TEST_ASSERT(0 == graph_bad);
-  /* A refused request makes the collector drop entries. */
-  TEST_ASSERT(n_refused <= 1);
-  TEST_ASSERT(0 == n_refused || n_no_room > 0 || n_overflows > 0);
+  for (i = 1; i <= N_REFUSAL_TRIES; i++) {
+    size_t list_bad, graph_bad;
+
+    LOCK();
+    alloc_mark_stack(stack_size);
+    GC_after_marking();
+    UNLOCK();
+    n_no_room = 0;
+    n_overflows = 0;
+    n_ring_grown = 0;
+    n_refused = 0;
+    refuse_next_get_mem = TRUE;
+    GC_gcollect();
+    refuse_next_get_mem = FALSE;
+    GC_disable();
+    reuse_memory();
+    reuse_list_memory(2 * n_wide_lists * wide_list_len);
+    list_bad = check_list();
+    graph_bad = check_graph();
+    wide_bad = check_wide_lists();
+    GC_enable();
+    printf("First request of memory refused (try %d), from a mark stack of"
+           " %lu entries, %lu more lists of %lu nodes: %lu list objects,"
+           " %lu graph nodes and %lu nodes of the lists reclaimed, %lu"
+           " requests refused, %lu local mark stacks dropped, %lu overflows"
+           " dropping entries, %lu growths of the ring, mark stack of %lu"
+           " entries\n",
+           i, (unsigned long)stack_size, (unsigned long)n_wide_lists,
+           (unsigned long)wide_list_len, (unsigned long)list_bad,
+           (unsigned long)graph_bad, (unsigned long)wide_bad,
+           (unsigned long)n_refused, (unsigned long)n_no_room,
+           (unsigned long)n_overflows, (unsigned long)n_ring_grown,
+           (unsigned long)GC_mark_stack_size);
+    TEST_ASSERT(0 == list_bad);
+    TEST_ASSERT(0 == graph_bad);
+    TEST_ASSERT(0 == wide_bad);
+    TEST_ASSERT(n_refused <= 1);
+    /* Entries are dropped only after a refused request. */
+    TEST_ASSERT(1 == n_refused || (0 == n_no_room && 0 == n_overflows));
+    if (n_no_room > 0 || n_overflows > 0)
+      break;
+  }
+  wide_lists = NULL;
+  n_wide_lists = 0;
+  if (0 == GC_get_parallel() ? stack_size < list_len
+                             : 2 * stack_size < LOCAL_MARK_STACK_SIZE) {
+    /*
+     * Serial marking of the list overflows the mark stack; in parallel,
+     * a copy back of half a local mark stack never has room.  Either way
+     * the refused request makes the collector drop entries.
+     */
+    TEST_ASSERT(n_no_room > 0 || n_overflows > 0);
+  }
 }
 #endif
 
