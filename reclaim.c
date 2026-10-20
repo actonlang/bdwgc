@@ -236,9 +236,15 @@ GC_clear_block(ptr_t q, size_t sz)
   ptr_t *p = (ptr_t *)q;
   ptr_t plim = q + sz;
 
-  /* Clear object, advance `p` to next object in the process. */
-#ifdef USE_MARK_BYTES
-  GC_ASSERT((sz & 1) == 0);
+  /*
+   * Clear object, advance `p` to next object in the process.  Objects are
+   * whole granules, so with granules of two pointers they are cleared a
+   * pair at a time, with mark bytes or mark bits.  (The loop that clears
+   * one pointer at a time is compiled into a call of `memset` or `bzero`
+   * per object.)
+   */
+#if defined(USE_MARK_BYTES) || GC_GRANULE_PTRS == 2
+  GC_ASSERT((sz & (2 * sizeof(ptr_t) - 1)) == 0);
   GC_ASSERT((ADDR(p) & (2 * sizeof(ptr_t) - 1)) == 0);
   p[1] = NULL; /*< but do not clear link field */
   for (p += 2; ADDR_LT((ptr_t)p, plim); p += 2) {
