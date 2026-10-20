@@ -179,6 +179,7 @@ jobs:
           -Ddisable_realloc_free
           -Ddisable_thread_local_warmup
           -Denable_gc_assertions
+          -Denable_mark_bits
           -Denable_mark_range_stealing
           -Denable_werror
           -Dinitial_mark_stack_size=1048576
@@ -196,6 +197,7 @@ jobs:
           -Ddisable_thread_local_warmup
           -Denable_gc_assertions
           -Denable_large_config
+          -Denable_mark_bits
           -Denable_mark_range_stealing
           -Denable_werror
           -Dinitial_mark_stack_size=1048576
@@ -215,6 +217,7 @@ jobs:
           -Ddisable_realloc_free
           -Ddisable_thread_local_warmup
           -Denable_gc_assertions
+          -Denable_mark_bits
           -Denable_mark_range_stealing
           -Denable_werror
           -Dinitial_mark_stack_size=1048576
@@ -229,6 +232,7 @@ jobs:
           -Ddisable_thread_local_warmup
           -Denable_end_padding=false
           -Denable_gc_assertions
+          -Denable_mark_bits
           -Denable_mark_range_stealing
           -Denable_werror
           -Dinitial_mark_stack_size=1048576
@@ -247,8 +251,31 @@ jobs:
           -Ddisable_realloc_free
           -Ddisable_thread_local_warmup
           -Denable_gc_assertions
+          -Denable_mark_bits
           -Denable_mark_range_stealing
           -Denable_werror
           -Dinitial_mark_stack_size=1048576
+          -Dtl_refill_max=16
+          test
+
+      - name: Build and run tests with mark bytes
+        # Acton can select mark bytes instead of mark bits. This step uses
+        # the options of the static linkage step with mark bytes. It runs
+        # last, so that its failure skips none of the steps with mark bits,
+        # and not on Windows, to keep those jobs within their time limit.
+        if: ${{ matrix.os != 'windows-latest' }}
+        run: >
+          zig build
+          -Dblock_size=${{ matrix.block_size }}
+          -Ddisable_realloc_free
+          -Ddisable_thread_local_warmup
+          -Denable_gc_assertions
+          -Denable_large_config
+          -Denable_mark_bits=false
+          -Denable_mark_range_stealing
+          -Denable_werror
+          -Dinitial_mark_stack_size=1048576
+          -Dlinkage=static
+          -Dtiny_freelists=129
           -Dtl_refill_max=16
           test
