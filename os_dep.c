@@ -5256,6 +5256,7 @@ GC_dirty_init(void)
   if (UNLIKELY(!create_detached_thread(uffdwp_monitor_thread))) {
     WARN("Failed to create userfaultfd monitor thread\n", 0);
     close(uffdwp_fd);
+    uffdwp_fd = -1;
     return FALSE;
   }
   /*
