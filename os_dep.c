@@ -3403,9 +3403,17 @@ ensure_min_linux_ver(int major, int minor)
  *     writes without the overhead of signal handling (unlike `MPROTECT_VDB`).
  *     This provides a more efficient, less client-visible, modern approach
  *     to tracking dirty pages for the incremental garbage collection.
- *     Pages are marked as write-protected and `userfaultfd` events are used
- *     to detect writes.  Requires Linux 5.7+.  `MPROTECT_VDB` may be defined
- *     as a fallback strategy.
+ *     Pages are marked as write-protected.  If the kernel is Linux 6.10+,
+ *     and supports the asynchronous write protection
+ *     (`UFFD_FEATURE_WP_ASYNC`) and the `PAGEMAP_SCAN` ioctl of
+ *     `/proc/self/pagemap` file, then the kernel itself removes the
+ *     protection of a page at the first write to it, and the collector
+ *     reads the written pages, and protects them again, with
+ *     `PAGEMAP_SCAN`.  Otherwise (or if `NO_UFFDWP_ASYNC` macro is
+ *     defined), a monitor thread receives each write fault as
+ *     a `userfaultfd` event, records the page as dirty and unprotects it,
+ *     which lets the faulting thread continue.  Requires Linux 5.7+.
+ *     `MPROTECT_VDB` may be defined as a fallback strategy.
  *
  *   - `SOFT_VDB`: Use the `/proc` facility for reading soft-dirty PTEs
  *     (page table entries).  Works on Linux 3.18+ if the kernel is
@@ -3598,6 +3606,18 @@ static int clear_refs_fd = -1;
 static int uffdwp_fd = -1;
 #  define IS_NON_MPROTECT_VDB() (uffdwp_fd != -1)
 
+#  ifndef NO_UFFDWP_ASYNC
+/*
+ * The `/proc/self/pagemap` file descriptor if the `userfaultfd` write
+ * protection is asynchronous, -1 otherwise.  Changed only with the
+ * allocator lock held.
+ */
+static int uffdwp_pagemap_fd = -1;
+#    define IS_UFFDWP_ASYNC() (uffdwp_pagemap_fd != -1)
+#  else
+#    define IS_UFFDWP_ASYNC() FALSE
+#  endif
+
 /*
  * Held by the `userfaultfd` monitor thread while it records a page as
  * dirty and unprotects it, and by `GC_read_dirty` while it takes and
@@ -3606,8 +3626,9 @@ static int uffdwp_fd = -1;
  * before (or while) the bits are taken, and unprotected after the heap is
  * protected, i.e. writes to it would not be recorded in the next cycle.
  * Besides, the thread calling `fork()` holds it from the at-fork prepare
- * handler till the parent (or child) one.  It is acquired after the
- * allocator lock and the mark lock, and before the dirty-bit lock.
+ * handler till the parent (or child) one.  In the asynchronous mode, there
+ * is no monitor thread, and the lock is taken all the same.  It is acquired
+ * after the allocator lock and the mark lock, and before the dirty-bit lock.
  */
 static pthread_mutex_t uffdwp_monitor_ml = PTHREAD_MUTEX_INITIALIZER;
 
@@ -4765,12 +4786,172 @@ GC_soft_read_dirty(GC_bool output_unneeded)
 #  include <sys/ioctl.h>
 #  include <sys/syscall.h>
 
-/* Open the `userfaultfd` file descriptor. */
-static GC_bool
-uffdwp_dirty_open_files(void)
-{
-  struct uffdio_api api;
+#  ifndef NO_UFFDWP_ASYNC
+#    ifndef UFFD_FEATURE_WP_ASYNC
+#      define UFFD_FEATURE_WP_ASYNC (1 << 15)
+#    endif
+#    ifndef PAGEMAP_SCAN
+/*
+ * The `PAGEMAP_SCAN` interface of Linux 6.7, as declared in `linux/fs.h`
+ * file (not included here).
+ */
+struct page_region {
+  __u64 start;
+  __u64 end;
+  __u64 categories;
+};
 
+struct pm_scan_arg {
+  __u64 size;
+  __u64 flags;
+  __u64 start;
+  __u64 end;
+  __u64 walk_end;
+  __u64 vec;
+  __u64 vec_len;
+  __u64 max_pages;
+  __u64 category_inverted;
+  __u64 category_mask;
+  __u64 category_anyof_mask;
+  __u64 return_mask;
+};
+
+#      define PAGE_IS_WRITTEN (1 << 1)
+#      define PM_SCAN_WP_MATCHING (1 << 0)
+#      define PM_SCAN_CHECK_WPASYNC (1 << 1)
+#      define PAGEMAP_SCAN _IOWR('f', 16, struct pm_scan_arg)
+#    endif
+
+/* The number of the elements of `uffdwp_scan_vec`. */
+#    ifndef UFFDWP_SCAN_VEC_LEN
+#      define UFFDWP_SCAN_VEC_LEN 1024
+#    elif UFFDWP_SCAN_VEC_LEN < 1
+/* Without a vector, the scans protect the written pages, unreported. */
+#      error Invalid UFFDWP_SCAN_VEC_LEN value
+#    endif
+
+/*
+ * The ranges of the written pages reported by a `PAGEMAP_SCAN` call.
+ * These are heap addresses, thus the vector is allocated by
+ * `GC_scratch_alloc()`, which is not scanned for pointers.  Allocated
+ * once the kernel has accepted the asynchronous write protection, and
+ * kept if the collector is initialized again (in the child after
+ * `fork()`).  Used with the allocator lock held.
+ */
+static struct page_region *uffdwp_scan_vec = NULL;
+
+/*
+ * Open `/proc/self/pagemap` file as `uffdwp_pagemap_fd` if the kernel is
+ * Linux 6.10 or later (unless `NO_LINUX_VER_RUNTIME_CHECK` macro is
+ * defined) and accepts the arguments the scans pass to `PAGEMAP_SCAN`
+ * ioctl (checked by scanning an empty range).  Return `FALSE` (and leave
+ * `uffdwp_pagemap_fd` -1) otherwise.
+ */
+static GC_bool
+uffdwp_open_pagemap(void)
+{
+  struct pm_scan_arg arg;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  GC_ASSERT(-1 == uffdwp_pagemap_fd);
+#    ifndef NO_LINUX_VER_RUNTIME_CHECK
+  /*
+   * In Linux 6.7 and 6.8, a scan can skip a written page whose page table
+   * entry is a swap or migration entry (it tests such an entry for the
+   * write-protect bit of a present one, which can be a bit of the swap
+   * offset), and protecting a page can lose the dirty bit which the
+   * processor sets in its entry meanwhile.  Linux 6.9 is fixed, but not
+   * its release candidates, which `uname()` reports as 6.9 as well.
+   */
+  if (!ensure_min_linux_ver(6, 10)) {
+    GC_VERBOSE_LOG_PRINTF("Running on kernel lacking reliable PAGEMAP_SCAN\n");
+    return FALSE;
+  }
+#    endif
+  uffdwp_pagemap_fd = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
+  if (-1 == uffdwp_pagemap_fd) {
+    GC_VERBOSE_LOG_PRINTF("Cannot open /proc/self/pagemap\n");
+    return FALSE;
+  }
+  BZERO(&arg, sizeof(arg));
+  arg.size = sizeof(arg);
+  arg.flags = PM_SCAN_WP_MATCHING | PM_SCAN_CHECK_WPASYNC;
+  arg.category_mask = PAGE_IS_WRITTEN;
+  arg.return_mask = PAGE_IS_WRITTEN;
+  if (ioctl(uffdwp_pagemap_fd, PAGEMAP_SCAN, &arg) == 0)
+    return TRUE;
+  GC_VERBOSE_LOG_PRINTF("PAGEMAP_SCAN is not supported by kernel\n");
+  close(uffdwp_pagemap_fd);
+  uffdwp_pagemap_fd = -1;
+  return FALSE;
+}
+
+/*
+ * Record in `GC_grungy_pages` the pages of [`start`, `start + len`)
+ * written since they were last scanned, and write-protect them again, with
+ * as many `PAGEMAP_SCAN` calls as the ranges of the written pages need
+ * (`UFFDWP_SCAN_VEC_LEN` ranges per call).  A write during a scan is
+ * reported by this scan or by the next one (the kernel checks and protects
+ * a page with its page table locked).  An unpopulated page is reported as
+ * written, and protected with a marker in its page table entry; where the
+ * scan does not protect it (some kernels skip a range without a page
+ * table), a write populates it without protection.  This is the
+ * protection of `GC_protect_heap()` in the asynchronous mode, thus it runs
+ * in `GC_read_dirty()`, with the allocator lock held, and with the world
+ * stopped unless the dirty bits may be lost.  It sets the bits even if
+ * `GC_read_dirty()` is called with `output_unneeded`; the next call which
+ * needs them overwrites `GC_grungy_pages` before its scans.
+ */
+static void
+uffdwp_scan_written(void *start, size_t len)
+{
+  __u64 addr = (__u64)ADDR(start);
+  __u64 end = addr + len;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  while (addr < end) {
+    struct pm_scan_arg arg;
+    int i, n;
+
+    BZERO(&arg, sizeof(arg));
+    arg.size = sizeof(arg);
+    /*
+     * Abort the scan, instead of skipping the range, if some part of it is
+     * not registered with the asynchronous write protection.
+     */
+    arg.flags = PM_SCAN_WP_MATCHING | PM_SCAN_CHECK_WPASYNC;
+    arg.start = addr;
+    arg.end = end;
+    arg.vec = (__u64)ADDR(uffdwp_scan_vec);
+    arg.vec_len = UFFDWP_SCAN_VEC_LEN;
+    arg.category_mask = PAGE_IS_WRITTEN;
+    arg.return_mask = PAGE_IS_WRITTEN;
+    n = ioctl(uffdwp_pagemap_fd, PAGEMAP_SCAN, &arg);
+    if (n < 0)
+      ABORT_ARG1("PAGEMAP_SCAN failed", ": errno= %d", errno);
+    for (i = 0; i < n; i++) {
+      struct hblk *h = HBLKPTR((ptr_t)(GC_uintptr_t)uffdwp_scan_vec[i].start);
+      ptr_t lim = (ptr_t)(GC_uintptr_t)uffdwp_scan_vec[i].end;
+
+      for (; ADDR_LT((ptr_t)h, lim); h++) {
+        set_pht_entry_from_index(GC_grungy_pages, PHT_HASH(h));
+      }
+    }
+    /* The scan stops early only if the vector is full. */
+    if (arg.walk_end <= addr)
+      ABORT("PAGEMAP_SCAN made no progress");
+    addr = arg.walk_end;
+  }
+}
+#  endif /* !NO_UFFDWP_ASYNC */
+
+/*
+ * Open a `userfaultfd` file descriptor as `uffdwp_fd`.  Return `FALSE` if
+ * the system call fails.
+ */
+static GC_bool
+uffdwp_open(void)
+{
   GC_ASSERT(-1 == uffdwp_fd);
   /* Let the dedicated monitor thread sleep in `read()` while idle. */
 #  ifndef UFFDWP_NOT_USER_MODE_ONLY
@@ -4791,31 +4972,89 @@ uffdwp_dirty_open_files(void)
       return FALSE;
     }
   }
-  /* Enable the write-protect feature. */
+  return TRUE;
+}
+
+/*
+ * Enable the given `userfaultfd` features on `uffdwp_fd`.  The features of
+ * a descriptor are set once, thus on failure it is closed.
+ */
+static GC_bool
+uffdwp_enable_features(__u64 features)
+{
+  struct uffdio_api api;
+
 #  ifdef MEMORY_SANITIZER
   /* Prevent MSan false positive (FP) about use of uninitialized value. */
   BZERO(&api, sizeof(api));
 #  endif
   api.api = UFFD_API;
-  api.features = UFFD_FEATURE_PAGEFAULT_FLAG_WP;
+  api.features = features;
+  /* On success, `api.features` lists all the features of the kernel. */
   if (ioctl(uffdwp_fd, UFFDIO_API, &api) == -1
-      || (api.features & UFFD_FEATURE_PAGEFAULT_FLAG_WP) == 0) {
-    GC_COND_LOG_PRINTF(
-        "userfaultfd write-protect is not supported by kernel\n");
+      || (api.features & features) != features) {
     close(uffdwp_fd);
     uffdwp_fd = -1;
+    return FALSE;
+  }
+  return TRUE;
+}
+
+/*
+ * Open the `userfaultfd` file descriptor and enable the write protection,
+ * the asynchronous one (and allocate `uffdwp_scan_vec` for it) if the
+ * kernel supports it and `PAGEMAP_SCAN`.
+ */
+static GC_bool
+uffdwp_dirty_open_files(void)
+{
+  if (!uffdwp_open())
+    return FALSE;
+#  ifndef NO_UFFDWP_ASYNC
+  if (uffdwp_open_pagemap()) {
+    if (uffdwp_enable_features(UFFD_FEATURE_PAGEFAULT_FLAG_WP
+                               | UFFD_FEATURE_WP_ASYNC)) {
+      if (NULL == uffdwp_scan_vec) {
+        uffdwp_scan_vec = (struct page_region *)GC_scratch_alloc(
+            UFFDWP_SCAN_VEC_LEN * sizeof(struct page_region));
+        if (NULL == uffdwp_scan_vec)
+          ABORT("Insufficient space for PAGEMAP_SCAN vector");
+      }
+      return TRUE;
+    }
+    GC_VERBOSE_LOG_PRINTF(
+        "userfaultfd asynchronous write-protect is not supported by kernel\n");
+    close(uffdwp_pagemap_fd);
+    uffdwp_pagemap_fd = -1;
+    if (!uffdwp_open())
+      return FALSE;
+  }
+#  endif
+  if (!uffdwp_enable_features(UFFD_FEATURE_PAGEFAULT_FLAG_WP)) {
+    GC_COND_LOG_PRINTF(
+        "userfaultfd write-protect is not supported by kernel\n");
     return FALSE;
   }
   return TRUE; /*< success */
 }
 
-/* Protect or unprotect memory pages in `userfaultfd` subsystem. */
+/*
+ * Protect or unprotect memory pages in `userfaultfd` subsystem.  In the
+ * asynchronous mode, protecting a range scans it for the written pages
+ * instead (see `uffdwp_scan_written()`).
+ */
 static void
 uffdwp_write_protect(void *start, size_t len, GC_bool allow_write)
 {
   struct uffdio_writeprotect wp;
 
   GC_ASSERT(GC_page_size != 0);
+#  ifndef NO_UFFDWP_ASYNC
+  if (!allow_write && IS_UFFDWP_ASYNC()) {
+    uffdwp_scan_written(start, len);
+    return;
+  }
+#  endif
   wp.range.start = ADDR(start);
   wp.range.len = len;
   wp.mode = allow_write ? 0 : UFFDIO_WRITEPROTECT_MODE_WP;
@@ -4968,6 +5207,13 @@ GC_dirty_update_child(void)
    * kernel when closing the file descriptor.
    */
   close(uffdwp_fd);
+#    ifndef NO_UFFDWP_ASYNC
+  if (IS_UFFDWP_ASYNC()) {
+    /* The inherited descriptor reads the page table of the parent. */
+    close(uffdwp_pagemap_fd);
+    uffdwp_pagemap_fd = -1;
+  }
+#    endif
   /* TODO: Re-enable incremental mode in child. */
   GC_uffdwp_registered_sects = 0;
   uffdwp_fd = -1;
@@ -4998,6 +5244,15 @@ GC_dirty_init(void)
 #  endif
   if (!uffdwp_dirty_open_files())
     return FALSE;
+  if (IS_UFFDWP_ASYNC()) {
+    /*
+     * The kernel resolves the write faults itself, thus there is no
+     * monitor thread.  A write to a page not populated yet is reported by
+     * `PAGEMAP_SCAN`, thus the pages need not be populated.
+     */
+    GC_COND_LOG_PRINTF("Using asynchronous userfaultfd write protection\n");
+    return TRUE;
+  }
   if (UNLIKELY(!create_detached_thread(uffdwp_monitor_thread))) {
     WARN("Failed to create userfaultfd monitor thread\n", 0);
     close(uffdwp_fd);
@@ -5331,8 +5586,11 @@ GC_remove_protection(struct hblk *h, size_t nblocks, GC_bool is_ptrfree)
     }
     UNPROTECT(h_trunc, h_end - (ptr_t)h_trunc);
 #    ifdef UFFDWP_VDB
-    if (!is_ptrfree && IS_NON_MPROTECT_VDB()) {
-      /* Let the next protection of the heap cover all the pages. */
+    if (!is_ptrfree && IS_NON_MPROTECT_VDB() && !IS_UFFDWP_ASYNC()) {
+      /*
+       * Let the next protection of the heap cover all the pages (the
+       * asynchronous mode reports a write to a page not populated).
+       */
       uffdwp_populate((ptr_t)h, (ptr_t)(h + nblocks));
     }
 #    endif

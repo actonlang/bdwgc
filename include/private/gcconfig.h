@@ -3051,6 +3051,14 @@ EXTERN_C_BEGIN
 #  if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)
 #    undef UFFDWP_VDB
 #  endif
+#  if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0) \
+      && !defined(NO_UFFDWP_ASYNC)
+/*
+ * `PAGEMAP_SCAN` may miss written pages in kernels prior to v6.9, and in
+ * its release candidates (which have the same `LINUX_VERSION_CODE`).
+ */
+#    define NO_UFFDWP_ASYNC
+#  endif
 #endif
 
 #if defined(SOFT_VDB) && defined(UFFDWP_VDB)

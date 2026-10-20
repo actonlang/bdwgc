@@ -426,7 +426,20 @@ We keep track of modified pages using one of several distinct mechanisms:
   performance may actually be better with `mprotect` and signals.)
 * (`SOFT_VDB`) By retrieving Linux soft-dirty bit information from `/proc`.
 * (`UFFDWP_VDB`) By using the Linux `userfaultfd` subsystem in the
-  write-protect mode.
+  write-protect mode (Linux 5.7 or later). If the kernel is Linux 6.10 or
+  later, and supports the asynchronous write protection and the
+  `PAGEMAP_SCAN` ioctl, then the kernel itself removes the protection of
+  a page at the first write to it, and the collector reads the written
+  pages, and protects them again, with `PAGEMAP_SCAN` when it retrieves the
+  modified pages. Otherwise, a write fault blocks the writing thread until
+  a monitor thread of the collector has recorded the page as modified and
+  removed its protection. In both modes, a write through a page pinned
+  before the collector protects it (e.g. by `O_DIRECT` I/O, a buffer
+  registered with `io_uring` or RDMA) does not fault and is not recorded,
+  which is harmless for pointer-free objects (they are not scanned for
+  pointers). In the asynchronous mode, another caller of `PAGEMAP_SCAN`
+  which protects written pages of the heap again hides their writes from
+  the collector.
 * Through explicit mutator cooperation. This enabled by
   `GC_set_manual_vdb_allowed(1)` call, and requires the client code to call
   `GC_ptr_store_and_dirty` or `GC_end_stubborn_change` (followed by a number
