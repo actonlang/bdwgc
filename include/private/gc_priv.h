@@ -3217,15 +3217,16 @@ GC_INNER void GC_rescan_marked_objects(void);
 
 /*
  * Do the work deferred by the marking since the previous call: log the
- * decisions on the number of markers of a mark phase and the events of
- * the mark stacks (overflows, growth; if `GC_print_stats` is on, except
- * for the warning about a failed growth), and recycle the outgrown mark
- * stacks into the heap.  `GC_mark_some()` only records these, since it
- * may run with the world stopped, and formatting a message then could
- * wait forever for a lock of the C library held by a stopped thread
- * (e.g. the locale lock taken by `vsnprintf()` on Darwin).  Called with
- * the allocator lock held and the world running, after the calls of
- * `GC_mark_some()` and after the marking of the finalizable objects.
+ * number of the dirty pages marked from, the decisions on the number of
+ * markers of a mark phase and the events of the mark stacks (overflows,
+ * growth; if `GC_print_stats` is on, except for the warning about a failed
+ * growth), and recycle the outgrown mark stacks into the heap.
+ * `GC_mark_some()` only records these, since it may run with the world
+ * stopped, and formatting a message then could wait forever for a lock of
+ * the C library held by a stopped thread (e.g. the locale lock taken by
+ * `vsnprintf()` on Darwin).  Called with the allocator lock held and the
+ * world running, after the calls of `GC_mark_some()` and after the marking
+ * of the finalizable objects.
  */
 GC_INNER void GC_after_marking(void);
 

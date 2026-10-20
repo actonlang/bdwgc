@@ -144,6 +144,16 @@ GC_reset_obj_kinds(void)
  * etc.  Used for logging only.
  */
 STATIC word GC_n_rescuing_pages = 0;
+
+/*
+ * Whether a pass over the dirty pages has ended since the previous call
+ * of `GC_after_marking()`, and `GC_n_rescuing_pages` at the end of the
+ * last such pass, for `GC_after_marking()` to log.  The pass ends inside
+ * `GC_mark_some()`, thus maybe with the world stopped.  Protected by the
+ * allocator lock.
+ */
+STATIC GC_bool GC_rescue_pass_ended = FALSE;
+STATIC word GC_n_rescued_pages = 0;
 #endif
 
 GC_API void GC_CALL
@@ -709,8 +719,8 @@ GC_mark_some(ptr_t cold_gc_frame)
       GC_scan_ptr = GC_push_next_marked_dirty(GC_scan_ptr);
 #ifndef GC_DISABLE_INCREMENTAL
       if (NULL == GC_scan_ptr) {
-        GC_COND_LOG_PRINTF("Marked from %lu dirty pages\n",
-                           (unsigned long)GC_n_rescuing_pages);
+        GC_rescue_pass_ended = TRUE;
+        GC_n_rescued_pages = GC_n_rescuing_pages;
       }
 #endif
       push_roots_and_advance(FALSE, cold_gc_frame);
@@ -2517,6 +2527,13 @@ GC_INNER void
 GC_after_marking(void)
 {
   GC_ASSERT(I_HOLD_LOCK());
+#ifndef GC_DISABLE_INCREMENTAL
+  if (GC_rescue_pass_ended) {
+    GC_rescue_pass_ended = FALSE;
+    GC_COND_LOG_PRINTF("Marked from %lu dirty pages\n",
+                       (unsigned long)GC_n_rescued_pages);
+  }
+#endif
 #ifdef PARALLEL_MARK
   log_marker_decisions();
 #endif

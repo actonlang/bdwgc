@@ -990,6 +990,13 @@ GC_stopped_mark(GC_stop_func stop_func)
 {
   ptr_t cold_gc_frame = GC_approx_sp();
   unsigned abandoned_at;
+#ifdef PARALLEL_MARK
+  /*
+   * The value of `abandoned_at` at which a marking with the parallel marker
+   * disabled completed, or zero.  Logged once the world is restarted.
+   */
+  unsigned serial_done_at = 0;
+#endif
 #ifndef NO_CLOCK
   CLOCK_TYPE start_time = CLOCK_TYPE_INITIALIZER;
   GC_bool start_time_valid = FALSE;
@@ -1057,11 +1064,8 @@ GC_stopped_mark(GC_stop_func stop_func)
   for (abandoned_at = 1; !(*stop_func)(); abandoned_at++) {
     if (GC_mark_some(cold_gc_frame)) {
 #ifdef PARALLEL_MARK
-      if (GC_parallel && GC_parallel_mark_disabled) {
-        GC_COND_LOG_PRINTF("Stopped marking done after %u iterations"
-                           " with disabled parallel marker\n",
-                           abandoned_at - 1);
-      }
+      if (GC_parallel && GC_parallel_mark_disabled)
+        serial_done_at = abandoned_at;
 #endif
       abandoned_at = 0;
       break;
@@ -1095,6 +1099,13 @@ GC_stopped_mark(GC_stop_func stop_func)
 #ifdef THREADS
   if (GC_on_collection_event)
     GC_on_collection_event(GC_EVENT_POST_START_WORLD);
+#endif
+#ifdef PARALLEL_MARK
+  if (serial_done_at != 0) {
+    GC_COND_LOG_PRINTF("Stopped marking done after %u iterations"
+                       " with disabled parallel marker\n",
+                       serial_done_at - 1);
+  }
 #endif
 
 #ifndef NO_CLOCK
