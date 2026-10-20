@@ -1328,6 +1328,10 @@ if(BUILD_TESTING)
             add_executable(threadkeytest tests/threadkey.c ${NODIST_SRC})
             target_link_libraries(threadkeytest PRIVATE gc ${THREADDLLIBS_LIST})
             add_test(NAME threadkeytest COMMAND threadkeytest)
+
+            add_executable(uffdwptest tests/uffdwp.c ${NODIST_SRC})
+            target_link_libraries(uffdwptest PRIVATE gc ${THREADDLLIBS_LIST})
+            add_test(NAME uffdwptest COMMAND uffdwptest)
         endif()
     endif(enable_threads)
 
