@@ -63,4 +63,14 @@ jobs:
           ${{ matrix.curses_opt }}
 
       - name: Test enforcing mprotect-based VDB
-        run: sh -c 'GC_USE_GETWRITEWATCH=0 ./gctest'
+        # On Windows, exit on a collector abort instead of waiting for a click
+        # on the abort message box.
+        run: sh -c 'GC_PROMPT_DISABLED=1 GC_USE_GETWRITEWATCH=0 ./gctest'
+
+      - name: Print the collector logs of the tests
+        # On Windows, the collector writes its messages, the abort message
+        # among them, to <program>.gc.log next to the program instead of to
+        # stdout and stderr.
+        if: failure() && runner.os == 'Windows'
+        shell: bash
+        run: find . -name '*.gc.log' -printf '=== %p\n' -exec cat {} \;

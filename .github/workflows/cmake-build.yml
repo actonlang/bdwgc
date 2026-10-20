@@ -16,6 +16,11 @@ jobs:
       cpp:${{ matrix.cplusplus }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 6
+    env:
+      # On Windows, exit on a collector abort instead of waiting for a click
+      # on the abort message box (CTEST_ENVIRONMENT, set in CMakeLists.txt,
+      # does not reach the tests).
+      GC_PROMPT_DISABLED: "1"
 
     strategy:
       # Deliver the feedback for all matrix combinations.
@@ -151,3 +156,11 @@ jobs:
         run: >
           ctest --build-config ${{ matrix.build_type }}
           --verbose --parallel 8
+
+      - name: Print the collector logs of the tests
+        # On Windows, the collector writes its messages, the abort message
+        # among them, to <program>.gc.log next to the program instead of to
+        # stdout and stderr.
+        if: failure() && runner.os == 'Windows'
+        shell: bash
+        run: find build -name '*.gc.log' -printf '=== %p\n' -exec cat {} \;

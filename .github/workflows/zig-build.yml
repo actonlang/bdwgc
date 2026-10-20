@@ -151,6 +151,17 @@ jobs:
           -Denable_werror
           test
 
+      - name: Print the collector logs of the tests
+        # On Windows, the collector writes its messages, the abort message
+        # among them, to <program>.gc.log next to the program instead of to
+        # stdout and stderr. The checkout wrote build.zig; older logs came
+        # with the restored Zig cache.
+        if: failure() && runner.os == 'Windows'
+        shell: bash
+        run: >
+          find .zig-cache/o -name '*.gc.log' -newer build.zig
+          -printf '=== %p\n' -exec cat {} \;
+
   acton-options:
     name: >-
       ${{ matrix.os }} Acton options block_size:${{ matrix.block_size }}
@@ -328,3 +339,11 @@ jobs:
           -Dtiny_freelists=129
           -Dtl_refill_max=16
           test
+
+      - name: Print the collector logs of the tests
+        # See the same step of the build job.
+        if: failure() && runner.os == 'Windows'
+        shell: bash
+        run: >
+          find .zig-cache/o -name '*.gc.log' -newer build.zig
+          -printf '=== %p\n' -exec cat {} \;
