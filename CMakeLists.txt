@@ -1364,6 +1364,13 @@ if(BUILD_TESTING)
                 PRIVATE gc gc_build_flags ${THREADDLLIBS_LIST}
             )
             add_test(NAME threadkeytest COMMAND threadkeytest)
+
+            add_executable(uffdwptest tests/uffdwp.c ${NODIST_SRC})
+            target_link_libraries(
+                uffdwptest
+                PRIVATE gc gc_build_flags ${THREADDLLIBS_LIST}
+            )
+            add_test(NAME uffdwptest COMMAND uffdwptest)
         endif()
     endif(enable_threads)
 

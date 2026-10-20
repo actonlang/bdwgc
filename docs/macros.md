@@ -617,6 +617,34 @@ is defined and the page is larger than the heap block.
 bit strategies to check whether they are consistent.  Use only for debugging
 of the incremental collector.
 
+`NO_UFFDWP_ASYNC` - Turns off the asynchronous mode of `UFFDWP_VDB` virtual
+dirty bit strategy.  By default, the strategy is asynchronous if the kernel
+is Linux 6.10 or later (checked at run time unless
+`NO_LINUX_VER_RUNTIME_CHECK` is defined, and in the kernel headers if
+`LINUX_VER_STATIC_CHECK` is defined), and supports `UFFD_FEATURE_WP_ASYNC`
+feature of `userfaultfd` and `PAGEMAP_SCAN` ioctl of `/proc/self/pagemap`
+file: the kernel itself removes the write protection of a page at the first
+write to it, and the collector reads the written pages, and protects them
+again, with `PAGEMAP_SCAN` while the world is stopped at the start of
+a collection.  (Linux 6.7 and 6.8 have both features, but a scan there can
+miss a written page which is swapped out or being migrated.  Linux 6.9 is
+fixed, but not its release candidates, which report the same version.)
+A write fault then costs much less than in the synchronous mode, but the
+scans make the stopped phase longer.  With this macro, or on other kernels,
+the strategy is synchronous: each first write to a protected page waits
+until the monitor thread of the collector has recorded the page and removed
+its protection.  A system call which writes to a protected page (e.g.
+`read()` into a heap object) succeeds in the asynchronous mode, but fails
+with `EFAULT` in the synchronous one if the kernel supports
+`UFFD_USER_MODE_ONLY` flag (Linux 5.11 or later) and
+`UFFDWP_NOT_USER_MODE_ONLY` is not defined.
+
+`UFFDWP_SCAN_VEC_LEN=<n>` - Sets the maximum number of ranges of written
+pages which one `PAGEMAP_SCAN` call reports in the asynchronous mode of
+`UFFDWP_VDB` (1024 by default, at least 1).  A scan of more ranges stops at
+a full vector and continues where it stopped (a small value is useful to
+test that).
+
 `NO_MANUAL_VDB` - Turns off support of the manual VDB (virtual dirty bits)
 mode.
 

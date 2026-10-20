@@ -836,6 +836,7 @@ pub fn build(b: *std.Build) void {
         if (t.os.tag != .windows) {
             addTest(b, gc, test_step, flags, "threadcanceltest", "tests/threadcancel.c");
             addTest(b, gc, test_step, flags, "threadkeytest", "tests/threadkey.c");
+            addTest(b, gc, test_step, flags, "uffdwptest", "tests/uffdwp.c");
         }
     }
     if (enable_cplusplus) {
