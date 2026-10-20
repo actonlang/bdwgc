@@ -5261,6 +5261,7 @@ GC_dirty_init(void)
           uffdwp_monitor_thread, NUMERIC_TO_VPTR((unsigned)uffdwp_fd)))) {
     WARN("Failed to create userfaultfd monitor thread\n", 0);
     close(uffdwp_fd);
+    uffdwp_fd = -1;
     return FALSE;
   }
   /*
