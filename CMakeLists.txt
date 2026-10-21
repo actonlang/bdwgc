@@ -1158,6 +1158,23 @@ if(BUILD_TESTING)
     target_link_libraries(memaligntest PRIVATE gc)
     add_test(NAME memaligntest COMMAND memaligntest)
 
+    # Likewise, the test includes the collector source.
+    add_executable(memlimittest tests/memlimit.c ${NODIST_SRC})
+    if(MSVC)
+        target_sources(memlimittest PRIVATE extra/msvc_dbg.c)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+        target_sources(memlimittest PRIVATE sparc_mach_dep.S)
+    endif()
+    target_link_libraries(
+        memlimittest
+        PRIVATE ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+    )
+    if(enable_cplusplus AND NOT (BORLAND OR MSVC OR WATCOM))
+        set_target_properties(memlimittest PROPERTIES LINKER_LANGUAGE CXX)
+    endif()
+    add_test(NAME memlimittest COMMAND memlimittest)
+
     add_executable(middletest tests/middle.c ${NODIST_SRC})
     target_link_libraries(middletest PRIVATE gc)
     add_test(NAME middletest COMMAND middletest)

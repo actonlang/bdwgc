@@ -1390,6 +1390,21 @@ GC_init(void)
     }
   }
   {
+    const char *str = GETENV("GC_MEMORY_LIMIT");
+
+    if (str != NULL) {
+      word value = GC_parse_mem_size_arg(str);
+
+      if (GC_WORD_MAX == value) {
+        WARN("Bad GC_MEMORY_LIMIT value %s - ignoring\n", str);
+      } else {
+        /* "0" clears the limit set by the macro. */
+        GC_set_memory_limit(value);
+      }
+    }
+  }
+  GC_init_memory_limit();
+  {
     const char *str = GETENV("GC_MIN_BYTES_ALLOCD");
 
     if (str != NULL) {

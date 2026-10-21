@@ -95,17 +95,15 @@ GC_get_mprotect_vdb_allowed(void)
   return (int)(!mprotect_vdb_disallowed);
 }
 
-#if ((defined(LINUX) && defined(SPECIFIC_MAIN_STACKBOTTOM)                 \
-      || defined(NEED_PROC_MAPS) || defined(PROC_VDB) || defined(SOFT_VDB) \
-      || defined(UFFDWP_VDB))                                              \
-     && !defined(PROC_READ))                                               \
+#if ((defined(LINUX) || defined(NEED_PROC_MAPS) || defined(PROC_VDB) \
+      || defined(SOFT_VDB) || defined(UFFDWP_VDB))                   \
+     && !defined(PROC_READ))                                         \
     || defined(CPPCHECK)
 /* Note: should probably call the real `read()`, if later is wrapped. */
 #  define PROC_READ read
 #endif
 
-#if defined(LINUX) && defined(SPECIFIC_MAIN_STACKBOTTOM) \
-    || defined(NEED_PROC_MAPS)
+#if defined(LINUX) || defined(NEED_PROC_MAPS)
 /*
  * Repeatedly perform a `read()` call until the buffer is filled up,
  * or we encounter EOF (end of file) or an error.
@@ -131,7 +129,7 @@ GC_repeat_read(int f, char *buf, size_t count)
   }
   return num_read;
 }
-#endif /* LINUX && SPECIFIC_MAIN_STACKBOTTOM || NEED_PROC_MAPS */
+#endif /* LINUX || NEED_PROC_MAPS */
 
 #ifdef NEED_PROC_MAPS
 /*
@@ -927,6 +925,194 @@ GC_setpagesize(void)
   }
 #endif
 }
+
+GC_INNER word
+GC_physical_memory_size(void)
+{
+#if defined(MSWIN32)
+  MEMORYSTATUSEX status;
+
+  status.dwLength = sizeof(status);
+  if (!GlobalMemoryStatusEx(&status))
+    return 0;
+#  if CPP_WORDSZ < 64
+  if (status.ullTotalPhys > (DWORDLONG)GC_WORD_MAX)
+    return GC_WORD_MAX;
+#  endif
+  return (word)status.ullTotalPhys;
+#elif defined(_SC_PHYS_PAGES) && defined(_SC_PAGESIZE)
+  long pages = sysconf(_SC_PHYS_PAGES);
+  long page_size = sysconf(_SC_PAGESIZE);
+
+  if (pages <= 0 || page_size <= 0)
+    return 0;
+  if ((word)pages > GC_WORD_MAX / (word)page_size)
+    return GC_WORD_MAX;
+  return (word)pages * (word)page_size;
+#else
+  return 0;
+#endif
+}
+
+#ifdef LINUX
+/* The size of the buffer of the list of the cgroups of the process. */
+#  define CGROUP_LIST_BUF_SZ 4096
+
+/* The size of the buffer of the path of a cgroup memory limit file. */
+#  define CGROUP_PATH_SZ 1024
+
+/* The size of the buffer of the contents of a memory limit file. */
+#  define CGROUP_LIMIT_BUF_SZ 32
+
+/*
+ * Read the file `path` into `buf` of `buf_sz` bytes, and terminate the
+ * contents with '\0'.  Return the length of the contents, or -1 if the
+ * file cannot be read.  The contents is truncated to `buf_sz - 1` bytes.
+ */
+STATIC ssize_t
+GC_read_small_file(const char *path, char *buf, size_t buf_sz)
+{
+  int f = open(path, O_RDONLY);
+  ssize_t len;
+
+  if (f < 0)
+    return -1;
+  len = GC_repeat_read(f, buf, buf_sz - 1);
+  close(f);
+  if (len < 0)
+    return -1;
+  buf[len] = '\0';
+  return len;
+}
+
+/*
+ * Return the number held by the contents `s` of a cgroup memory limit
+ * file (a decimal number and a newline), saturated at `GC_WORD_MAX`, or
+ * 0 if `s` holds no such number (e.g. "max").
+ */
+STATIC word
+GC_parse_cgroup_limit(const char *s)
+{
+  word result = 0;
+
+  if (*s < '0' || *s > '9')
+    return 0;
+  do {
+    word digit = (word)(*s - '0');
+
+    result = result > (GC_WORD_MAX - digit) / 10 ? GC_WORD_MAX
+                                                 : result * 10 + digit;
+    s++;
+  } while (*s >= '0' && *s <= '9');
+  return '\n' == *s || '\0' == *s ? result : 0;
+}
+
+/*
+ * Tell whether the comma-separated list of cgroup controllers `s` of
+ * `len` characters contains the memory controller.
+ */
+STATIC GC_bool
+GC_cgroup_lists_memory(const char *s, size_t len)
+{
+  size_t i = 0;
+
+  while (i < len) {
+    size_t j = i;
+
+    while (j < len && s[j] != ',')
+      j++;
+    if (j - i == 6 && strncmp(&s[i], "memory", 6) == 0)
+      return TRUE;
+    i = j + 1;
+  }
+  return FALSE;
+}
+
+GC_INNER word
+GC_cgroup_memory_limit(const char *proc_cgroup, const char *cgroup_fs)
+{
+  static const char v1_dir[] = "/memory";
+  char list[CGROUP_LIST_BUF_SZ];
+  char path[CGROUP_PATH_SZ];
+  char contents[CGROUP_LIMIT_BUF_SZ];
+  const char *line, *line_end;
+  const char *cgroup = NULL;
+  const char *file_name;
+  size_t cgroup_len = 0;
+  size_t fs_len, file_len, stop_len, len;
+  GC_bool is_v1 = FALSE;
+  word result = 0;
+
+  if (GC_read_small_file(proc_cgroup, list, sizeof(list)) <= 0)
+    return 0;
+
+  /*
+   * Each complete line is "<hierarchy>:<controllers>:<path>".  The line
+   * of cgroup v2 is "0::<path>".
+   */
+  for (line = list; (line_end = strchr(line, '\n')) != NULL;
+       line = line_end + 1) {
+    const char *controllers = strchr(line, ':');
+    const char *controllers_end;
+
+    if (NULL == controllers || controllers > line_end)
+      continue;
+    controllers++;
+    controllers_end = (const char *)memchr(controllers, ':',
+                                           (size_t)(line_end - controllers));
+    if (NULL == controllers_end)
+      continue;
+    if (GC_cgroup_lists_memory(controllers,
+                               (size_t)(controllers_end - controllers))) {
+      cgroup = controllers_end + 1;
+      cgroup_len = (size_t)(line_end - cgroup);
+      is_v1 = TRUE;
+      break;
+    }
+    if (controllers == line + 2 && '0' == line[0]
+        && controllers_end == controllers) {
+      cgroup = controllers_end + 1;
+      cgroup_len = (size_t)(line_end - cgroup);
+    }
+  }
+  if (NULL == cgroup)
+    return 0;
+
+  fs_len = strlen(cgroup_fs);
+  file_name = is_v1 ? "/memory.limit_in_bytes" : "/memory.max";
+  file_len = strlen(file_name);
+  stop_len = is_v1 ? fs_len + sizeof(v1_dir) - 1 : fs_len;
+  if (stop_len + cgroup_len + file_len >= sizeof(path))
+    return 0;
+  BCOPY(cgroup_fs, path, fs_len);
+  if (is_v1)
+    BCOPY(v1_dir, &path[fs_len], sizeof(v1_dir) - 1);
+  BCOPY(cgroup, &path[stop_len], cgroup_len);
+  len = stop_len + cgroup_len;
+  while (len > stop_len && '/' == path[len - 1])
+    len--;
+
+  /*
+   * Read the limit of the cgroup and of each one above it up to the root
+   * of the hierarchy (the mount point), and take the smallest one.
+   */
+  for (;;) {
+    BCOPY(file_name, &path[len], file_len + 1);
+    if (GC_read_small_file(path, contents, sizeof(contents)) > 0) {
+      word limit = GC_parse_cgroup_limit(contents);
+
+      if (limit != 0 && (0 == result || limit < result))
+        result = limit;
+    }
+    if (len <= stop_len)
+      break;
+    do {
+      len--;
+    } while (len > stop_len && path[len] != '/');
+  }
+  return result;
+}
+#endif /* LINUX */
 
 #ifdef EMBOX
 #  include <kernel/thread/thread_stack.h>

@@ -354,6 +354,58 @@ GC_get_alloc_budget_percent(void)
   return GC_alloc_budget_percent;
 }
 
+#ifndef GC_MEMORY_LIMIT
+#  define GC_MEMORY_LIMIT 0
+#endif
+
+/* The memory limit set by the client, 0 if none. */
+static word explicit_memory_limit = GC_MEMORY_LIMIT;
+
+/* The memory limit found by `GC_init_memory_limit()`, 0 if unknown. */
+static word detected_memory_limit = 0;
+
+/* The smaller one of the two limits above, 0 if both are unknown. */
+static word memory_limit = GC_MEMORY_LIMIT;
+
+/* Return the smaller one of `a` and `b`, ignoring a zero one. */
+static word
+min_known_limit(word a, word b)
+{
+  return 0 == a || (b != 0 && b < a) ? b : a;
+}
+
+GC_API void GC_CALL
+GC_set_memory_limit(GC_word value)
+{
+  explicit_memory_limit = value;
+  memory_limit = min_known_limit(detected_memory_limit, value);
+}
+
+GC_API GC_word GC_CALL
+GC_get_memory_limit(void)
+{
+  return memory_limit;
+}
+
+GC_INNER void
+GC_init_memory_limit(void)
+{
+  word physical = GC_physical_memory_size();
+  word cgroup = 0;
+
+#ifdef LINUX
+  cgroup = GC_cgroup_memory_limit("/proc/self/cgroup", "/sys/fs/cgroup");
+#endif
+  detected_memory_limit = min_known_limit(physical, cgroup);
+  memory_limit = min_known_limit(detected_memory_limit, explicit_memory_limit);
+  GC_COND_LOG_PRINTF("Memory limit %lu MiB (RAM %lu MiB, cgroup %lu MiB,"
+                     " explicit %lu MiB)\n",
+                     (unsigned long)(memory_limit >> 20),
+                     (unsigned long)(physical >> 20),
+                     (unsigned long)(cgroup >> 20),
+                     (unsigned long)(explicit_memory_limit >> 20));
+}
+
 /* Return `v * percent / 100` (approximately), saturated on overflow. */
 static word
 percent_of(word v, word percent)

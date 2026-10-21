@@ -227,6 +227,7 @@
     "maybenull",
     "memalign",
     "memcpy",
+    "MEMORYSTATUSEX",
     "memsz",
     "MINHINCR",
     "misoptimizations",

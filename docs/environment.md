@@ -171,6 +171,14 @@ collections the indicated percentage of the size of the live data and roots
 `GC_FREE_SPACE_DIVISOR`.  E.g. "100" lets the heap grow to about twice the
 size of the live data.  "0" selects the default policy.
 
+`GC_MEMORY_LIMIT=<bytes>` - Sets the memory limit of the process (see
+`GC_set_memory_limit()`).  The limit is the smallest of this value, the size
+of the physical memory and, on Linux, the cgroup memory limit (`memory.max` or
+`memory.limit_in_bytes`, not `memory.high`), so the value can only lower it.
+Optionally, may be specified with a multiplier suffix.  "0" clears the value
+set by the macro of the same name.  Malformed values are ignored (with
+a warning).
+
 `GC_MIN_BYTES_ALLOCD=<bytes>` - Sets the minimum number of bytes allocated
 between collections (see `GC_set_min_bytes_allocd()`).  This bounds the
 collection frequency of programs with a small live heap at the expense of

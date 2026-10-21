@@ -689,6 +689,10 @@ maximum heap increment independent of the heap size.
 budget percentage (see `GC_set_alloc_budget_percent()`); zero (the default)
 selects the policy based on `GC_free_space_divisor`.
 
+`GC_MEMORY_LIMIT=<value>` - Sets the default value of the memory limit set by
+the client, in bytes (see `GC_set_memory_limit()`); zero (the default) leaves
+the limit to the size of the physical memory and the cgroup memory limit.
+
 `GC_BYTES_PER_MARKER=<value>` - Sets the default value of the bytes to scan
 per marker of a mark phase (see `GC_set_bytes_per_marker()`); zero (the
 default) lets every parallel mark phase use all the marker threads.

@@ -95,6 +95,7 @@ pub fn build(b: *std.Build) void {
     const heap_growth_divisor = b.option(u32, "heap_growth_divisor", "Allow a heap expansion up to the heap size divided by this value (0 keeps the maximum heap increment fixed)") orelse 0;
     const block_size = b.option(u32, "block_size", "Heap block size in bytes, a power of two in range 4096..65536 (0 keeps the default)") orelse 0;
     const alloc_budget_percent = b.option(u32, "alloc_budget_percent", "Collect after allocating this percentage of the live data size (0 keeps the policy based on the free space divisor)") orelse 0;
+    const memory_limit = b.option(u64, "memory_limit", "Memory limit in bytes, used if smaller than the physical memory and the cgroup limit (0 sets none)") orelse 0;
     const enable_mark_range_stealing = b.option(bool, "enable_mark_range_stealing", "Let parallel markers claim ranges of the global mark stack by CAS") orelse false;
     const enable_end_padding = b.option(bool, "enable_end_padding", "Pad objects so that a pointer just past the end of an object keeps it alive") orelse true;
     const bytes_per_marker = b.option(u64, "bytes_per_marker", "Mark a mark phase by one marker per this many bytes it is estimated to scan (0 lets every parallel mark phase use all the markers)") orelse 0;
@@ -382,6 +383,14 @@ pub fn build(b: *std.Build) void {
 
     if (alloc_budget_percent != 0) {
         flags.append(b.allocator, b.fmt("-D GC_ALLOC_BUDGET_PERCENT={d}", .{alloc_budget_percent})) catch unreachable;
+    }
+
+    if (memory_limit != 0) {
+        // The value should fit in `word` (pointer-sized) of the target.
+        if (memory_limit > std.math.shl(u64, 1, t.ptrBitWidth()) -% 1) {
+            @panic("memory_limit is too big for the target: it should fit in a pointer-sized integer");
+        }
+        flags.append(b.allocator, b.fmt("-D GC_MEMORY_LIMIT={d}", .{memory_limit})) catch unreachable;
     }
 
     if (enable_mark_range_stealing) {
@@ -790,6 +799,12 @@ pub fn build(b: *std.Build) void {
         .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
     });
     addTest(b, gc, test_step, flags, "memaligntest", "tests/memalign.c");
+    // Likewise, `memlimittest` includes the collector source.
+    addTestExt(b, gc, test_step, flags, "memlimittest", "tests/memlimit.c", .{
+        .link_gc = false,
+        .filename2 = if (t.abi == .msvc) "extra/msvc_dbg.c" else null,
+        .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
+    });
     addTest(b, gc, test_step, flags, "middletest", "tests/middle.c");
     addTest(b, gc, test_step, flags, "realloctest", "tests/realloc.c");
     addTest(b, gc, test_step, flags, "reallocfreetest", "tests/reallocfree.c");
