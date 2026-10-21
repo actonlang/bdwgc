@@ -179,6 +179,13 @@ Optionally, may be specified with a multiplier suffix.  "0" clears the value
 set by the macro of the same name.  Malformed values are ignored (with
 a warning).
 
+`GC_HEAP_CEILING_PERCENT=<value>` - Sets the heap ceiling as a percentage of
+the memory limit (see `GC_set_heap_ceiling_percent()`).  If the allocation
+budget percentage is nonzero, the heap grows to the size of the live data plus
+the allocation volume, which is at most half of the distance from the live
+data to the ceiling (but at least 10% of the live data).  "0" turns this off.
+The default is 75.
+
 `GC_MIN_BYTES_ALLOCD=<bytes>` - Sets the minimum number of bytes allocated
 between collections (see `GC_set_min_bytes_allocd()`).  This bounds the
 collection frequency of programs with a small live heap at the expense of
