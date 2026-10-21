@@ -693,6 +693,10 @@ selects the policy based on `GC_free_space_divisor`.
 the client, in bytes (see `GC_set_memory_limit()`); zero (the default) leaves
 the limit to the size of the physical memory and the cgroup memory limit.
 
+`GC_HEAP_CEILING_PERCENT=<value>` - Sets the default value of the heap ceiling
+percentage of the memory limit (see `GC_set_heap_ceiling_percent()`); zero
+turns off the heap sizing by the memory limit.  The default is 75.
+
 `GC_BYTES_PER_MARKER=<value>` - Sets the default value of the bytes to scan
 per marker of a mark phase (see `GC_set_bytes_per_marker()`); zero (the
 default) lets every parallel mark phase use all the marker threads.

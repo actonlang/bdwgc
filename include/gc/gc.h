@@ -440,11 +440,13 @@ GC_API GC_word GC_CALL GC_get_free_space_divisor(void);
  * latter is traced (while the collection work per allocated byte grows
  * with the traced fraction of the live data).  The volume is halved in
  * the incremental mode, and `GC_set_min_bytes_allocd()` still sets its
- * lower bound.  `GC_free_space_divisor` still determines the heap growth
- * increment, and a heap expansion is still preceded by a collection if
- * the heap has been expanded since the previous collection, thus
- * a collection might occur before the volume is allocated if the latter
- * exceeds the free space of the heap plus a heap growth increment.
+ * lower bound.  Unless the heap is sized by the memory limit (see
+ * `GC_set_heap_ceiling_percent()`), `GC_free_space_divisor` still
+ * determines the heap growth increment, and a heap expansion is still
+ * preceded by a collection if the heap has been expanded since the
+ * previous collection, thus a collection might occur before the volume
+ * is allocated if the latter exceeds the free space of the heap plus
+ * a heap growth increment.
  * Zero (the default unless the collector is built with
  * `GC_ALLOC_BUDGET_PERCENT` macro defined to a nonzero value) selects the
  * policy based on `GC_free_space_divisor`.  The initial value may also be
@@ -471,16 +473,58 @@ GC_API GC_word GC_CALL GC_get_alloc_budget_percent(void);
  * kill a process) and the swap limits are not read (a client may pass
  * such a value to the setter).  The getter returns the resulting limit
  * (before the collector initialization, the value passed to the setter),
- * zero if none is known.  The initial value passed to the setter is zero
- * unless the collector is built with `GC_MEMORY_LIMIT` macro defined to
- * a nonzero value, and may be set by `GC_MEMORY_LIMIT` environment
- * variable.  The setter and the getter are unsynchronized, so
+ * zero if none is known.  The limit bounds the heap size as
+ * `GC_set_heap_ceiling_percent()` describes.  The initial value passed to
+ * the setter is zero unless the collector is built with `GC_MEMORY_LIMIT`
+ * macro defined to a nonzero value, and may be set by `GC_MEMORY_LIMIT`
+ * environment variable.  The setter and the getter are unsynchronized, so
  * `GC_call_with_alloc_lock()` (`GC_call_with_reader_lock()` in case of
  * the getter) is required to avoid data race (if the value is modified
  * after the collector is put into the multi-threaded mode).
  */
 GC_API void GC_CALL GC_set_memory_limit(GC_word);
 GC_API GC_word GC_CALL GC_get_memory_limit(void);
+
+/**
+ * The setter and the getter of the heap ceiling percentage.  If it, the
+ * allocation budget percentage (see `GC_set_alloc_budget_percent()`) and the
+ * memory limit (see `GC_set_memory_limit()`) are nonzero, then the heap is
+ * sized by the memory limit.  Let `L` be the size of the data live at the
+ * latest collection plus the size of the root set (as for the budget), `B`
+ * the budget percentage, and the heap ceiling `C` this percentage of the
+ * memory limit.  The allocation volume between collections is `B` percent of
+ * `L`, but at most half of `C - L`, and not less than 10% of `L` because of
+ * the latter bound (and it is halved in the incremental mode as the volume
+ * of the budget is).  The heap target is `L` plus that volume.  If the heap
+ * runs out of free blocks below the target, then the heap grows to the
+ * target at once (by 10% of `L` at least), and the next shortage of blocks
+ * triggers a collection.  If the heap with the requested blocks would exceed
+ * the target, and half of the volume (but at least 10% of `L`) has been
+ * allocated since the previous collection, then a collection is triggered
+ * instead of the heap growth, and the heap grows only if the collection has
+ * not freed enough.  Before that, the heap grows (by 10% of `L` at least),
+ * so that free space which cannot be used for the request (e.g. in partly
+ * used blocks) does not make the collections more frequent.  Thus the heap
+ * grows to `L * (1 + B / 100)` while that is far below the ceiling, stays
+ * halfway between `L` and the ceiling as `L` approaches the latter, and
+ * exceeds `L` by 10% once `L` is more than 5/6 of the ceiling.  The heap is
+ * not shrunk to the target.  `GC_set_max_heap_size()` still sets a hard
+ * limit.  While the collections are disabled, and in the incremental mode
+ * (where a shortage of blocks does not trigger a collection), the heap grows
+ * as without this sizing, and only the volume is bounded.  Zero turns the
+ * sizing off, more than 100 lets the heap target exceed the memory limit
+ * (e.g. with swap).  The default value is 75 unless the collector is built
+ * with `GC_HEAP_CEILING_PERCENT` macro defined, and the initial value may be
+ * set by `GC_HEAP_CEILING_PERCENT` environment variable.  A new value is
+ * used by the next heap growth decision, and in the allocation volume
+ * starting from the next collection.  The setter and the getter are
+ * unsynchronized, so `GC_call_with_alloc_lock()`
+ * (`GC_call_with_reader_lock()` in case of the getter) is required to avoid
+ * data race (if the value is modified after the collector is put into the
+ * multi-threaded mode).
+ */
+GC_API void GC_CALL GC_set_heap_ceiling_percent(GC_word);
+GC_API GC_word GC_CALL GC_get_heap_ceiling_percent(void);
 
 /**
  * The maximum number of collections attempted before reporting out of

@@ -96,6 +96,7 @@ pub fn build(b: *std.Build) void {
     const block_size = b.option(u32, "block_size", "Heap block size in bytes, a power of two in range 4096..65536 (0 keeps the default)") orelse 0;
     const alloc_budget_percent = b.option(u32, "alloc_budget_percent", "Collect after allocating this percentage of the live data size (0 keeps the policy based on the free space divisor)") orelse 0;
     const memory_limit = b.option(u64, "memory_limit", "Memory limit in bytes, used if smaller than the physical memory and the cgroup limit (0 sets none)") orelse 0;
+    const heap_ceiling_percent = b.option(u32, "heap_ceiling_percent", "Heap ceiling as a percentage of the memory limit, used with the allocation budget (0 turns the heap sizing by the memory limit off, unset keeps the default of 75)");
     const enable_mark_range_stealing = b.option(bool, "enable_mark_range_stealing", "Let parallel markers claim ranges of the global mark stack by CAS") orelse false;
     const enable_end_padding = b.option(bool, "enable_end_padding", "Pad objects so that a pointer just past the end of an object keeps it alive") orelse true;
     const bytes_per_marker = b.option(u64, "bytes_per_marker", "Mark a mark phase by one marker per this many bytes it is estimated to scan (0 lets every parallel mark phase use all the markers)") orelse 0;
@@ -391,6 +392,10 @@ pub fn build(b: *std.Build) void {
             @panic("memory_limit is too big for the target: it should fit in a pointer-sized integer");
         }
         flags.append(b.allocator, b.fmt("-D GC_MEMORY_LIMIT={d}", .{memory_limit})) catch unreachable;
+    }
+
+    if (heap_ceiling_percent) |percent| {
+        flags.append(b.allocator, b.fmt("-D GC_HEAP_CEILING_PERCENT={d}", .{percent})) catch unreachable;
     }
 
     if (enable_mark_range_stealing) {

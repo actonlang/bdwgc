@@ -387,6 +387,28 @@ GC_get_memory_limit(void)
   return memory_limit;
 }
 
+#ifndef GC_HEAP_CEILING_PERCENT
+#  define GC_HEAP_CEILING_PERCENT 75
+#endif
+
+/*
+ * The heap ceiling as a percentage of the memory limit, 0 if the heap is
+ * not sized by the memory limit.
+ */
+static word heap_ceiling_percent = GC_HEAP_CEILING_PERCENT;
+
+GC_API void GC_CALL
+GC_set_heap_ceiling_percent(GC_word value)
+{
+  heap_ceiling_percent = value;
+}
+
+GC_API GC_word GC_CALL
+GC_get_heap_ceiling_percent(void)
+{
+  return heap_ceiling_percent;
+}
+
 GC_INNER void
 GC_init_memory_limit(void)
 {
@@ -399,11 +421,12 @@ GC_init_memory_limit(void)
   detected_memory_limit = min_known_limit(physical, cgroup);
   memory_limit = min_known_limit(detected_memory_limit, explicit_memory_limit);
   GC_COND_LOG_PRINTF("Memory limit %lu MiB (RAM %lu MiB, cgroup %lu MiB,"
-                     " explicit %lu MiB)\n",
+                     " explicit %lu MiB), heap ceiling %lu%%\n",
                      (unsigned long)(memory_limit >> 20),
                      (unsigned long)(physical >> 20),
                      (unsigned long)(cgroup >> 20),
-                     (unsigned long)(explicit_memory_limit >> 20));
+                     (unsigned long)(explicit_memory_limit >> 20),
+                     (unsigned long)heap_ceiling_percent);
 }
 
 /* Return `v * percent / 100` (approximately), saturated on overflow. */
@@ -435,14 +458,10 @@ GC_get_min_bytes_allocd(void)
   return min_bytes_allocd_minimum;
 }
 
-/*
- * Return the minimum number of bytes that must be allocated between
- * collections to amortize the cost of the latter.  Should be nonzero.
- */
+/* Return the size of the stacks to scan (approximately). */
 static word
-min_bytes_allocd(void)
+total_stack_size(void)
 {
-  word result;
   word stack_size;
 
   GC_ASSERT(I_HOLD_LOCK());
@@ -468,17 +487,78 @@ min_bytes_allocd(void)
     stack_size = (word)(GC_stackbottom - GC_approx_sp());
 #endif
   }
+  return stack_size;
+}
 
+/*
+ * Return the number of bytes in the objects found live by the latest
+ * collection (both traced and "atomic" ones) plus the size of the roots
+ * (including the stacks).
+ */
+static word
+live_bytes(void)
+{
+  return GC_composite_in_use + GC_atomic_in_use + total_stack_size()
+         + GC_root_size;
+}
+
+/*
+ * If the heap is sized by the memory limit, then the allocation volume
+ * between collections is at most this percentage of the distance from
+ * the live data to the heap ceiling, thus the heap target covers this
+ * percentage of that distance as the live data approaches the ceiling...
+ */
+#define ROOM_SHARE_PERCENT 50
+
+/*
+ * ...but that bound is not less than this percentage of the live data.
+ * The heap growth is at least this percentage of the live data too.
+ */
+#define BUDGET_FLOOR_PERCENT 10
+
+/*
+ * Return the heap ceiling in bytes (the percentage of the memory limit),
+ * 0 if the heap is not sized by the memory limit.
+ */
+static word
+heap_ceiling(void)
+{
+  return percent_of(memory_limit, heap_ceiling_percent);
+}
+
+/*
+ * Return the minimum number of bytes that must be allocated between
+ * collections to amortize the cost of the latter.  Should be nonzero.
+ */
+static word
+min_bytes_allocd(void)
+{
+  word result;
+
+  GC_ASSERT(I_HOLD_LOCK());
   if (GC_alloc_budget_percent != 0) {
     /*
      * The volume is proportional to the size of the data live at the
      * latest collection (including the roots), independently of how
      * expensive the data is to trace.
      */
-    result = percent_of(GC_composite_in_use + GC_atomic_in_use + stack_size
-                            + GC_root_size,
-                        GC_alloc_budget_percent);
+    word live = live_bytes();
+    word ceiling = heap_ceiling();
+
+    result = percent_of(live, GC_alloc_budget_percent);
+    if (ceiling != 0) {
+      word room = ceiling > live
+                      ? percent_of(ceiling - live, ROOM_SHARE_PERCENT)
+                      : 0;
+      word min_volume = percent_of(live, BUDGET_FLOOR_PERCENT);
+
+      if (room < min_volume)
+        room = min_volume;
+      if (result > room)
+        result = room;
+    }
   } else {
+    word stack_size = total_stack_size();
     /*
      * Total size of roots, it includes double stack size, since the stack
      * is expensive to scan.
@@ -494,6 +574,25 @@ min_bytes_allocd(void)
     result /= 2;
   }
   return result > min_bytes_allocd_minimum ? result : min_bytes_allocd_minimum;
+}
+
+/*
+ * Return the heap size which the heap is grown to at once and not grown
+ * beyond (unless a collection does not free enough): the size of the
+ * live data plus the allocation volume between collections, if the heap
+ * is sized by the memory limit.  Otherwise return 0, also if a shortage
+ * of blocks cannot trigger a collection, i.e. if the collections are
+ * disabled or in the incremental mode (thus the heap cannot be kept at
+ * the target, and the size of the live data counts the objects allocated
+ * during the incremental marking).
+ */
+static word
+heap_target(void)
+{
+  if (0 == GC_alloc_budget_percent || 0 == heap_ceiling() || GC_dont_gc
+      || GC_disable_automatic_collection || GC_incremental)
+    return 0;
+  return SIZET_SAT_ADD(live_bytes(), min_bytes_allocd());
 }
 
 /*
@@ -1522,6 +1621,23 @@ GC_finish_collection(void)
       COMMA_IF_USE_MUNMAP(TO_KiB_UL(GC_unmapped_bytes)),
       TO_KiB_UL(GC_our_mem_bytes - GC_heapsize + sizeof(GC_arrays)));
   GC_DBGLOG_PRINT_HEAP_IN_USE();
+  if (GC_PRINT_STATS_FLAG && GC_alloc_budget_percent != 0) {
+    word live = live_bytes();
+    word volume = min_bytes_allocd();
+    /*
+     * The volume as a percentage of the live data (the effective budget),
+     * rounded to the nearest integer.
+     */
+    word percent = live < 100 ? 0
+                   : volume <= (GC_WORD_MAX - live / 2) / 100
+                       ? (volume * 100 + live / 2) / live
+                       : volume / (live / 100);
+
+    GC_log_printf("Allocation volume %lu KiB (%lu%% of %lu KiB live),"
+                  " heap target %lu KiB\n",
+                  TO_KiB_UL(volume), (unsigned long)percent, TO_KiB_UL(live),
+                  TO_KiB_UL(heap_target()));
+  }
   if (GC_is_full_gc) {
     GC_used_heap_size_after_full = GC_heapsize - GC_large_free_bytes;
     GC_need_full_gc = FALSE;
@@ -2110,18 +2226,76 @@ heap_expansion_blocks(word needed_blocks, unsigned flags, word max_increment)
   return blocks_to_get;
 }
 
+/*
+ * Return the number of blocks to get from the OS to satisfy a request
+ * of `needed_blocks` blocks if the heap is sized by the memory limit:
+ * enough to reach the heap target of `target` bytes, at least the
+ * request plus the slop for the black-listing, and at least
+ * `BUDGET_FLOOR_PERCENT` of the live data and `MINHINCR`.  The latter
+ * keeps the number of heap growths (and of heap sections) logarithmic
+ * in the live data size, and, since a shortage of blocks after a heap
+ * growth triggers a collection, the volume between collections at that
+ * percentage at least.  `GC_max_heapsize` is not taken into account.
+ */
+static word
+target_expansion_blocks(word target, word needed_blocks, unsigned flags)
+{
+  word heap_blocks = divHBLKSZ(GC_heapsize);
+  word target_blocks = divHBLKSZ(target);
+  word min_blocks = divHBLKSZ(percent_of(live_bytes(), BUDGET_FLOOR_PERCENT));
+  word blocks_to_get
+      = heap_expansion_blocks(needed_blocks, flags, needed_blocks);
+
+  if (target_blocks > heap_blocks
+      && target_blocks - heap_blocks > blocks_to_get)
+    blocks_to_get = target_blocks - heap_blocks;
+  if (blocks_to_get < min_blocks)
+    blocks_to_get = min_blocks;
+  return blocks_to_get > MINHINCR ? blocks_to_get : MINHINCR;
+}
+
+/*
+ * Tell whether the heap with `needed_blocks` more blocks would exceed the
+ * heap target of `target` bytes after at least half of the allocation
+ * volume, and at least `BUDGET_FLOOR_PERCENT` of the live data, has been
+ * allocated since the latest collection.  Then a collection is due
+ * instead of a heap growth.  Before that, the heap grows, so that free
+ * space which the allocation cannot use (in partly used blocks of other
+ * object sizes, or in runs of free blocks too short for the request, e.g.
+ * for large objects in a fragmented heap) does not make the collections
+ * more frequent.
+ */
+static GC_bool
+exceeds_heap_target(word target, word needed_blocks)
+{
+  word wait, min_wait;
+
+  if (divHBLKSZ(GC_heapsize) + needed_blocks <= divHBLKSZ(target))
+    return FALSE;
+  wait = min_bytes_allocd() / 2;
+  min_wait = percent_of(live_bytes(), BUDGET_FLOOR_PERCENT);
+  return GC_adj_bytes_allocd() >= (wait > min_wait ? wait : min_wait);
+}
+
 GC_INNER GC_bool
 GC_collect_or_expand(word needed_blocks, unsigned flags, GC_bool retry)
 {
   static word last_fo_entries, last_bytes_finalized;
 
   GC_bool gc_not_stopped = TRUE;
-  word blocks_to_get, fallback_blocks, max_increment;
+  word blocks_to_get, fallback_blocks, max_increment, target;
   IF_CANCEL(int cancel_state;)
 
   GC_ASSERT(I_HOLD_LOCK());
   GC_ASSERT(GC_is_initialized);
   DISABLE_CANCEL(cancel_state);
+  target = heap_target();
+  /*
+   * If `exceeds_heap_target()` holds (the heap with the requested blocks
+   * would exceed the heap target, after the wait), then the first attempt
+   * collects instead of growing the heap, and a retry grows it.  Thus
+   * a request causes one collection at most before the heap grows.
+   */
   if (!GC_incremental && !GC_dont_gc
       && ((GC_dont_expand && GC_bytes_allocd > 0)
           || (GC_fo_entries > last_fo_entries
@@ -2129,7 +2303,9 @@ GC_collect_or_expand(word needed_blocks, unsigned flags, GC_bool retry)
               && (GC_fo_entries - last_fo_entries)
                          * GC_allocd_bytes_per_finalizer
                      > GC_bytes_allocd)
-          || GC_should_collect())) {
+          || GC_should_collect()
+          || (target != 0 && !retry && GC_bytes_allocd > 0
+              && exceeds_heap_target(target, needed_blocks)))) {
     /*
      * Try to do a full collection using "default" `stop_func` (unless
      * nothing has been allocated since the latest collection or heap
@@ -2152,7 +2328,10 @@ GC_collect_or_expand(word needed_blocks, unsigned flags, GC_bool retry)
   }
 
   max_increment = max_heap_increment();
-  blocks_to_get = heap_expansion_blocks(needed_blocks, flags, max_increment);
+  blocks_to_get
+      = target != 0
+            ? target_expansion_blocks(target, needed_blocks, flags)
+            : heap_expansion_blocks(needed_blocks, flags, max_increment);
   /*
    * If a scaled expansion is refused by the OS, then try the size which
    * the fixed `MAXHINCR` limit would give, before falling back to the

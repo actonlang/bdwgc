@@ -1403,6 +1403,18 @@ GC_init(void)
       }
     }
   }
+  {
+    const char *str = GETENV("GC_HEAP_CEILING_PERCENT");
+
+    if (str != NULL) {
+      long percent = atol(str);
+
+      if (percent >= 0) {
+        /* "0" turns off the heap sizing by the memory limit. */
+        GC_set_heap_ceiling_percent((GC_word)percent);
+      }
+    }
+  }
   GC_init_memory_limit();
   {
     const char *str = GETENV("GC_MIN_BYTES_ALLOCD");
