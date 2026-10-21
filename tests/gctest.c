@@ -2714,6 +2714,7 @@ main(void)
   GC_set_full_freq(GC_get_full_freq());
   GC_set_heap_growth_divisor(GC_get_heap_growth_divisor());
   GC_set_max_retries(GC_get_max_retries());
+  GC_set_memory_limit(GC_get_memory_limit());
   GC_set_mprotect_vdb_allowed(GC_get_mprotect_vdb_allowed());
   GC_set_no_dls(GC_get_no_dls());
   GC_set_non_gc_bytes(GC_get_non_gc_bytes());

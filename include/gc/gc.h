@@ -459,6 +459,30 @@ GC_API void GC_CALL GC_set_alloc_budget_percent(GC_word);
 GC_API GC_word GC_CALL GC_get_alloc_budget_percent(void);
 
 /**
+ * The setter and the getter of the memory limit of the process, in
+ * bytes.  The collector initialization finds the size of the physical
+ * memory and, on Linux, the smallest memory limit of the cgroup of the
+ * process and of the cgroups above it (`memory.max` or
+ * `memory.limit_in_bytes` file under `/sys/fs/cgroup`), and the limit is
+ * the smallest of these and of the value passed to the setter, ignoring
+ * the unknown ones and zero.  Thus the setter can only lower the limit,
+ * and zero clears the value passed before.  `memory.high` (above which
+ * the kernel throttles the cgroup and reclaims its memory, but does not
+ * kill a process) and the swap limits are not read (a client may pass
+ * such a value to the setter).  The getter returns the resulting limit
+ * (before the collector initialization, the value passed to the setter),
+ * zero if none is known.  The initial value passed to the setter is zero
+ * unless the collector is built with `GC_MEMORY_LIMIT` macro defined to
+ * a nonzero value, and may be set by `GC_MEMORY_LIMIT` environment
+ * variable.  The setter and the getter are unsynchronized, so
+ * `GC_call_with_alloc_lock()` (`GC_call_with_reader_lock()` in case of
+ * the getter) is required to avoid data race (if the value is modified
+ * after the collector is put into the multi-threaded mode).
+ */
+GC_API void GC_CALL GC_set_memory_limit(GC_word);
+GC_API GC_word GC_CALL GC_get_memory_limit(void);
+
+/**
  * The maximum number of collections attempted before reporting out of
  * memory after heap expansion fails.  Initially 0.  The setter and
  * getter are unsynchronized, so `GC_call_with_alloc_lock()`

@@ -4417,6 +4417,13 @@ GC_INNER void GC_err_puts(const char *s);
 GC_EXTERN word GC_alloc_budget_percent;
 
 /*
+ * Find the memory limit of the process (the smaller one of the size of
+ * the physical memory and the cgroup limit), and log it.  Called once
+ * by `GC_init()`.  Defined in `alloc.c` file.
+ */
+GC_INNER void GC_init_memory_limit(void);
+
+/*
  * If set, then `GC_realloc` leaves a small collectable object to the
  * collector (instead of freeing it) after moving the object contents to
  * a new location.  Defined in `mallocx.c` file.
@@ -4638,6 +4645,33 @@ void GC_check_dirty(void);
 #endif
 
 GC_INNER void GC_setpagesize(void);
+
+/*
+ * Return the size of the physical memory in bytes (saturated at
+ * `GC_WORD_MAX`), or 0 if it is unknown.
+ */
+GC_INNER word GC_physical_memory_size(void);
+
+#ifdef LINUX
+/*
+ * Return the smallest memory limit of the cgroup of the process and of
+ * the cgroups above it in bytes (saturated at `GC_WORD_MAX`), or 0 if
+ * none is found.  `proc_cgroup` is the path of the list of the cgroups
+ * of the process (normally "/proc/self/cgroup"), `cgroup_fs` is the
+ * mount point of cgroup v2 (normally "/sys/fs/cgroup"), the cgroup v1
+ * memory controller is expected to be mounted at `cgroup_fs` plus
+ * "/memory".  The v1 memory controller line of the list takes precedence
+ * over the v2 line (both are present if the memory controller is
+ * attached to v1 on a system which mounts both).  The limit is read from
+ * `memory.limit_in_bytes` (v1) or `memory.max` (v2) file in the
+ * directory of the cgroup and in each directory above it up to the mount
+ * point inclusive, skipping the files which are missing or hold no
+ * number (e.g. "max").  The result is 0 also if the path of a limit file
+ * would not fit in 1 KiB.
+ */
+GC_INNER word GC_cgroup_memory_limit(const char *proc_cgroup,
+                                     const char *cgroup_fs);
+#endif
 
 #ifndef NO_ALL_INTERIOR_POINTERS
 GC_INNER void GC_initialize_offsets(void);
