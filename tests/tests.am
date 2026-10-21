@@ -105,6 +105,13 @@ check_PROGRAMS += memaligntest
 memaligntest_SOURCES = tests/memalign.c
 memaligntest_LDADD = $(test_ldadd)
 
+# Likewise, the test includes the collector source.
+TESTS += memlimittest$(EXEEXT)
+check_PROGRAMS += memlimittest
+memlimittest_SOURCES = tests/memlimit.c
+memlimittest_LDADD = $(nodist_libgc_la_OBJECTS) $(EXTRA_TEST_LIBS) \
+                     @addobjs@ $(THREADDLLIBS) $(UNWINDLIBS) $(ATOMIC_OPS_LIBS)
+
 TESTS += middletest$(EXEEXT)
 check_PROGRAMS += middletest
 middletest_SOURCES = tests/middle.c
@@ -339,6 +346,7 @@ check-without-test-driver: $(TESTS)
 	./mallocmanytest$(EXEEXT)
 	./markstackgrowthtest$(EXEEXT)
 	./memaligntest$(EXEEXT)
+	./memlimittest$(EXEEXT)
 	./middletest$(EXEEXT)
 	./realloctest$(EXEEXT)
 	./reallocfreetest$(EXEEXT)
