@@ -2838,8 +2838,14 @@ GC_unregister_my_thread_inner(GC_thread me)
    * Handle `DISABLED_GC` flag which is set by the intercepted
    * `pthread_cancel()` or `pthread_exit()`.
    */
-  if ((me->flags & DISABLED_GC) != 0)
+  if ((me->flags & DISABLED_GC) != 0) {
+    /*
+     * The flag is cleared, as the thread might be registered again
+     * (from a thread-specific data destructor) and unregistered again.
+     */
+    me->flags &= (unsigned char)~DISABLED_GC;
     GC_enable_inner();
+  }
 #    endif
   if ((me->flags & DETACHED) == 0) {
     me->flags |= FINISHED;
@@ -2897,14 +2903,15 @@ GC_unregister_my_thread(void)
        && defined(CANCEL_SAFE))                               \
       || defined(GC_HAVE_PTHREAD_EXIT)
 /*
- * Disables collection and sets the corresponding flag for the given thread.
- * Does nothing if the argument is `NULL` or the flag (`DISABLED_GC`)
- * is already set.
+ * Disables collection and sets the corresponding flag for the given thread
+ * until the thread is unregistered.  Does nothing if the argument is
+ * `NULL`, the flag (`DISABLED_GC`) is already set, or the thread is
+ * already unregistered.
  */
 static void
 disable_gc_for_pthread(GC_thread t)
 {
-  if (t != NULL && (t->flags & DISABLED_GC) == 0) {
+  if (t != NULL && (t->flags & (DISABLED_GC | FINISHED)) == 0) {
     t->flags |= DISABLED_GC;
     GC_disable_inner();
   }
