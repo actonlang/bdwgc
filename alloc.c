@@ -735,6 +735,10 @@ GC_notify_full_gc(void)
 STATIC GC_bool GC_stopped_mark(GC_stop_func stop_func);
 STATIC void GC_finish_collection(void);
 
+#if defined(GC_ASSERTIONS) && defined(THREAD_LOCAL_ALLOC)
+void GC_check_tls(void);
+#endif
+
 /*
  * Initiate a garbage collection.  Choose judiciously between partial,
  * full, and stop-world collections.  Called only if `GC_should_collect()`
@@ -1232,6 +1236,14 @@ GC_stopped_mark(GC_stop_func stop_func)
     /* TODO: Notify `GC_EVENT_MARK_ABANDON`. */
   } else {
     GC_gc_no++;
+#if defined(GC_ASSERTIONS) && defined(THREAD_LOCAL_ALLOC) \
+    && !defined(DBG_HDRS_ALL)
+    /*
+     * Check that the objects on the thread-local free lists are marked,
+     * while no thread takes objects from them.
+     */
+    GC_check_tls();
+#endif
     /* Check all debugged objects for consistency. */
     if (GC_debugging_started)
       GC_check_heap();
@@ -1368,46 +1380,33 @@ GC_set_fl_marks(ptr_t q)
 /*
  * Check that all mark bits for the free list, whose first entry is
  * `*pfreelist`, are set.  The check is skipped if `*pfreelist` points to
- * a special value.
+ * a special value.  Called with the world stopped, thus the owner thread
+ * does not change the free list (an owner in `GC_do_blocking()` is not
+ * stopped, but it does not allocate there, and it cannot return while
+ * the allocator lock is held).  The failure is reported without
+ * a formatted message, which might wait for a lock held by a stopped
+ * thread (e.g. the locale lock on macOS).
  */
 void
 GC_check_fl_marks(void **pfreelist)
 {
   /*
-   * TODO: There is a data race with `GC_FAST_MALLOC_GRANS` (which does
-   * not do atomic updates to the free-list).  The race seems to be
-   * harmless, and for now we just skip this check in case of TSan.
+   * A thread sanitizer does not see every way of stopping the world
+   * (e.g. `thread_suspend()` on macOS), and might report the walk as
+   * a data race with the stores of the owner after the world is
+   * restarted, thus the check is skipped then.
    */
-#  if defined(AO_HAVE_load_acquire_read) && !defined(THREAD_SANITIZER)
-  ptr_t list = GC_cptr_load_acquire_read((volatile ptr_t *)pfreelist);
-  /* Atomic operations are used because the world is running. */
-  ptr_t p, prev, next;
+#  ifndef THREAD_SANITIZER
+  ptr_t p = GC_cptr_load((volatile ptr_t *)pfreelist);
 
-  if (ADDR(list) <= HBLKSIZE)
+  GC_ASSERT(GC_world_stopped);
+  if (ADDR(p) <= HBLKSIZE)
     return;
-
-  prev = (ptr_t)pfreelist;
-  for (p = list; p != NULL; p = next) {
-    if (!GC_is_marked(p)) {
-      ABORT_ARG2("Unmarked local free-list entry", ": object %p on list %p",
-                 (void *)p, (void *)list);
-    }
-
-    /*
-     * While traversing the free-list, it re-reads the pointer to the
-     * current node before accepting its next pointer and bails out
-     * if the latter has changed.  That way, it will not try to follow
-     * the pointer which might be been modified after the object was
-     * returned to the client.  It might perform the mark-check on the
-     * just allocated object but that should be harmless.
-     */
-    next = GC_cptr_load_acquire_read((volatile ptr_t *)p);
-    if (GC_cptr_load((volatile ptr_t *)prev) != p)
-      break;
-    prev = p;
+  for (; p != NULL; p = (ptr_t)obj_link(p)) {
+    if (!GC_is_marked(p))
+      ABORT("Unmarked local free-list entry");
   }
 #  else
-  /* FIXME: Not implemented (just skipped). */
   (void)pfreelist;
 #  endif
 }
@@ -1506,10 +1505,6 @@ clear_all_fl_marks(void)
   return bytes;
 }
 
-#if defined(GC_ASSERTIONS) && defined(THREAD_LOCAL_ALLOC)
-void GC_check_tls(void);
-#endif
-
 GC_on_heap_resize_proc GC_on_heap_resize = 0;
 
 /* Used for logging only. */
@@ -1543,12 +1538,6 @@ GC_finish_collection(void)
 #endif
 
   GC_ASSERT(I_HOLD_LOCK());
-#if defined(GC_ASSERTIONS) && defined(THREAD_LOCAL_ALLOC) \
-    && !defined(DBG_HDRS_ALL)
-  /* Check that we marked some of our own data. */
-  GC_check_tls();
-  /* TODO: Add more checks. */
-#endif
 
 #ifndef NO_CLOCK
   if (GC_print_stats)
