@@ -3994,23 +3994,7 @@ GC_dirty_init(void)
 #    endif
 
   GC_ASSERT(I_HOLD_LOCK());
-#    ifdef COUNT_PROTECTED_REGIONS
-  GC_ASSERT(GC_page_size != 0);
-  if ((GC_signed_word)(GC_heapsize / (word)GC_page_size)
-      >= ((GC_signed_word)GC_UNMAPPED_REGIONS_SOFT_LIMIT
-          - GC_num_unmapped_regions)
-             * 2) {
-    GC_COND_LOG_PRINTF("Cannot turn on GC incremental mode"
-                       " as heap contains too many pages\n");
-    return FALSE;
-  }
-#    endif
-#    ifdef CHECK_SOFT_VDB
-  if (mprotect_vdb_disallowed) /*< check before `soft_dirty_init` */
-    return FALSE;
-  if (!soft_dirty_init())
-    ABORT("Soft-dirty bit support is missing");
-#    else
+#    ifndef CHECK_SOFT_VDB
 #      ifdef GWW_VDB
   if (GC_gww_dirty_init()) {
     GC_COND_LOG_PRINTF("Using GetWriteWatch\n");
@@ -4027,10 +4011,31 @@ GC_dirty_init(void)
     return TRUE;
   }
 #      endif
+#    endif
   if (mprotect_vdb_disallowed) {
     GC_COND_LOG_PRINTF("Client disallows mprotect-based virtual dirty bit\n");
     return FALSE;
   }
+#    ifdef COUNT_PROTECTED_REGIONS
+  /*
+   * Each region protected with `mprotect` is a mapping of its own, and
+   * there are up to one per two pages of the heap.  The implementations
+   * above protect pages without splitting the mappings, thus the limit
+   * does not apply to them.
+   */
+  GC_ASSERT(GC_page_size != 0);
+  if ((GC_signed_word)(GC_heapsize / (word)GC_page_size)
+      >= ((GC_signed_word)GC_UNMAPPED_REGIONS_SOFT_LIMIT
+          - GC_num_unmapped_regions)
+             * 2) {
+    GC_COND_LOG_PRINTF("Cannot turn on GC incremental mode"
+                       " as heap contains too many pages\n");
+    return FALSE;
+  }
+#    endif
+#    ifdef CHECK_SOFT_VDB
+  if (!soft_dirty_init())
+    ABORT("Soft-dirty bit support is missing");
 #    endif
 
   GC_VERBOSE_LOG_PRINTF(
