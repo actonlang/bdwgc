@@ -11,9 +11,11 @@
  * the main thread still holds the lock (i.e. before it is unregistered),
  * if the collection remains disabled after the thread is joined (the
  * intercepted `pthread_cancel()` disables the collection until the target
- * thread is unregistered), if a collection stops a different number of
- * threads than before the thread was created, or if the cancellation
- * request is no longer pending when `GC_unregister_my_thread()` returns.
+ * thread is unregistered, except on Linux for a thread created by
+ * `GC_pthread_create()` which is not inside `GC_do_blocking()`), if
+ * a collection stops a different number of threads than before the thread
+ * was created, or if the cancellation request is no longer pending when
+ * `GC_unregister_my_thread()` returns.
  * A thread which is never unregistered might also crash the collection
  * (the collector fails to suspend it), thus no collection is done after
  * such a failure.  The case of `GC_unregister_my_thread()` is not run if
