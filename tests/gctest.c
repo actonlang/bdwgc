@@ -1574,6 +1574,16 @@ set_stackbottom(void *cd)
   return NULL;
 }
 
+/*
+ * The object that `run_one_test()` pushes onto the mark stack.  The next
+ * non-incremental collection discards the entry before it marks, but an
+ * incremental collection or `GC_finalize_all()` may pop the entry first and
+ * scan the object.  Thus the entry is not empty: with `SMALL_CONFIG`,
+ * `GC_mark_from()` does not skip an empty entry, and one at `NULL` reads
+ * address 0.
+ */
+static void *pushed_obj;
+
 static void
 run_one_test(void)
 {
@@ -1790,7 +1800,6 @@ run_one_test(void)
     }
   }
   thr_handle_sb.gc_thread_handle = GC_get_my_stackbottom(&thr_handle_sb.sb);
-  GC_push_obj_descr(NULL, GC_DS_LENGTH);
 #ifdef GC_GCJ_SUPPORT
   GC_REGISTER_DISPLACEMENT(sizeof(struct fake_vtable *));
   GC_init_gcj_malloc_mp(0U, fake_gcj_mark_proc, GC_GCJ_MARK_DESCR_OFFSET);
@@ -1954,6 +1963,8 @@ run_one_test(void)
   GC_alloc_lock();
   GC_incr_bytes_allocd(0);
   GC_incr_bytes_freed(0);
+  /* The allocator lock protects the global mark stack. */
+  GC_push_obj_descr(&pushed_obj, sizeof(pushed_obj) | GC_DS_LENGTH);
   GC_alloc_unlock();
 
 #ifndef NO_CLOCK
