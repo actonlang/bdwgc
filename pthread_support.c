@@ -2578,6 +2578,23 @@ GC_do_blocking_inner(ptr_t data, void *context)
   UNUSED_ARG(context);
   READER_LOCK();
   me = GC_self_thread_inner();
+#  ifdef CANCEL_PENDING
+  if (UNLIKELY((me->flags & CANCEL_PENDING) != 0)) {
+    /*
+     * The thread might act on the pending cancellation request inside
+     * `fn`, thus disable collections until it is unregistered.
+     */
+    READER_UNLOCK();
+    LOCK();
+    me->flags &= (unsigned char)~CANCEL_PENDING;
+    if ((me->flags & DISABLED_GC) == 0) {
+      me->flags |= DISABLED_GC;
+      GC_disable_inner();
+    }
+    UNLOCK();
+    READER_LOCK();
+  }
+#  endif
   do_blocking_enter(&topOfStackUnset, me);
   READER_UNLOCK_RELEASE();
 
@@ -2903,31 +2920,46 @@ GC_unregister_my_thread(void)
        && defined(CANCEL_SAFE))                               \
       || defined(GC_HAVE_PTHREAD_EXIT)
 /*
- * Disables collection and sets the corresponding flag for the given thread
- * until the thread is unregistered.  Does nothing if the argument is
- * `NULL`, the flag (`DISABLED_GC`) is already set, or the thread is
- * already unregistered.
+ * Disables collection and sets the corresponding flag for the given thread,
+ * which is exiting or is the target of a cancellation request, until the
+ * thread is unregistered.  Does nothing if the argument is `NULL`, the flag
+ * (`DISABLED_GC`) is already set, or the thread is already unregistered.
+ * For a thread with `HAS_EXIT_PROC` flag, does it only if the thread is
+ * inside `GC_do_blocking()`, otherwise sets `CANCEL_PENDING` flag if
+ * `cancel` is true.
  */
 static void
-disable_gc_for_pthread(GC_thread t)
+disable_gc_for_pthread(GC_thread t, GC_bool cancel)
 {
-  if (t != NULL && (t->flags & (DISABLED_GC | FINISHED)) == 0) {
-    t->flags |= DISABLED_GC;
-    GC_disable_inner();
+  UNUSED_ARG(cancel);
+  if (NULL == t || (t->flags & (DISABLED_GC | FINISHED)) != 0)
+    return;
+#    ifdef HAS_EXIT_PROC
+  if ((t->flags & (HAS_EXIT_PROC | DO_BLOCKING)) == HAS_EXIT_PROC
+      && NULL == t->crtn->traced_stack_sect) {
+#      ifdef CANCEL_PENDING
+    if (cancel)
+      t->flags |= CANCEL_PENDING;
+#      endif
+    return;
   }
+#    endif
+  t->flags |= DISABLED_GC;
+  GC_disable_inner();
 }
 #  endif
 
 #  if !defined(GC_NO_PTHREAD_CANCEL) && defined(GC_PTHREADS)
 /*
- * We should deal with the fact that apparently on Solaris and, probably,
- * on some Linux we cannot collect while a thread is exiting, since
- * signals are not handled properly.  This currently gives rise to deadlocks.
- * The only workaround seen is to intercept `pthread_cancel()` and
- * `pthread_exit()`, and disable the collections until the thread exit
- * handler is called.  That is ugly, because we risk growing the heap
- * unnecessarily.  But it seems that we do not really have an option in that
- * the process is not in a fully functional state while a thread is exiting.
+ * On Solaris, a thread which acts on a cancellation request or calls
+ * `pthread_exit()` runs its cleanup handlers and thread-specific data
+ * destructors with all signals blocked, thus a collection cannot stop it
+ * until `GC_thread_exit_proc()` unregisters it.  The workaround is to
+ * intercept `pthread_cancel()` and `pthread_exit()`, and disable the
+ * collections until the thread is unregistered.  That is ugly, because we
+ * risk growing the heap unnecessarily.  On Linux, this is done only for
+ * the threads without `HAS_EXIT_PROC` flag, e.g. the main thread (which
+ * is never unregistered), and for a thread inside `GC_do_blocking()`.
  */
 #    define GC_wrap_pthread_cancel WRAP_FUNC(pthread_cancel)
 GC_API int
@@ -2936,7 +2968,7 @@ GC_wrap_pthread_cancel(pthread_t thread)
   INIT_REAL_SYMS();
 #    ifdef CANCEL_SAFE
   LOCK();
-  disable_gc_for_pthread(GC_lookup_by_pthread(thread));
+  disable_gc_for_pthread(GC_lookup_by_pthread(thread), TRUE);
   /* Note: if not found, then real `pthread_cancel` should return `ESRCH`. */
   UNLOCK();
 #    endif
@@ -2952,7 +2984,7 @@ GC_wrap_pthread_exit(void *retval)
 {
   INIT_REAL_SYMS();
   LOCK();
-  disable_gc_for_pthread(GC_self_thread_inner());
+  disable_gc_for_pthread(GC_self_thread_inner(), FALSE);
   UNLOCK();
   REAL_FUNC(pthread_exit)(retval);
 }
@@ -3040,6 +3072,13 @@ GC_register_my_thread(const struct GC_stack_base *sb)
 #    endif
       GC_record_stack_base(me->crtn, sb);
       me->flags &= (unsigned char)~FINISHED; /*< but not `DETACHED` */
+#    ifdef HAS_EXIT_PROC
+      /* The client unregisters the thread again. */
+      me->flags &= (unsigned char)~HAS_EXIT_PROC;
+#    endif
+#    ifdef CANCEL_PENDING
+      me->flags &= (unsigned char)~CANCEL_PENDING;
+#    endif
     } else
 #  endif
     /* else */ {
@@ -3226,6 +3265,9 @@ GC_start_rtn_prepare_thread(void *(**pstart)(void *), void **pstart_arg,
   me = GC_register_my_thread_inner(sb, self_id);
   GC_ASSERT(me != &first_thread);
   me->flags = psi->flags;
+#    ifdef HAS_EXIT_PROC
+  me->flags |= HAS_EXIT_PROC;
+#    endif
 #    ifdef GC_WIN32_THREADS
   GC_win32_cache_self_pthread(self_id);
 #    endif

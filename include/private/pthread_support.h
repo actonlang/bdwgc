@@ -240,8 +240,33 @@ struct GC_Thread_Rep {
 #  endif
 #  if (defined(GC_HAVE_PTHREAD_EXIT) || !defined(GC_NO_PTHREAD_CANCEL)) \
       && defined(GC_PTHREADS)
-  /* Collections are disabled while the thread is exiting. */
+  /*
+   * Collections are disabled while the thread is exiting (for a thread
+   * with `HAS_EXIT_PROC` flag, only if it exits from inside
+   * `GC_do_blocking()`).
+   */
 #    define DISABLED_GC 0x10
+#    ifdef LINUX
+  /*
+   * The thread is started by `GC_pthread_start()`, thus it is unregistered
+   * by `GC_thread_exit_proc()`, a cleanup handler, which runs before
+   * `glibc` and `musl` block signals in the exiting thread.  Until then the
+   * thread handles the signal which stops the world, thus collections are
+   * not disabled while the thread is exiting, unless it exits from inside
+   * `GC_do_blocking()`: that would leave its `DO_BLOCKING` flag or its
+   * stack sections stale until it is unregistered.
+   */
+#      define HAS_EXIT_PROC 0x4
+#      if !defined(GC_NO_PTHREAD_CANCEL) && defined(CANCEL_SAFE)
+  /*
+   * A cancellation request is pending for the thread (which has
+   * `HAS_EXIT_PROC` flag), and the thread was not inside `GC_do_blocking()`
+   * when the request was made.  Collections are disabled if the thread
+   * enters `GC_do_blocking()` (where it might act on the request).
+   */
+#        define CANCEL_PENDING 0x8
+#      endif
+#    endif
 #  endif
   /*
    * Thread is in the do-blocking state.  If the flag is set, the thread
