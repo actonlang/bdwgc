@@ -1013,7 +1013,6 @@ if(install_headers)
 endif(install_headers)
 
 if(BUILD_TESTING)
-    set(CTEST_ENVIRONMENT "GC_PROMPT_DISABLED=1")
     if(build_cord)
         add_executable(cordtest cord/tests/cordtest.c ${NODIST_SRC})
         target_link_libraries(cordtest PRIVATE cord gc)
@@ -1379,6 +1378,16 @@ if(BUILD_TESTING)
         )
         add_test(NAME weakmaptest COMMAND weakmaptest)
     endif(enable_disclaim)
+
+    # On Windows, make a test exit on a collector abort instead of waiting
+    # for a click on the abort message box.  The TESTS directory property
+    # needs CMake 3.12 or later.
+    get_property(ALL_TESTS DIRECTORY PROPERTY TESTS)
+    set_property(
+        TEST ${ALL_TESTS}
+        APPEND
+        PROPERTY ENVIRONMENT "GC_PROMPT_DISABLED=1"
+    )
 endif()
 
 if(enable_docs)

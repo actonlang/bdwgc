@@ -11,11 +11,6 @@ jobs:
       dll:${{ matrix.shared_libs }} ${{ matrix.cmake_options }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 6
-    env:
-      # On Windows, exit on a collector abort instead of waiting for a click
-      # on the abort message box (CTEST_ENVIRONMENT, set in CMakeLists.txt,
-      # does not reach the tests).
-      GC_PROMPT_DISABLED: "1"
 
     strategy:
       # Deliver the feedback for all matrix combinations.
