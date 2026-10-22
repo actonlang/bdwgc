@@ -296,6 +296,31 @@ GC_get_stop_func(void)
 #if defined(GC_DISABLE_INCREMENTAL) || defined(NO_CLOCK)
 #  define GC_timeout_stop_func GC_default_stop_func
 #else
+/*
+ * Whether `GC_timeout_stop_func()` returned `TRUE` at the time limit, after
+ * `timeout_stop_ms` milliseconds and `timeout_stop_ns` nanoseconds, and the
+ * attempt, for `log_timeout_stop()`, which logs it once the world is
+ * restarted: a log line written while the world is stopped may wait for
+ * a lock held by a stopped thread (e.g. the locale lock taken by `vsnprintf`
+ * on macOS).  Protected by the allocator lock.
+ */
+static GC_bool timeout_stopped = FALSE;
+static unsigned long timeout_stop_ms = 0;
+static unsigned long timeout_stop_ns = 0;
+static int timeout_stop_attempt = 0;
+
+static void
+log_timeout_stop(void)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  if (timeout_stopped) {
+    GC_COND_LOG_PRINTF(
+        "Abandoning stopped marking after %lu ms %lu ns (attempt %d)\n",
+        timeout_stop_ms, timeout_stop_ns, timeout_stop_attempt);
+    timeout_stopped = FALSE;
+  }
+}
+
 STATIC int GC_CALLBACK
 GC_timeout_stop_func(void)
 {
@@ -319,9 +344,10 @@ GC_timeout_stop_func(void)
 #  endif
   if (time_diff >= GC_time_limit
       && (time_diff > GC_time_limit || nsec_diff >= GC_time_lim_nsec)) {
-    GC_COND_LOG_PRINTF(
-        "Abandoning stopped marking after %lu ms %lu ns (attempt %d)\n",
-        time_diff, nsec_diff, GC_n_attempts);
+    timeout_stopped = TRUE;
+    timeout_stop_ms = time_diff;
+    timeout_stop_ns = nsec_diff;
+    timeout_stop_attempt = GC_n_attempts;
     return TRUE;
   }
 
@@ -1262,6 +1288,9 @@ GC_stopped_mark(GC_stop_func stop_func)
 #ifdef THREADS
   if (GC_on_collection_event)
     GC_on_collection_event(GC_EVENT_POST_START_WORLD);
+#endif
+#if !defined(GC_DISABLE_INCREMENTAL) && !defined(NO_CLOCK)
+  log_timeout_stop();
 #endif
 #ifdef PARALLEL_MARK
   if (serial_done_at != 0) {
