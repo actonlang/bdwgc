@@ -776,6 +776,43 @@ GC_register_dynamic_libraries_dl_iterate_phdr(void)
   return TRUE;
 }
 
+#        ifdef CAN_CALL_IN_DL_ITERATE_PHDR
+struct call_in_dl_iterate_phdr_s {
+  void (*fn)(void *);
+  void *arg;
+  GC_bool called;
+};
+
+STATIC int
+GC_call_in_dl_iterate_phdr_callback(struct dl_phdr_info *info, size_t size,
+                                    void *ptr)
+{
+  struct call_in_dl_iterate_phdr_s *p
+      = (struct call_in_dl_iterate_phdr_s *)ptr;
+
+  UNUSED_ARG(info);
+  UNUSED_ARG(size);
+  p->fn(p->arg);
+  p->called = TRUE;
+  return 1; /*< stop */
+}
+
+GC_INNER void
+GC_call_in_dl_iterate_phdr(void (*fn)(void *), void *arg)
+{
+  struct call_in_dl_iterate_phdr_s s;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  s.fn = fn;
+  s.arg = arg;
+  s.called = FALSE;
+  if (!GC_no_dls && !GC_register_main_static_data())
+    (void)dl_iterate_phdr(GC_call_in_dl_iterate_phdr_callback, &s);
+  if (!s.called)
+    fn(arg);
+}
+#        endif
+
 #      else /* !HAVE_DL_ITERATE_PHDR */
 #        if defined(NETBSD) || defined(OPENBSD)
 #          include <sys/exec_elf.h>
