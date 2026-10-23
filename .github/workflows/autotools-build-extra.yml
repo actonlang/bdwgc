@@ -258,6 +258,7 @@ jobs:
               -D DONT_PROTECT_PTRFREE -D GC_PREFER_MPROTECT_VDB -O3
               -fanalyzer -march=native
             c_compiler: gcc
+            make_jobs: 3
           - os: ubuntu-latest
             conf_options: --disable-threads --enable-gc-assertions
             cflags_extra: >-
@@ -279,6 +280,7 @@ jobs:
               --enable-redirect-malloc
             cflags_extra: -O3 -fanalyzer
             c_compiler: gcc
+            make_jobs: 3
           - os: macos-latest
             conf_options: >-
               --disable-throw-bad-alloc-library --enable-cplusplus
@@ -321,6 +323,7 @@ jobs:
             conf_options: --enable-cplusplus
             cflags_extra: -O3 -fanalyzer -march=native
             c_compiler: gcc
+            make_jobs: 4
           - os: ubuntu-26.04-arm
             conf_options: >-
               --enable-cplusplus --enable-dynamic-pointer-mask
@@ -573,8 +576,11 @@ jobs:
           cat include/config.h
 
       - name: Build libraries
+        # make_jobs bounds the number of compilers running at once where
+        # they would take more memory than the runner has (gcc -fanalyzer
+        # takes about 3 GiB per test which includes the collector source).
         run: >
-          make -j -C build
+          make -j${{ matrix.make_jobs }} -C build
           CFLAGS_EXTRA="${{ matrix.cflags_extra }}"
           LDFLAGS="${{ matrix.ldflags }}"
 
@@ -582,7 +588,7 @@ jobs:
         if: ${{ !matrix.skip_tests }}
         timeout-minutes: 4
         run: >
-          make -j -C build check
+          make -j${{ matrix.make_jobs }} -C build check
           CFLAGS_EXTRA="${{ matrix.cflags_extra }}"
           LDFLAGS="${{ matrix.ldflags }}"
 
