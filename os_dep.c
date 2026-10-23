@@ -4357,7 +4357,6 @@ GC_handle_protected_regions_limit(void)
 }
 #  endif /* COUNT_PROTECTED_REGIONS */
 
-#  define REGISTER_HEAP_LAZY() (void)0
 #endif /* MPROTECT_VDB */
 
 #ifdef PROC_VDB
@@ -5406,11 +5405,29 @@ GC_dirty_update_child(void)
   }
 #    endif
   /* TODO: Re-enable incremental mode in child. */
-  GC_uffdwp_registered_sects = 0;
   uffdwp_fd = -1;
   GC_incremental = FALSE;
 }
 #  endif /* CAN_HANDLE_FORK */
+
+/*
+ * Register the heap section [`start`, `start + len`) with `uffdwp_fd` in
+ * the write-protect mode.
+ */
+static void
+uffdwp_register(ptr_t start, size_t len)
+{
+  struct uffdio_register mem_reg;
+
+#  ifdef MEMORY_SANITIZER
+  BZERO(&mem_reg, sizeof(mem_reg));
+#  endif
+  mem_reg.range.start = ADDR(start);
+  mem_reg.range.len = len;
+  mem_reg.mode = UFFDIO_REGISTER_MODE_WP;
+  if (ioctl(uffdwp_fd, UFFDIO_REGISTER, &mem_reg) == -1)
+    ABORT_ON_REMAP_FAIL("UFFDIO_REGISTER", start, len);
+}
 
 #  ifdef MPROTECT_VDB
 static GC_bool
@@ -5420,6 +5437,8 @@ GC_INNER GC_bool
 GC_dirty_init(void)
 #  endif
 {
+  size_t i;
+
   GC_ASSERT(I_HOLD_LOCK());
   GC_ASSERT(GC_page_size != 0);
 #  ifdef MPROTECT_VDB
@@ -5435,6 +5454,15 @@ GC_dirty_init(void)
 #  endif
   if (!uffdwp_dirty_open_files())
     return FALSE;
+  /*
+   * Register the heap sections added so far.  `GC_add_to_heap()` registers
+   * each later one before adding it to `GC_heap_sects`, with the allocator
+   * lock held too, thus every section is registered before any of its
+   * pages is protected or unprotected.
+   */
+  for (i = 0; i < GC_n_heap_sects; i++) {
+    uffdwp_register(GC_heap_sects[i].hs_start, GC_heap_sects[i].hs_bytes);
+  }
   if (IS_UFFDWP_ASYNC()) {
     /*
      * The kernel resolves the write faults itself, thus there is no
@@ -5459,26 +5487,12 @@ GC_dirty_init(void)
   return TRUE; /*< success */
 }
 
-/* Lazily register new heap sections. */
-static void
-uffdwp_register_heap_lazy(void)
+GC_INNER void
+GC_dirty_add_heap_sect(ptr_t start, size_t len)
 {
-  size_t i;
-
-  for (i = GC_uffdwp_registered_sects; i < GC_n_heap_sects; i++) {
-    struct uffdio_register mem_reg;
-
-#  ifdef MEMORY_SANITIZER
-    BZERO(&mem_reg, sizeof(mem_reg));
-#  endif
-    mem_reg.range.start = ADDR(GC_heap_sects[i].hs_start);
-    mem_reg.range.len = GC_heap_sects[i].hs_bytes;
-    mem_reg.mode = UFFDIO_REGISTER_MODE_WP;
-    if (ioctl(uffdwp_fd, UFFDIO_REGISTER, &mem_reg) == -1)
-      ABORT_ARG2("UFFDIO_REGISTER failed", ": heap section %lu, errno= %d",
-                 (unsigned long)i, errno);
-  }
-  GC_uffdwp_registered_sects = GC_n_heap_sects;
+  GC_ASSERT(I_HOLD_LOCK());
+  if (uffdwp_fd != -1)
+    uffdwp_register(start, len);
 }
 
 #  ifdef MPROTECT_VDB
@@ -5492,19 +5506,9 @@ uffdwp_register_heap_lazy(void)
       } while (0)
 #    undef PROTECT
 #    undef UNPROTECT
-#    undef REGISTER_HEAP_LAZY
 #    define PROTECT(addr, len) UF_MP_PROTECT_INNER(addr, len, FALSE)
 #    define UNPROTECT(addr, len) UF_MP_PROTECT_INNER(addr, len, TRUE)
-#    define REGISTER_HEAP_LAZY()                                         \
-      (IS_NON_MPROTECT_VDB()                                             \
-               && UNLIKELY(GC_uffdwp_registered_sects < GC_n_heap_sects) \
-           ? uffdwp_register_heap_lazy()                                 \
-           : (void)0)
 #  else
-#    define REGISTER_HEAP_LAZY()                              \
-      (UNLIKELY(GC_uffdwp_registered_sects < GC_n_heap_sects) \
-           ? uffdwp_register_heap_lazy()                      \
-           : (void)0)
 #    define PROTECT(addr, len) uffdwp_write_protect(addr, (size_t)(len), FALSE)
 #    define UNPROTECT(addr, len) \
       uffdwp_write_protect(addr, (size_t)(len), TRUE)
@@ -5638,10 +5642,8 @@ GC_read_dirty(GC_bool output_unneeded)
             sizeof(GC_dirty_pages));
     BZERO(CAST_AWAY_VOLATILE_PVOID(GC_dirty_pages), sizeof(GC_dirty_pages));
 #  if defined(MPROTECT_VDB) || defined(UFFDWP_VDB)
-    if (!GC_manual_vdb) {
-      REGISTER_HEAP_LAZY();
+    if (!GC_manual_vdb)
       GC_protect_heap();
-    }
 #  endif
 #  ifdef UFFDWP_VDB
     if (monitor_locked)
@@ -5751,7 +5753,6 @@ GC_remove_protection(struct hblk *h, size_t nblocks, GC_bool is_ptrfree)
     return;
 #    endif
   GC_ASSERT(GC_page_size != 0);
-  REGISTER_HEAP_LAZY();
 
   {
     struct hblk *current;

@@ -1879,6 +1879,9 @@ GC_add_to_heap(struct hblk *h, size_t sz)
                 || (ADDR_LT((ptr_t)h, hs_start) && ADDR_LT(hs_end, endp))));
   }
 #endif
+#ifdef UFFDWP_VDB
+  GC_dirty_add_heap_sect((ptr_t)h, sz);
+#endif
   GC_heap_sects[GC_n_heap_sects].hs_start = (ptr_t)h;
   GC_heap_sects[GC_n_heap_sects].hs_bytes = sz;
   GC_n_heap_sects++;

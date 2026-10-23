@@ -1981,12 +1981,6 @@ struct _GC_arrays {
   int _pagemap_fd;
 #endif
 
-#ifdef UFFDWP_VDB
-  /* The number of heap sections already registered with `userfaultfd`. */
-#  define GC_uffdwp_registered_sects GC_arrays._uffdwp_registered_sects
-  size_t _uffdwp_registered_sects;
-#endif
-
 #if !defined(THREADS) && (defined(PROC_VDB) || defined(SOFT_VDB))
   /* `pid` used to compose `/proc` file names. */
 #  define GC_saved_proc_pid GC_arrays._saved_proc_pid
@@ -4217,6 +4211,16 @@ GC_INNER GC_bool GC_page_was_dirty(const struct hblk *h);
  */
 GC_INNER void GC_remove_protection(struct hblk *h, size_t nblocks,
                                    GC_bool is_ptrfree);
+
+#  ifdef UFFDWP_VDB
+/*
+ * Register the new heap section [`start`, `start + len`) with the
+ * `userfaultfd` subsystem if it is in use.  Called by `GC_add_to_heap()`
+ * with the allocator lock held, before the section is added to
+ * `GC_heap_sects`.
+ */
+GC_INNER void GC_dirty_add_heap_sect(ptr_t start, size_t len);
+#  endif
 
 #  if !defined(NO_VDB_FOR_STATIC_ROOTS) && !defined(PROC_VDB)
 /* Is VDB working for static roots? */
