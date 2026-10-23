@@ -3551,6 +3551,26 @@ GC_INNER void GC_exclude_static_roots_inner(ptr_t start, ptr_t finish);
 GC_INNER void GC_register_dynamic_libraries(void);
 #endif
 
+#if defined(GC_ENABLE_SUSPEND_THREAD) && defined(SIGNAL_BASED_STOP_WORLD) \
+    && defined(REGISTER_LIBRARIES_EARLY) && defined(DYNAMIC_LOADING)      \
+    && !defined(ANY_MSWIN) && !defined(USE_PROC_FOR_LIBRARIES)            \
+    && defined(HAVE_DL_ITERATE_PHDR) && !defined(THREAD_SANITIZER)
+/*
+ * Call `fn(arg)` from a callback of `dl_iterate_phdr()`, i.e. while
+ * holding the lock which `dl_iterate_phdr()` acquires, if any (`glibc`
+ * holds one while it calls the callback).  If the dynamic libraries are
+ * not registered (then a collection does not acquire that lock after the
+ * allocator lock either), or there is no `dl_iterate_phdr()`, then just
+ * call `fn(arg)`.  The allocator lock should be held.  Used by
+ * `GC_suspend_thread()`.  Not with ThreadSanitizer: it delays a signal
+ * to a thread inside an intercepted call (such as `dl_iterate_phdr()`)
+ * until the call returns, thus a thread which waits there for the lock
+ * would not acknowledge a signal sent from the callback.
+ */
+GC_INNER void GC_call_in_dl_iterate_phdr(void (*fn)(void *), void *arg);
+#  define CAN_CALL_IN_DL_ITERATE_PHDR
+#endif
+
 /*
  * Remove and re-register dynamic libraries if we are configured to do
  * that at each collection.

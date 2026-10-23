@@ -688,11 +688,62 @@ GC_suspend_self_inner(GC_thread me, size_t suspend_cnt)
   RESTORE_CANCEL(cancel_state);
 }
 
+/*
+ * Send the signal to suspend the given thread, and wait until the thread
+ * acknowledges it.  The thread is neither suspended, nor finished, nor
+ * in the do-blocking state, and is not the current one.  The allocator
+ * lock is held.
+ */
+static void
+suspend_thread_inner(void *arg)
+{
+  GC_thread t = (GC_thread)arg;
+  AO_t next_stop_count;
+  AO_t suspend_cnt = t->ext_suspend_cnt;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  GC_ASSERT((suspend_cnt & 1) == 0);
+  if (GC_manual_vdb) {
+    /* See the relevant comment in `GC_stop_world()`. */
+    GC_acquire_dirty_lock();
+  }
+  /*
+   * Else do not acquire the dirty lock as the write fault handler
+   * might be trying to acquire it too, and the suspend handler
+   * execution is deferred until the write fault handler completes.
+   */
+
+  next_stop_count = GC_stop_count + THREAD_RESTARTED;
+  GC_ASSERT((next_stop_count & THREAD_RESTARTED) == 0);
+  AO_store(&GC_stop_count, next_stop_count);
+
+  /* Set the flag making the change visible to the signal handler. */
+  AO_store_release(&t->ext_suspend_cnt, suspend_cnt | 1);
+
+  /* TODO: Support `GC_retry_signals` (not needed for TSan). */
+  switch (raise_signal(t, GC_sig_suspend)) {
+  /* `ESRCH` cannot happen as terminated threads are handled above. */
+  case 0:
+    break;
+  default:
+    ABORT("pthread_kill failed");
+  }
+
+  /*
+   * Wait for the thread to complete threads table lookup and
+   * `stack_ptr` assignment.
+   */
+  GC_ASSERT(GC_thr_initialized);
+  suspend_restart_barrier(1);
+  if (GC_manual_vdb)
+    GC_release_dirty_lock();
+  AO_store(&GC_stop_count, next_stop_count | THREAD_RESTARTED);
+}
+
 GC_API void GC_CALL
 GC_suspend_thread(GC_SUSPEND_THREAD_ID thread)
 {
   GC_thread t;
-  AO_t next_stop_count;
   AO_t suspend_cnt;
   IF_CANCEL(int cancel_state;)
 
@@ -740,41 +791,20 @@ GC_suspend_thread(GC_SUSPEND_THREAD_ID thread)
     GC_wait_for_reclaim();
 #      endif
 
-  if (GC_manual_vdb) {
-    /* See the relevant comment in `GC_stop_world()`. */
-    GC_acquire_dirty_lock();
-  }
+#      ifdef CAN_CALL_IN_DL_ITERATE_PHDR
   /*
-   * Else do not acquire the dirty lock as the write fault handler
-   * might be trying to acquire it too, and the suspend handler
-   * execution is deferred until the write fault handler completes.
+   * Stop the thread while holding the lock of `dl_iterate_phdr()`, thus
+   * not inside `dl_iterate_phdr()`.  Otherwise the thread might stay
+   * stopped holding that lock (e.g. the stack unwinder of `glibc` on
+   * i386 calls `dl_iterate_phdr()`).  Then a collection, which calls
+   * `dl_iterate_phdr()` with the allocator lock held before it stops the
+   * world, would wait for the lock until the thread is resumed, while
+   * `GC_resume_thread()` waits for the allocator lock.
    */
-
-  next_stop_count = GC_stop_count + THREAD_RESTARTED;
-  GC_ASSERT((next_stop_count & THREAD_RESTARTED) == 0);
-  AO_store(&GC_stop_count, next_stop_count);
-
-  /* Set the flag making the change visible to the signal handler. */
-  AO_store_release(&t->ext_suspend_cnt, suspend_cnt | 1);
-
-  /* TODO: Support `GC_retry_signals` (not needed for TSan). */
-  switch (raise_signal(t, GC_sig_suspend)) {
-  /* `ESRCH` cannot happen as terminated threads are handled above. */
-  case 0:
-    break;
-  default:
-    ABORT("pthread_kill failed");
-  }
-
-  /*
-   * Wait for the thread to complete threads table lookup and
-   * `stack_ptr` assignment.
-   */
-  GC_ASSERT(GC_thr_initialized);
-  suspend_restart_barrier(1);
-  if (GC_manual_vdb)
-    GC_release_dirty_lock();
-  AO_store(&GC_stop_count, next_stop_count | THREAD_RESTARTED);
+  GC_call_in_dl_iterate_phdr(suspend_thread_inner, t);
+#      else
+  suspend_thread_inner(t);
+#      endif
 
   RESTORE_CANCEL(cancel_state);
   UNLOCK();
