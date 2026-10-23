@@ -495,10 +495,12 @@ GC_API GC_word GC_CALL GC_get_memory_limit(void);
  * memory limit.  The allocation volume between collections is `B` percent of
  * `L`, but at most half of `C - L`, and not less than 10% of `L` because of
  * the latter bound (and it is halved in the incremental mode as the volume
- * of the budget is).  The heap target is `L` plus that volume.  If the heap
- * runs out of free blocks below the target, then the heap grows to the
- * target at once (by 10% of `L` at least), and the next shortage of blocks
- * triggers a collection.  If the heap with the requested blocks would exceed
+ * of the budget is).  The heap target is `L` plus that volume (the root set
+ * is not in the heap, thus a heap at the target has about the volume plus
+ * the size of the root set free after a collection).  If the heap runs out
+ * of free blocks below the target, then the heap grows to the target at
+ * once (by 10% of `L` at least), and the next shortage of blocks triggers
+ * a collection.  If the heap with the requested blocks would exceed
  * the target, and half of the volume (but at least 10% of `L`) has been
  * allocated since the previous collection, then a collection is triggered
  * instead of the heap growth, and the heap grows only if the collection has

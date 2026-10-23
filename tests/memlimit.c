@@ -33,10 +33,12 @@
  * the live data, at most half of the distance to the ceiling, and at
  * least 10% of the live data, and the heap target is the live data plus
  * the volume.  Allocating garbage of 6 volumes in small objects causes
- * about 6 collections (13 at most), and the heap stays below the target
- * plus a slack.  With the live data above the ceiling, garbage of 6
- * volumes in large objects of 256 KiB to 4 MiB causes 13 collections at
- * most, and the heap stays below twice the target.  With the heap above
+ * a collection after about the volume plus the roots and the stacks
+ * (which the live data counts, but which are not in the heap), 13
+ * collections at most, and the heap stays below the target plus a slack.
+ * With the live data above the ceiling, garbage of 6 volumes in large
+ * objects of 256 KiB to 4 MiB causes 13 collections at most, and the
+ * heap stays below twice the target.  With the heap above
  * the target, a request of more bytes than the free blocks hold grows
  * the heap without a collection until half of the volume, but at least
  * 10% of the live data, has been allocated since the latest collection
@@ -505,6 +507,7 @@ close_to(word a, word b)
 /* The state of the heap sizing read under the allocator lock. */
 struct sizing_s {
   word live;
+  word roots;
   word volume;
   word target;
   word heap;
@@ -517,6 +520,7 @@ read_sizing(void)
 
   LOCK();
   r.live = live_bytes();
+  r.roots = total_stack_size() + GC_root_size;
   r.volume = min_bytes_allocd();
   r.target = heap_target();
   r.heap = GC_heapsize;
@@ -566,11 +570,13 @@ check_step(word step, size_t lb, GC_bool strict, word initial_heap)
          (unsigned long)(s.target >> 10), (unsigned long)(heap >> 10), n);
   if (strict) {
     /*
-     * A collection comes when the heap runs out of free blocks, after
-     * about the volume, or more if the heap exceeds the target.
+     * A collection comes when the heap runs out of free blocks.  The
+     * target counts the roots and the stacks, which are not in the
+     * heap, thus a heap at the target holds about the volume plus them
+     * free after a collection, or more if the heap exceeds the target.
      */
     TEST_ASSERT(n <= 2 * CYCLES_PER_STEP + 1);
-    TEST_ASSERT((word)n + 1 >= churn / (s.volume + slack));
+    TEST_ASSERT((word)n + 1 >= churn / (s.volume + s.roots + slack));
     TEST_ASSERT(heap <= initial_heap || heap <= s.target + slack);
   }
 }
