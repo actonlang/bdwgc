@@ -1355,6 +1355,13 @@ if(BUILD_TESTING)
             )
             add_test(NAME threadexittest COMMAND threadexittest)
 
+            add_executable(stackunmaptest tests/stackunmap.c ${NODIST_SRC})
+            target_link_libraries(
+                stackunmaptest
+                PRIVATE gc ${THREADDLLIBS_LIST}
+            )
+            add_test(NAME stackunmaptest COMMAND stackunmaptest)
+
             add_executable(threadkeytest tests/threadkey.c ${NODIST_SRC})
             target_link_libraries(threadkeytest PRIVATE gc ${THREADDLLIBS_LIST})
             add_test(NAME threadkeytest COMMAND threadkeytest)

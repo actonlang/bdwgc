@@ -257,6 +257,11 @@ threadexittest_LDADD += $(ATOMIC_OPS_LIBS)
 endif
 threadexittest_LDADD += $(THREADDLLIBS)
 
+TESTS += stackunmaptest$(EXEEXT)
+check_PROGRAMS += stackunmaptest
+stackunmaptest_SOURCES = tests/stackunmap.c
+stackunmaptest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+
 TESTS += threadkeytest$(EXEEXT)
 check_PROGRAMS += threadkeytest
 threadkeytest_SOURCES = tests/threadkey.c
@@ -385,6 +390,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f heapsectstest$(EXEEXT) || ./heapsectstest$(EXEEXT)
 	test ! -f initfromthreadtest$(EXEEXT) || ./initfromthreadtest$(EXEEXT)
 	test ! -f markercounttest$(EXEEXT) || ./markercounttest$(EXEEXT)
+	test ! -f stackunmaptest$(EXEEXT) || ./stackunmaptest$(EXEEXT)
 	test ! -f subthreadcreatetest$(EXEEXT) || ./subthreadcreatetest$(EXEEXT)
 	test ! -f threadcanceltest$(EXEEXT) || ./threadcanceltest$(EXEEXT)
 	test ! -f threadexittest$(EXEEXT) || ./threadexittest$(EXEEXT)
