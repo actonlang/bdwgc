@@ -248,6 +248,15 @@ threadcanceltest_LDADD += $(ATOMIC_OPS_LIBS)
 endif
 threadcanceltest_LDADD += $(THREADDLLIBS)
 
+TESTS += threadexittest$(EXEEXT)
+check_PROGRAMS += threadexittest
+threadexittest_SOURCES = tests/threadexit.c
+threadexittest_LDADD = $(test_ldadd)
+if ENABLE_SHARED
+threadexittest_LDADD += $(ATOMIC_OPS_LIBS)
+endif
+threadexittest_LDADD += $(THREADDLLIBS)
+
 TESTS += threadkeytest$(EXEEXT)
 check_PROGRAMS += threadkeytest
 threadkeytest_SOURCES = tests/threadkey.c
@@ -378,6 +387,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f markercounttest$(EXEEXT) || ./markercounttest$(EXEEXT)
 	test ! -f subthreadcreatetest$(EXEEXT) || ./subthreadcreatetest$(EXEEXT)
 	test ! -f threadcanceltest$(EXEEXT) || ./threadcanceltest$(EXEEXT)
+	test ! -f threadexittest$(EXEEXT) || ./threadexittest$(EXEEXT)
 	test ! -f threadkeytest$(EXEEXT) || ./threadkeytest$(EXEEXT)
 	test ! -f threadleaktest$(EXEEXT) || ./threadleaktest$(EXEEXT)
 	test ! -f threadwarmuptest$(EXEEXT) || ./threadwarmuptest$(EXEEXT)
