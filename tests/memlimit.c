@@ -417,8 +417,16 @@ test_memory_limit(void)
 /* The allocation budget percentage of the heap sizing checks. */
 #define TEST_BUDGET_PERCENT 200
 
-/* The size of a node of the live list. */
-#define LIVE_NODE_BYTES 1024
+/*
+ * The size of a node of the live list: 1 KiB, or, with blocks of 2 KiB or
+ * less, the largest small object less the byte which the collector may
+ * add at the end (two nodes per block).  The size of the live data, as
+ * the collector counts it, is then about the heap space which the list
+ * takes.  A node of 1 KiB in a block of 1 KiB would be a large object of
+ * two blocks, of which the live data counts just over one.
+ */
+#define LIVE_NODE_BYTES \
+  (MAXOBJBYTES > 1024 ? 1024 : MAXOBJBYTES - MAX_EXTRA_BYTES)
 
 /* The size of a garbage object. */
 #define GARBAGE_BYTES 128
