@@ -2930,9 +2930,14 @@ GC_push_all_stack(void *bottom, void *top)
 {
   GC_ASSERT(I_HOLD_LOCK());
   if (GC_all_interior_pointers
-#  if defined(THREADS) && defined(MPROTECT_VDB)
-      /* TODO: Should we avoid `GC_push_all()` if using `userfaultfd`? */
-      && !GC_is_mprotect_vdb()
+#  ifdef THREADS
+      /*
+       * In the incremental mode the marking may stop, and the world be
+       * restarted, before a pushed range is scanned.  The stack of a thread
+       * which exits meanwhile may be unmapped by then, thus scan stacks
+       * at once in this mode, whatever the virtual dirty bits.
+       */
+      && !GC_incremental
 #  endif
       && ADDR_LT((ptr_t)GC_mark_stack_top,
                  (ptr_t)(GC_mark_stack_limit - INITIAL_MARK_STACK_SIZE / 8))) {

@@ -4606,9 +4606,7 @@ GC_INNER int GC_parse_version(int *pminor, const char *pverstr);
  */
 GC_INNER GC_bool GC_gww_dirty_init(void);
 #  endif
-#  if (defined(THREADS) && !defined(NEED_FIXUP_POINTER) \
-       && !defined(NO_ALL_INTERIOR_POINTERS))           \
-      || (defined(DONT_PROTECT_PTRFREE) && !defined(UFFDWP_VDB))
+#  if defined(DONT_PROTECT_PTRFREE) && !defined(UFFDWP_VDB)
 GC_INNER GC_bool GC_is_mprotect_vdb(void);
 #  endif
 #endif

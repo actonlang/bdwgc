@@ -4315,9 +4315,7 @@ GC_unprotect_all_heap(void)
 }
 #  endif
 
-#  if (defined(THREADS) && !defined(NEED_FIXUP_POINTER) \
-       && !defined(NO_ALL_INTERIOR_POINTERS))           \
-      || (defined(DONT_PROTECT_PTRFREE) && !defined(UFFDWP_VDB))
+#  if defined(DONT_PROTECT_PTRFREE) && !defined(UFFDWP_VDB)
 GC_INNER GC_bool
 GC_is_mprotect_vdb(void)
 {
