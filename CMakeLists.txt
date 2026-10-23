@@ -1361,6 +1361,17 @@ if(BUILD_TESTING)
             )
             add_test(NAME forktest COMMAND forktest)
 
+            add_executable(heapsectstest tests/heapsects.c ${NODIST_SRC})
+            target_link_libraries(
+                heapsectstest
+                PRIVATE
+                    gc
+                    gc_build_flags
+                    ${ATOMIC_OPS_LIBS_CMAKE}
+                    ${THREADDLLIBS_LIST}
+            )
+            add_test(NAME heapsectstest COMMAND heapsectstest)
+
             add_executable(threadcanceltest tests/threadcancel.c ${NODIST_SRC})
             target_link_libraries(
                 threadcanceltest

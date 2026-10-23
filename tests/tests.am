@@ -216,6 +216,15 @@ forktest_LDADD += $(ATOMIC_OPS_LIBS)
 endif
 forktest_LDADD += $(THREADDLLIBS)
 
+TESTS += heapsectstest$(EXEEXT)
+check_PROGRAMS += heapsectstest
+heapsectstest_SOURCES = tests/heapsects.c
+heapsectstest_LDADD = $(test_ldadd)
+if ENABLE_SHARED
+heapsectstest_LDADD += $(ATOMIC_OPS_LIBS)
+endif
+heapsectstest_LDADD += $(THREADDLLIBS)
+
 TESTS += initfromthreadtest$(EXEEXT)
 check_PROGRAMS += initfromthreadtest
 initfromthreadtest_SOURCES = tests/initfromthread.c
@@ -364,6 +373,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f disclaim_bench$(EXEEXT) || ./disclaim_bench$(EXEEXT)
 	test ! -f disclaimtest$(EXEEXT) || ./disclaimtest$(EXEEXT)
 	test ! -f forktest$(EXEEXT) || ./forktest$(EXEEXT)
+	test ! -f heapsectstest$(EXEEXT) || ./heapsectstest$(EXEEXT)
 	test ! -f initfromthreadtest$(EXEEXT) || ./initfromthreadtest$(EXEEXT)
 	test ! -f markercounttest$(EXEEXT) || ./markercounttest$(EXEEXT)
 	test ! -f subthreadcreatetest$(EXEEXT) || ./subthreadcreatetest$(EXEEXT)

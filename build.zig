@@ -847,6 +847,7 @@ pub fn build(b: *std.Build) void {
         addTest(b, gc, test_step, flags, "atomicopstest", "tests/atomicops.c");
         if (t.os.tag != .windows) {
             addTest(b, gc, test_step, flags, "forktest", "tests/fork.c");
+            addTest(b, gc, test_step, flags, "heapsectstest", "tests/heapsects.c");
         }
         addTest(b, gc, test_step, flags, "initfromthreadtest", "tests/initfromthread.c");
         addTest(b, gc, test_step, flags, "markercounttest", "tests/markercount.c");
