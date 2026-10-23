@@ -1348,6 +1348,13 @@ if(BUILD_TESTING)
             )
             add_test(NAME threadcanceltest COMMAND threadcanceltest)
 
+            add_executable(threadexittest tests/threadexit.c ${NODIST_SRC})
+            target_link_libraries(
+                threadexittest
+                PRIVATE gc ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+            )
+            add_test(NAME threadexittest COMMAND threadexittest)
+
             add_executable(threadkeytest tests/threadkey.c ${NODIST_SRC})
             target_link_libraries(threadkeytest PRIVATE gc ${THREADDLLIBS_LIST})
             add_test(NAME threadkeytest COMMAND threadkeytest)
