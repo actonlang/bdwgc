@@ -1330,7 +1330,7 @@ GC_init(void)
     if (str != NULL) {
       int full_freq = atoi(str);
 
-      if (full_freq > 0)
+      if (full_freq >= 0)
         GC_full_freq = full_freq;
     }
   }
