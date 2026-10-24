@@ -151,8 +151,9 @@ generational collector.  Any value, except for the given special one, disables
 parallel marker (almost fully) for now.
 
 `GC_FULL_FREQUENCY` - Sets the desired number of partial collections between
-full collections.  Matters only if `GC_incremental` is set.  Has no effect if
-the collector is built with `SMALL_CONFIG` macro defined.
+full collections; 0 makes every collection a full one.  Matters only if
+`GC_incremental` is set.  Has no effect if the collector is built with
+`SMALL_CONFIG` macro defined.
 
 `GC_FREE_SPACE_DIVISOR` - Sets `GC_free_space_divisor` to the indicated value.
 Setting it to larger values decreases space consumption and increases the
