@@ -9,6 +9,9 @@
  * the heap sections change meanwhile.  With the `userfaultfd` virtual
  * dirty bits, each section has to be registered before any of its pages
  * is protected or unprotected, otherwise the collector aborts.
+ * The test is skipped in a build without parallel marking or without
+ * thread-local allocation, where no thread of the test sweeps without the
+ * allocator lock.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -23,7 +26,8 @@
 #include <stdlib.h>
 
 #if defined(GC_PTHREADS) && !defined(GC_WIN32_PTHREADS) \
-    && defined(AO_HAVE_load) && defined(AO_HAVE_store)
+    && defined(AO_HAVE_load) && defined(AO_HAVE_store)  \
+    && defined(PARALLEL_MARK) && defined(THREAD_LOCAL_ALLOC)
 
 #  include <pthread.h>
 
@@ -50,9 +54,20 @@
 #    define N_GROWERS 2
 #  endif
 
-/* The number of the heap sections added by each grower thread. */
+/*
+ * The number of the heap sections added by each grower thread.  Where
+ * each chunk of memory which the collector gets from the system takes an
+ * entry of a table of `MAX_HEAP_SECTS` entries (`USE_PROC_FOR_LIBRARIES`,
+ * defined if `malloc` is redirected on Linux, and Windows), the growers
+ * take at most half of the entries.
+ */
 #  ifndef N_SECTIONS
-#    define N_SECTIONS 1000
+#    if (defined(ANY_MSWIN) || defined(USE_PROC_FOR_LIBRARIES)) \
+        && MAX_HEAP_SECTS < 2 * N_GROWERS * 1000
+#      define N_SECTIONS (MAX_HEAP_SECTS / (2 * N_GROWERS))
+#    else
+#      define N_SECTIONS 1000
+#    endif
 #  endif
 
 #  define SECTION_BYTES ((size_t)64 * 1024)
@@ -194,7 +209,11 @@ main(void)
 int
 main(void)
 {
+#  if !defined(PARALLEL_MARK) || !defined(THREAD_LOCAL_ALLOC)
+  printf("test skipped (no parallel marking or thread-local allocation)\n");
+#  else
   printf("test skipped\n");
+#  endif
   return 0;
 }
 
