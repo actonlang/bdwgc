@@ -33,6 +33,20 @@
  * processor yield of the waiting thread lets the main thread run.  The
  * main thread then joins the thread, makes its stack inaccessible, and
  * allocates until the mark completes.
+ *
+ * Without thread-local allocation, the allocator lock may be a spin lock,
+ * which a thread waits for by sleeping up to 17 ms between tries.  The
+ * main thread then yields the processor for 20 ms between the
+ * collections, otherwise the unregistering thread rarely finds the lock
+ * free, and the test may take minutes.  Not with ThreadSanitizer, where
+ * the lock is a mutex: there a collection of the unregistering thread
+ * then fails to stop the main thread.
+ *
+ * The test is skipped where `pthread_create()` called by the test can be
+ * the collector's wrapper (`GC_USE_DLOPEN_WRAP`, defined if `malloc` is
+ * redirected, or `GC_USE_LD_WRAP`), which registers the new thread, thus
+ * the thread cannot register itself, and with `NO_CLOCK`, where
+ * a world-stopped mark has no time limit.
  */
 
 #if defined(__linux__) && !defined(_GNU_SOURCE)
@@ -55,11 +69,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#if defined(GC_PTHREADS) && !defined(GC_WIN32_THREADS) \
-    && !defined(__EMSCRIPTEN__)
+#if defined(GC_PTHREADS) && !defined(GC_WIN32_THREADS)          \
+    && !defined(__EMSCRIPTEN__) && !defined(GC_USE_DLOPEN_WRAP) \
+    && !defined(GC_USE_LD_WRAP) && !defined(NO_CLOCK)
 #  include <pthread.h>
 #  include <sched.h>
 #  include <sys/mman.h>
+#  include <time.h>
 #  include <unistd.h>
 
 #  ifndef MAP_ANONYMOUS
@@ -98,23 +114,27 @@
       }                                                                  \
     } while (0)
 
+/* The flags of the two threads, accessed with `mutex` held while both run. */
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 static int thread_ready;
 static int thread_go;
-static volatile int thread_unregistered;
+static int thread_unregistered;
 
 /*
  * Set by the collection event handler, which runs in the collecting
- * thread holding the allocator lock: whether a world-stopped mark is in
- * progress, and whether one ended before the marking was done and the
- * marking is still not done.
+ * thread holding the allocator lock, and read with the lock held too:
+ * whether a world-stopped mark is in progress, and whether one ended
+ * before the marking was done and the marking is still not done.
  */
-static volatile int in_stopped_mark;
-static volatile int mark_unfinished;
+static int in_stopped_mark;
+static int mark_unfinished;
 
-/* Whether a mark was unfinished when the thread unregistered. */
-static volatile int unfinished_at_unregister;
+/*
+ * Whether a mark was unfinished when the thread unregistered (read by
+ * the main thread after it joins the thread).
+ */
+static int unfinished_at_unregister;
 
 static void
 on_collection_event(GC_EventType e)
@@ -138,13 +158,40 @@ on_collection_event(GC_EventType e)
   }
 }
 
+static void *GC_CALLBACK
+read_mark_unfinished(void *pvalue)
+{
+  *(int *)pvalue = mark_unfinished;
+  return NULL;
+}
+
+static int
+is_mark_unfinished(void)
+{
+  int value;
+
+  (void)GC_call_with_alloc_lock(read_mark_unfinished, &value);
+  return value;
+}
+
 static void
-wait_flag(int *flag)
+wait_flag(const int *flag)
 {
   CHECK(pthread_mutex_lock(&mutex) == 0);
   while (!*flag)
     CHECK(pthread_cond_wait(&cond, &mutex) == 0);
   CHECK(pthread_mutex_unlock(&mutex) == 0);
+}
+
+static int
+get_flag(const int *flag)
+{
+  int value;
+
+  CHECK(pthread_mutex_lock(&mutex) == 0);
+  value = *flag;
+  CHECK(pthread_mutex_unlock(&mutex) == 0);
+  return value;
 }
 
 static void
@@ -156,6 +203,33 @@ set_flag(int *flag)
   CHECK(pthread_mutex_unlock(&mutex) == 0);
 }
 
+#  if defined(__has_feature) && !defined(CPPCHECK)
+#    if __has_feature(thread_sanitizer)
+#      define TEST_THREAD_SANITIZER
+#    endif
+#  elif defined(__SANITIZE_THREAD__)
+#    define TEST_THREAD_SANITIZER
+#  endif
+
+#  if !defined(THREAD_LOCAL_ALLOC) && !defined(TEST_THREAD_SANITIZER)
+#    define YIELD_20MS
+
+/* Yield the processor for 20 ms. */
+static void
+yield_20ms(void)
+{
+  struct timespec start, now;
+
+  CHECK(clock_gettime(CLOCK_MONOTONIC, &start) == 0);
+  do {
+    sched_yield();
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+  } while ((long)(now.tv_sec - start.tv_sec) * 1000
+               + (now.tv_nsec - start.tv_nsec) / 1000000
+           < 20);
+}
+#  endif
+
 #  ifdef __linux__
 /* Run the calling thread, and the threads it creates, on one processor. */
 static void
@@ -164,6 +238,8 @@ pin_to_one_cpu(void)
   cpu_set_t set;
   int cpu;
 
+  /* MemorySanitizer does not see the system call fill the set. */
+  CPU_ZERO(&set);
   CHECK(pthread_getaffinity_np(pthread_self(), sizeof(set), &set) == 0);
   for (cpu = 0; cpu < CPU_SETSIZE; cpu++) {
     if (CPU_ISSET(cpu, &set))
@@ -187,8 +263,8 @@ fill_and_unregister(void **objs)
   set_flag(&thread_ready);
   wait_flag(&thread_go);
   CHECK(GC_unregister_my_thread() == GC_SUCCESS);
-  unfinished_at_unregister = mark_unfinished;
-  thread_unregistered = 1;
+  unfinished_at_unregister = is_mark_unfinished();
+  set_flag(&thread_unregistered);
   GC_noop1_ptr(fill[FILL_WORDS - 1]);
 }
 
@@ -212,16 +288,22 @@ thread_proc(void *arg)
   return NULL;
 }
 
-/* Allocate until `*flag` equals `value`; return whether it did. */
+/*
+ * Allocate until `is_mark_unfinished()` returns `unfinished`; return
+ * whether it did.
+ */
 static int
-allocate_until(volatile int *flag, int value)
+allocate_until(int unfinished)
 {
   size_t bytes;
   void *keep = NULL;
 
-  for (bytes = 0; bytes < MAX_WAIT_BYTES && *flag != value; bytes += 64) {
-    void **p = (void **)GC_MALLOC(64);
+  for (bytes = 0; bytes < MAX_WAIT_BYTES; bytes += 64) {
+    void **p;
 
+    if (is_mark_unfinished() == unfinished)
+      break;
+    p = (void **)GC_MALLOC(64);
     CHECK(p != NULL);
     if ((bytes & 0xfff) == 0) {
       /* A short list of live objects. */
@@ -230,13 +312,13 @@ allocate_until(volatile int *flag, int value)
     }
   }
   GC_noop1_ptr(keep);
-  return *flag == value;
+  return bytes < MAX_WAIT_BYTES;
 }
 
 int
 main(void)
 {
-  void *stacks[N_ROUNDS];
+  static void *stacks[N_ROUNDS];
   int round;
   int unfinished_rounds = 0;
   long page_size;
@@ -282,12 +364,16 @@ main(void)
     wait_flag(&thread_ready);
 
     if (GC_is_incremental_mode())
-      (void)allocate_until(&mark_unfinished, 1);
+      (void)allocate_until(1);
     set_flag(&thread_go);
-    while (!thread_unregistered) {
+    while (!get_flag(&thread_unregistered)) {
       GC_start_incremental_collection();
       /* Let the thread take the allocator lock too. */
+#  ifdef YIELD_20MS
+      yield_20ms();
+#  else
       sched_yield();
+#  endif
     }
     CHECK(pthread_join(t, NULL) == 0);
     /*
@@ -300,7 +386,7 @@ main(void)
     CHECK(mprotect(stack, STACK_BYTES, PROT_NONE) == 0);
     if (unfinished_at_unregister) {
       unfinished_rounds++;
-      (void)allocate_until(&mark_unfinished, 0);
+      (void)allocate_until(0);
     }
   }
   GC_gcollect();
@@ -317,7 +403,13 @@ main(void)
 int
 main(void)
 {
+#  if defined(GC_USE_DLOPEN_WRAP) || defined(GC_USE_LD_WRAP)
+  printf("Skipped: pthread_create() may register the thread\n");
+#  elif defined(NO_CLOCK)
+  printf("Skipped: no time limit of a world-stopped mark\n");
+#  else
   printf("Skipped: needs POSIX threads and mmap\n");
+#  endif
   return 0;
 }
 
