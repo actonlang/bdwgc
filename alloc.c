@@ -2342,13 +2342,15 @@ GC_collect_or_expand(word needed_blocks, unsigned flags, GC_bool retry)
   }
 
 #ifdef USE_MUNMAP
-  if (GC_unmap_threshold > 1) {
-    /*
-     * Return as much memory to the OS as possible before trying to
-     * get memory from it.
-     */
+  /*
+   * Return as much memory to the OS as possible before trying to get
+   * memory from it, unless an incremental collection is marking: the next
+   * step reads each range on its mark stack, and the unmapping would rely
+   * on no range lying in any free block (`GC_free` drops those that start
+   * in a large object which it frees, e.g. the old object of a `GC_realloc`).
+   */
+  if (GC_unmap_threshold > 1 && !GC_collection_in_progress())
     GC_unmap_old(0);
-  }
 #endif
   if (!GC_expand_hp_inner(blocks_to_get)
       && (fallback_blocks >= blocks_to_get || fallback_blocks == needed_blocks
