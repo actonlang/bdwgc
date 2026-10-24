@@ -30,10 +30,13 @@
  * thread then checks that the thread makes no progress while suspended,
  * calls `GC_gcollect()` and resumes the thread.  The test fails if this
  * does not complete within a time limit (60 s by default).
- * In the leak detection mode, the disappearing link and the heap growth
- * are not checked.  The test runs on Linux, where the collector
- * intercepts `pthread_exit()` and `pthread_cancel()`, and on Darwin, where
- * it does not.
+ * A thread which a collection stops is counted once, even if the
+ * collector sends the suspend signal to it again.  In the leak detection
+ * mode, the disappearing link and the heap growth are not checked, and
+ * without finalization (`GC_NO_FINALIZATION`), the disappearing link is
+ * not checked.  The test runs on Linux, where the collector intercepts
+ * `pthread_exit()` and `pthread_cancel()`, and on Darwin, where it does
+ * not.
  */
 
 #if defined(__linux__) && !defined(_GNU_SOURCE)
@@ -224,8 +227,17 @@ static volatile AO_t suspending;
 static volatile AO_t exiting_progress;
 #  endif
 
-/* The number of the threads suspended by the collector. */
-static volatile AO_t suspended_count;
+/*
+ * The threads suspended by the collector, each counted once.  The
+ * collector sends the suspend signal again to a thread which has not
+ * acknowledged it in time (or whose signal is lost on purpose with
+ * `SIMULATE_LOST_SIGNALS`), and reports each signal it sends.  Accessed
+ * with the allocator lock held, not by atomic operations: these may be
+ * emulated with a lock, which a stopped thread may hold.
+ */
+#  define MAX_SUSPENDED 16
+static void *suspended_ids[MAX_SUSPENDED];
+static unsigned suspended_count;
 
 /* The key of the thread-specific data of the exiting thread. */
 static pthread_key_t register_again_key;
@@ -239,10 +251,33 @@ static volatile AO_t unregistered;
 static void GC_CALLBACK
 on_thread_event(GC_EventType event, void *thread_id)
 {
-  (void)thread_id;
+  unsigned i;
+
   /* Called with the allocator lock held. */
-  if (GC_EVENT_THREAD_SUSPENDED == event)
-    AO_store(&suspended_count, AO_load(&suspended_count) + 1);
+  if (event != GC_EVENT_THREAD_SUSPENDED)
+    return;
+  for (i = 0; i < suspended_count; i++) {
+    if (suspended_ids[i] == thread_id)
+      return;
+  }
+  /* A collection here stops at most two threads. */
+  if (suspended_count < MAX_SUSPENDED)
+    suspended_ids[suspended_count++] = thread_id;
+}
+
+static void *GC_CALLBACK
+reset_suspended_count(void *arg)
+{
+  (void)arg;
+  suspended_count = 0;
+  return NULL;
+}
+
+static void *GC_CALLBACK
+get_suspended_count(void *pcount)
+{
+  *(unsigned *)pcount = suspended_count;
+  return NULL;
 }
 
 static void
@@ -261,9 +296,12 @@ sleep_ms(long ms)
 static unsigned
 count_stopped_threads(void)
 {
-  AO_store(&suspended_count, 0);
+  unsigned count;
+
+  (void)GC_call_with_alloc_lock(reset_suspended_count, NULL);
   GC_gcollect();
-  return (unsigned)AO_load(&suspended_count);
+  (void)GC_call_with_alloc_lock(get_suspended_count, &count);
+  return count;
 }
 
 static size_t
@@ -374,10 +412,15 @@ collect_while_suspended(pthread_t t)
   AO_store_release(&suspending, 1);
   GC_suspend_thread(t);
   TEST_ASSERT(GC_is_thread_suspended(t));
-  progress = AO_load(&exiting_progress);
+  /*
+   * The thread is suspended, maybe inside an atomic operation on the
+   * counter, which holds a lock if the operations are emulated, thus the
+   * counter is read by plain loads until the thread is resumed.
+   */
+  progress = exiting_progress;
   sleep_ms(10);
   GC_gcollect();
-  TEST_ASSERT(AO_load(&exiting_progress) == progress);
+  TEST_ASSERT(exiting_progress == progress);
   GC_resume_thread(t);
   (void)alarm(0);
 }
@@ -459,9 +502,11 @@ exiting_thread(void *arg)
   TEST_ASSERT(obj != NULL);
   obj[1] = OBJ_MAGIC;
   obj_link = GC_HIDE_POINTER(obj);
+#  ifndef GC_NO_FINALIZATION
   if (!find_leak)
     TEST_ASSERT(GC_GENERAL_REGISTER_DISAPPEARING_LINK((void **)&obj_link, obj)
                 == GC_SUCCESS);
+#  endif
   TEST_ASSERT(pthread_setspecific(register_again_key, &exit_status) == 0);
   pthread_cleanup_push(wait_in_window, obj);
   if (BY_SELF_CANCEL == c->kind)
@@ -576,7 +621,9 @@ run_exiting_thread(struct exit_case *c, unsigned stopped_before)
   TEST_ASSERT(
       status
       == (BY_EXIT == c->kind ? (void *)&exit_status : PTHREAD_CANCELED));
+#  ifndef GC_NO_FINALIZATION
   (void)GC_unregister_disappearing_link((void **)&obj_link);
+#  endif
   TEST_ASSERT(count_stopped_threads() == stopped_before);
 }
 
