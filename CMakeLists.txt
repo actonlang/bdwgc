@@ -1353,6 +1353,15 @@ if(BUILD_TESTING)
                 threadexittest
                 PRIVATE gc ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
             )
+            if(enable_cplusplus AND NOT (BORLAND OR MSVC OR WATCOM))
+                # Compiled as C++ (by `-x c++` above), the test gets
+                # `pthread_cleanup_push()` of `glibc` as an object whose
+                # destructor runs on unwinding, which needs the C++ runtime.
+                set_target_properties(
+                    threadexittest
+                    PROPERTIES LINKER_LANGUAGE CXX
+                )
+            endif()
             add_test(NAME threadexittest COMMAND threadexittest)
 
             add_executable(stackunmaptest tests/stackunmap.c ${NODIST_SRC})
