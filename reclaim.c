@@ -714,7 +714,9 @@ GC_reclaim_block(hdr *hhdr, void *walk_state)
      * And if it does, it should be looked at.
      */
     GC_ASSERT(sz != 0
-              && (GC_markers_m1 > 1 ? 3 : GC_markers_m1 + 1)
+              && (GC_markers_m1 > 1 || GC_forked_with_markers
+                      ? 3
+                      : GC_markers_m1 + 1)
                              * (HBLKSIZE / sz + 1)
                          + 16
                      >= hhdr->hb_n_marks);
