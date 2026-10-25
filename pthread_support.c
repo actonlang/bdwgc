@@ -2052,7 +2052,9 @@ fork_child_proc(void)
     /*
      * Turn off parallel marking in the child process, since we are probably
      * just going to exec, and we would have to restart mark threads.
+     * The mark counts stay those of the markers.
      */
+    GC_forked_with_markers = TRUE;
     GC_parallel = FALSE;
   }
 #      ifdef THREAD_SANITIZER

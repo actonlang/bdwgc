@@ -1441,7 +1441,7 @@ GC_clear_fl_marks(ptr_t q)
       n_marks--;
 #ifdef PARALLEL_MARK
       /* Approximate count, do not decrement to zero! */
-      if (n_marks != 0 || !GC_parallel) {
+      if (n_marks != 0 || !GC_APPROX_MARK_COUNTS()) {
         hhdr->hb_n_marks = n_marks;
       }
 #else

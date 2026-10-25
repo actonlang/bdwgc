@@ -337,7 +337,7 @@ GC_clear_mark_bit(const void *p)
      * concurrency issues, but we need to ensure that a count of zero
      * implies an empty block.
      */
-    if (n_marks != 0 || !GC_parallel)
+    if (n_marks != 0 || !GC_APPROX_MARK_COUNTS())
       hhdr->hb_n_marks = n_marks;
 #else
     hhdr->hb_n_marks = n_marks;
@@ -841,6 +841,7 @@ GC_mark_some(ptr_t cold_gc_frame)
 
 #ifdef PARALLEL_MARK
 GC_INNER GC_bool GC_parallel_mark_disabled = FALSE;
+GC_INNER GC_bool GC_forked_with_markers = FALSE;
 
 #  ifndef GC_BYTES_PER_MARKER
 #    define GC_BYTES_PER_MARKER 0

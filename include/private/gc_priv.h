@@ -5000,6 +5000,20 @@ GC_EXTERN GC_bool GC_dump_regularly;
 GC_EXTERN GC_bool GC_parallel_mark_disabled;
 
 /*
+ * Whether this is a child process forked while the parallel markers ran.
+ * It marks without them, but it keeps the mark counts they counted.
+ */
+GC_EXTERN GC_bool GC_forked_with_markers;
+
+/*
+ * Whether the mark counts of the blocks may be lower than the numbers of
+ * their set mark bits: the parallel markers increment them without
+ * synchronization.  Then a count is never decremented to zero, which
+ * means a block without marked objects.
+ */
+#  define GC_APPROX_MARK_COUNTS() (GC_parallel || GC_forked_with_markers)
+
+/*
  * The estimated bytes to scan per marker of a mark phase (see
  * `GC_set_bytes_per_marker()`).  Zero lets every parallel mark phase use
  * all the markers.  Protected by the allocator lock.
