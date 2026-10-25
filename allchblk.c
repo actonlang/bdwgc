@@ -687,6 +687,13 @@ GC_merge_unmapped(void)
 {
   size_t i;
   GC_bool merged = FALSE;
+  /*
+   * While a collection marks, nothing is unmapped: its mark stack may
+   * hold ranges of objects freed explicitly since they were pushed, in
+   * mapped free blocks, which the next step reads.  A mapped block and
+   * an unmapped one are then merged by remapping the latter.
+   */
+  GC_bool may_unmap = !GC_collection_in_progress();
 
   GC_ASSERT(I_HOLD_LOCK());
   for (i = 0; i <= N_HBLK_FLS; ++i) {
@@ -734,7 +741,7 @@ GC_merge_unmapped(void)
        */
       if (IS_MAPPED(hhdr) && !IS_MAPPED(nexthdr)) {
         /* Make both consistent, so that we can merge. */
-        if (size > next_size) {
+        if (size > next_size || !may_unmap) {
           GC_adjust_num_unmapped(next, nexthdr);
           GC_remap((ptr_t)next, next_size);
         } else {
@@ -744,7 +751,7 @@ GC_merge_unmapped(void)
           hhdr->hb_flags |= WAS_UNMAPPED;
         }
       } else if (IS_MAPPED(nexthdr) && !IS_MAPPED(hhdr)) {
-        if (size > next_size) {
+        if (size > next_size && may_unmap) {
           GC_adjust_num_unmapped(next, nexthdr);
           GC_unmap((ptr_t)next, next_size);
           GC_unmap_gap((ptr_t)h, size, (ptr_t)next, next_size);

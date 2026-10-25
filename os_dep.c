@@ -3336,6 +3336,11 @@ GC_unmap(ptr_t start, size_t bytes)
   ptr_t start_addr = GC_unmap_start(start, bytes);
   ptr_t end_addr = GC_unmap_end(start, bytes);
 
+  /*
+   * The mark stack of a collection in progress may hold ranges in free
+   * blocks (of objects freed explicitly since they were pushed).
+   */
+  GC_ASSERT(!GC_collection_in_progress());
   block_unmap_inner(start_addr, (size_t)(end_addr - start_addr));
 }
 
