@@ -100,6 +100,13 @@ on_event(GC_EventType e)
 }
 
 /*
+ * The cycles that found the scanned object next to an unmapped block, and
+ * the cycles whose marking was still in progress after the step that
+ * started it.
+ */
+static int n_set_up, n_spanned;
+
+/*
  * Run a cycle with `steps` steps before the scanned object is freed.
  * Return whether the object was freed, and the blocks merged, while the
  * collection marked.
@@ -125,6 +132,7 @@ run_cycle(int steps)
   GC_gcollect_and_unmap();
   if (GC_get_unmapped_bytes() < UNMAPPED_BYTES)
     return 0;
+  n_set_up++;
 
   starts = n_mark_starts;
   ends = n_mark_ends;
@@ -133,6 +141,8 @@ run_cycle(int steps)
     CHECK(i < MAX_START_CALLS);
     (void)GC_collect_a_little();
   }
+  if (n_mark_ends == ends)
+    n_spanned++;
   for (i = 0; n_mark_starts == starts + 1 && n_mark_ends == ends
               && NULL == GC_call_with_alloc_lock(is_marked, scanned);
        i++) {
@@ -202,6 +212,15 @@ main(void)
   for (cycle = 0; cycle < N_CYCLES || (0 == n_reached && cycle < MAX_CYCLES);
        cycle++)
     n_reached += run_cycle(cycle % N_CYCLES);
+  if (0 == n_set_up) {
+    printf("The scanned object was never next to an unmapped block,"
+           " test skipped\n");
+    return 0;
+  }
+  if (0 == n_spanned) {
+    printf("The marking never stopped at the time limit, test skipped\n");
+    return 0;
+  }
   if (0 == n_reached && MARK_STEPS) {
     fprintf(stderr, "No object was freed while marking\n");
     return 1;
