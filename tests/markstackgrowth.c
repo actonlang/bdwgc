@@ -461,10 +461,11 @@ check_wide_lists(void)
 
 /*
  * Collect from a global mark stack of `stack_size` entries, refusing the
- * first request of memory from the OS, and check the shapes; repeat until
- * the refused request has made the collector drop entries, a few times at
- * most.  A refused request of a larger ring drops nothing if the claims
- * have made room meanwhile.
+ * first request of memory from the OS, and check the shapes.  If the
+ * stack is small enough that the refused request must make the collector
+ * drop entries, then repeat until it has, a few times at most.  A refused
+ * request of a larger ring drops nothing if the claims have made room
+ * meanwhile.
  *
  * Besides the list and the graph, the collections mark twice as many
  * lists as there are markers, each long enough to fill a local mark stack
@@ -478,6 +479,14 @@ check_wide_lists(void)
 static void
 check_refused_growth(size_t stack_size)
 {
+  /*
+   * Serial marking of the list overflows the mark stack; in parallel, a
+   * copy back of half a local mark stack never has room.  Either way the
+   * refused request makes the collector drop entries.
+   */
+  GC_bool drop_due = 0 == GC_get_parallel()
+                         ? stack_size < list_len
+                         : 2 * stack_size < LOCAL_MARK_STACK_SIZE;
   size_t wide_bad = 0;
   size_t j;
   int i;
@@ -529,20 +538,13 @@ check_refused_growth(size_t stack_size)
     TEST_ASSERT(n_refused <= 1);
     /* Entries are dropped only after a refused request. */
     TEST_ASSERT(1 == n_refused || (0 == n_no_room && 0 == n_overflows));
-    if (n_no_room > 0 || n_overflows > 0)
+    if (n_no_room > 0 || n_overflows > 0 || !drop_due)
       break;
   }
   wide_lists = NULL;
   n_wide_lists = 0;
-  if (0 == GC_get_parallel() ? stack_size < list_len
-                             : 2 * stack_size < LOCAL_MARK_STACK_SIZE) {
-    /*
-     * Serial marking of the list overflows the mark stack; in parallel,
-     * a copy back of half a local mark stack never has room.  Either way
-     * the refused request makes the collector drop entries.
-     */
+  if (drop_due)
     TEST_ASSERT(n_no_room > 0 || n_overflows > 0);
-  }
 }
 #endif
 
