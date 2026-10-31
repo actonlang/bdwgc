@@ -18,10 +18,11 @@
  * with a barrier (`barrier`, `threads`), a store whose barrier runs after
  * a collection found its target on a stack (`window`), a marked object
  * freed onto a free list, whose link is no store (`free-kept`), and
- * objects the collector itself must dirty or rescan: an object initialized
- * across a collection (`stack`), an explicitly freed object which is
- * reused (`free`), an uncollectable object (`uncoll`) and an object of
- * a kind set always rescanned (`kind`).  With an argument, one case runs;
+ * objects the collector itself must dirty or rescan: objects from
+ * a thread-local free list kept over a collection (`tlfs`), an explicitly
+ * freed object which is reused (`free`), an object initialized across
+ * a collection (`stack`), an uncollectable object (`uncoll`) and an object
+ * of a kind set always rescanned (`kind`).  With an argument, one case runs;
  * the cases `lost`, `missed`, `missed-next` and `kind-unflagged` store
  * without a barrier and must be reported (as lost, as missed, as missed at
  * the next collection and as lost), after which the checker makes the
@@ -454,39 +455,65 @@ case_lost_exit(void)
 }
 
 /*
- * An object from a thread-local free list kept over a collection is
- * marked; the collector dirties its block (thus it is rescanned at the
- * next minor collection after a store without a barrier).
+ * The objects of a thread-local free list kept over a collection are
+ * marked; the collector dirties their blocks (thus they are rescanned at
+ * the next minor collection after a store without a barrier).
  */
 struct tl {
   struct young *p;
   void *pad[11];
 };
 
+static void *volatile g_obj2;
+
 static GC_ATTR_NOINLINE void
 tlfs_prepare(void)
 {
+  void *p;
+
   /* Fill the thread-local free list of the size; keep one object. */
   g_obj = GC_MALLOC(sizeof(struct tl));
   CHECK(g_obj != NULL);
+  /* Refill it, with two blocks if a refill may take several. */
+  do {
+    p = GC_MALLOC(sizeof(struct tl));
+    CHECK(p != NULL);
+  } while (HBLKPTR(p) == HBLKPTR(g_obj));
+  /*
+   * Fill a thread-local free list that the root push walks after that one,
+   * so that the stale pointers of the walk point into another block.
+   */
+  CHECK(GC_MALLOC_ATOMIC(2 * sizeof(struct tl)) != NULL);
 }
 
 static GC_ATTR_NOINLINE void
 tlfs_store(void)
 {
   struct tl *t = (struct tl *)GC_MALLOC(sizeof(struct tl));
+  struct tl *t2;
 
   CHECK(t != NULL);
   t->p = new_young(); /*< no barrier: a new object */
   g_obj = t;
+  /* The first object of the next block of the list. */
+  do {
+    t2 = (struct tl *)GC_MALLOC(sizeof(struct tl));
+    CHECK(t2 != NULL);
+  } while (HBLKPTR(t2) == HBLKPTR(t));
+  t2->p = new_young(); /*< no barrier: a new object */
+  /* Checked after the first, its target leaves the stale words instead. */
+  t2->pad[10] = new_young();
+  g_obj2 = t2;
 }
 
 static GC_ATTR_NOINLINE int
 tlfs_intact(void)
 {
   const struct tl *t = (const struct tl *)g_obj;
+  const struct tl *t2 = (const struct tl *)g_obj2;
 
-  return t->p != NULL && t->p->magic == MAGIC;
+  return t->p != NULL && t->p->magic == MAGIC
+         && (NULL == t2 || (t2->p != NULL && t2->p->magic == MAGIC));
 }
 
 static int
@@ -500,7 +527,7 @@ case_tlfs(void)
   tlfs_store();
   clear_stack();
   for (i = 0; i < 3; i++)
-    collect();
+    collect_minor();
   report("tlfs");
   if (0 == errors())
     CHECK(tlfs_intact());
@@ -881,8 +908,8 @@ struct test_case {
 };
 
 static const struct test_case cases[] = {
+  { "tlfs", case_tlfs, 1 },
   { "barrier", case_barrier, 1 },
-  { "tlfs", case_tlfs, 0 },
   { "free", case_free, 1 },
   { "free-kept", case_free_kept, 1 },
   { "stack", case_stack, 1 },
@@ -913,6 +940,11 @@ main(int argc, char **argv)
 #  endif
   }
   GC_set_manual_vdb_allowed(1);
+  /*
+   * The thread-local free lists of the `tlfs` case are refilled from the
+   * first allocation of their size.
+   */
+  GC_set_no_thread_local_warmup(1);
   GC_INIT();
   GC_enable_incremental();
   if ((GC_get_actual_vdb() & GC_VDB_MANUAL) == 0) {
