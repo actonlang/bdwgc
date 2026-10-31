@@ -1363,6 +1363,12 @@ GC_stopped_mark(GC_stop_func stop_func)
 }
 
 #if !defined(NO_FIND_LEAK) || defined(THREAD_LOCAL_ALLOC)
+/*
+ * In the manual VDB mode, also dirty the blocks of the objects: they stay
+ * marked (only the global free lists are cleared), and one allocated from
+ * the list is typically filled without a barrier, being new, so the next
+ * minor collection must rescan it.
+ */
 GC_INNER void
 GC_set_fl_marks(ptr_t q)
 {
@@ -1375,6 +1381,10 @@ GC_set_fl_marks(ptr_t q)
 
   GC_ASSERT(q != NULL);
   hhdr = HDR(h);
+#  ifndef NO_MANUAL_VDB
+  if (GC_manual_vdb)
+    GC_wbar_dirty(h);
+#  endif
 #  ifdef GC_ASSERTIONS
   q2 = (ptr_t)obj_link(q);
 #  endif
@@ -1409,6 +1419,10 @@ GC_set_fl_marks(ptr_t q)
       last_h = h;
       /* Update `hhdr`. */
       hhdr = HDR(h);
+#  ifndef NO_MANUAL_VDB
+      if (GC_manual_vdb)
+        GC_wbar_dirty(h);
+#  endif
     }
   }
 }
