@@ -4291,6 +4291,29 @@ GC_EXTERN GC_bool GC_wbar_verify;
            ? (void)0                                         \
            : GC_dirty_inner(p))
 
+/*
+ * In the manual VDB mode, dirty the `nblocks` blocks starting at the one
+ * of `p`, which the allocator hands out (a block of objects, a large
+ * object, or the block of a small object) while a collection is in
+ * progress.  A client fills a new object without a write barrier, and the
+ * marking of the collection may have marked and scanned the object before
+ * (e.g. if the client stored it into an object the marking scanned); the
+ * final mark of the collection then rescans it.  Objects handed out
+ * between collections need no such bit: they are unmarked, or (if on
+ * a thread-local free list, or freed explicitly while marked) in a block
+ * dirtied for the next read.  The allocator lock is held.
+ */
+#    define GC_WBAR_DIRTY_ALLOC(p, nblocks)                       \
+      do {                                                        \
+        if (GC_manual_vdb && GC_collection_in_progress()) {       \
+          size_t wbar_i;                                          \
+                                                                  \
+          GC_ASSERT(I_HOLD_LOCK());                               \
+          for (wbar_i = 0; wbar_i < (size_t)(nblocks); wbar_i++)  \
+            GC_wbar_dirty((ptr_t)HBLKPTR(p) + wbar_i * HBLKSIZE); \
+        }                                                         \
+      } while (0)
+
 /* Parse the environment variable.  Called by `GC_init()`. */
 GC_INNER void GC_wbar_init(void);
 

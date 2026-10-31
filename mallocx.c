@@ -499,6 +499,9 @@ GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
         GC_ASSERT(hhdr->hb_sz == lb_adjusted);
         hhdr->hb_last_reclaimed = (unsigned short)GC_gc_no;
         taken[n] = hhdr;
+#ifndef NO_MANUAL_VDB
+        GC_WBAR_DIRTY_ALLOC(hhdr->hb_block, 1);
+#endif
       }
       GC_ASSERT(n > 0);
 #ifdef PARALLEL_MARK
@@ -591,6 +594,9 @@ GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
     *opp = NULL;
     my_bytes_allocd = 0;
     for (p = op; p != NULL; p = obj_link(p)) {
+#ifndef NO_MANUAL_VDB
+      GC_WBAR_DIRTY_ALLOC(p, 1);
+#endif
       my_bytes_allocd += lb_adjusted;
       if ((word)my_bytes_allocd >= HBLKSIZE) {
         *opp = obj_link(p);
@@ -623,6 +629,9 @@ GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
           break;
         if (IS_UNCOLLECTABLE(kind))
           GC_set_hdr_marks(HDR(h));
+#ifndef NO_MANUAL_VDB
+        GC_WBAR_DIRTY_ALLOC(h, 1);
+#endif
         GC_bytes_allocd += HBLKSIZE - (HBLKSIZE % lb_adjusted);
         hbs[n] = h;
       }
