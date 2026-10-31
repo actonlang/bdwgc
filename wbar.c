@@ -97,6 +97,16 @@ GC_wbar_init(void)
   }
 }
 
+GC_API volatile GC_word *GC_CALL
+GC_get_dirty_bits(unsigned *log_block_size, unsigned *log_entries)
+{
+  if (log_block_size != NULL)
+    *log_block_size = LOG_HBLKSIZE;
+  if (log_entries != NULL)
+    *log_entries = LOG_PHT_ENTRIES;
+  return (volatile GC_word *)GC_dirty_pages;
+}
+
 GC_API void GC_CALL
 GC_set_kind_always_rescanned(int kind, int value)
 {
@@ -595,6 +605,14 @@ GC_wbar_after_start_world(GC_bool completed)
 }
 
 #else /* NO_MANUAL_VDB */
+
+GC_API volatile GC_word *GC_CALL
+GC_get_dirty_bits(unsigned *log_block_size, unsigned *log_entries)
+{
+  UNUSED_ARG(log_block_size);
+  UNUSED_ARG(log_entries);
+  return NULL;
+}
 
 GC_API void GC_CALL
 GC_set_kind_always_rescanned(int kind, int value)
