@@ -1205,6 +1205,23 @@ if(BUILD_TESTING)
     add_test(NAME reallocfreetest COMMAND reallocfreetest)
 
     # Likewise, the test includes the collector source.
+    add_executable(rescuetest tests/rescue.c ${NODIST_SRC})
+    if(MSVC)
+        target_sources(rescuetest PRIVATE extra/msvc_dbg.c)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+        target_sources(rescuetest PRIVATE sparc_mach_dep.S)
+    endif()
+    target_link_libraries(
+        rescuetest
+        PRIVATE ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+    )
+    if(enable_cplusplus AND NOT (BORLAND OR MSVC OR WATCOM))
+        set_target_properties(rescuetest PROPERTIES LINKER_LANGUAGE CXX)
+    endif()
+    add_test(NAME rescuetest COMMAND rescuetest)
+
+    # Likewise, the test includes the collector source.
     add_executable(serialgrowthtest tests/serialgrowth.c ${NODIST_SRC})
     if(MSVC)
         target_sources(serialgrowthtest PRIVATE extra/msvc_dbg.c)
