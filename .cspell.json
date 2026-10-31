@@ -108,6 +108,7 @@
     "execinfo",
     "fairshare",
     "FALLTHRU",
+    "FANOUT",
     "FARPROC",
     "feenableexcept",
     "fegetexcept",
