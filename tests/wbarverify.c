@@ -80,6 +80,21 @@ static void *volatile g_young;
 static void *volatile g_young_last;
 static void *volatile g_obj;
 
+/* The table of `GC_get_dirty_bits()` and its sizes. */
+static volatile GC_word *g_dirty_bits;
+static unsigned g_log_block_size, g_log_entries;
+
+/* The word of the dirty bits for the block of `p`, and the bit in it. */
+static volatile GC_word *
+dirty_word(const void *p, GC_word *pm)
+{
+  GC_word i = ((GC_word)(GC_uintptr_t)p >> g_log_block_size)
+              & (((GC_word)1 << g_log_entries) - 1);
+
+  *pm = (GC_word)1 << (i % (8 * sizeof(GC_word)));
+  return g_dirty_bits + i / (8 * sizeof(GC_word));
+}
+
 static GC_word
 gc_no(void)
 {
@@ -257,9 +272,10 @@ setup_old(void)
 static void
 clean_block(const void *p)
 {
-  size_t i = PHT_HASH(p);
+  GC_word m;
+  volatile GC_word *w = dirty_word(p, &m);
 
-  GC_dirty_pages[divWORDSZ(i)] &= ~((word)1 << modWORDSZ(i));
+  *w &= ~m;
 }
 
 static int
@@ -779,9 +795,8 @@ static volatile int g_stop;
 GC_INLINE void
 inline_barrier(const void *slot)
 {
-  size_t i = PHT_HASH(slot);
-  volatile word *w = (volatile word *)&GC_dirty_pages[divWORDSZ(i)];
-  word m = (word)1 << modWORDSZ(i);
+  GC_word m;
+  volatile GC_word *w = dirty_word(slot, &m);
 
   if ((*w & m) == 0)
     (void)__atomic_fetch_or(w, m, __ATOMIC_RELAXED);
@@ -951,6 +966,11 @@ main(int argc, char **argv)
     printf("The manual VDB mode is unavailable, test skipped\n");
     return 0;
   }
+  g_dirty_bits = GC_get_dirty_bits(&g_log_block_size, &g_log_entries);
+  CHECK(g_dirty_bits != NULL);
+  CHECK(g_dirty_bits == (volatile GC_word *)GC_dirty_pages);
+  CHECK(g_log_block_size == LOG_HBLKSIZE);
+  CHECK(g_log_entries == LOG_PHT_ENTRIES);
   GC_set_full_freq(100000);
   /* The checker turns itself off under a time limit. */
   GC_set_time_limit(GC_TIME_UNLIMITED);
