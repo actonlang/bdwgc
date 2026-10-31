@@ -1361,6 +1361,10 @@ if(BUILD_TESTING)
         target_link_libraries(markercounttest PRIVATE gc ${THREADDLLIBS_LIST})
         add_test(NAME markercounttest COMMAND markercounttest)
 
+        add_executable(markslicestest tests/markslices.c ${NODIST_SRC})
+        target_link_libraries(markslicestest PRIVATE gc ${THREADDLLIBS_LIST})
+        add_test(NAME markslicestest COMMAND markslicestest)
+
         add_executable(wbarverifytest tests/wbarverify.c ${NODIST_SRC})
         target_link_libraries(wbarverifytest PRIVATE gc ${THREADDLLIBS_LIST})
         add_test(NAME wbarverifytest COMMAND wbarverifytest)

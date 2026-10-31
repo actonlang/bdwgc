@@ -883,6 +883,15 @@ pub fn build(b: *std.Build) void {
         }
         addTest(b, gc, test_step, flags, "initfromthreadtest", "tests/initfromthread.c");
         addTest(b, gc, test_step, flags, "markercounttest", "tests/markercount.c");
+        // Every run of `markslicestest` gets `GC_ENABLE_INCREMENTAL` and
+        // `GC_PAUSE_TIME_TARGET` from the environment, which the test sets
+        // itself too (see `wbarverifytest` below).
+        addTestExt(b, gc, test_step, flags, "markslicestest", "tests/markslices.c", .{
+            .env = &.{
+                .{ .name = "GC_ENABLE_INCREMENTAL", .value = "1" },
+                .{ .name = "GC_PAUSE_TIME_TARGET", .value = "0.1" },
+            },
+        });
         // The cases of `wbarverifytest` named here store without a barrier;
         // the checker must report each store with its label and exit with
         // status 70, also when `exit()` is called while the report is
