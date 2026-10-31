@@ -1418,6 +1418,20 @@ GC_API void GC_CALL GC_set_manual_vdb_allowed(int);
 GC_API int GC_CALL GC_get_manual_vdb_allowed(void);
 
 /**
+ * In the manual VDB mode, let every minor collection rescan the marked
+ * objects of the blocks of the given `kind` (if `value` is nonzero), as
+ * if the blocks were always dirty.  This is meant for objects written by
+ * code which does not call `GC_end_stubborn_change()` (e.g. a third-party
+ * library).  The objects of the uncollectable kinds are always rescanned
+ * in the manual VDB mode.  `kind` should be one created by `GC_new_kind()`
+ * (its objects are not allocated from the thread-local free lists), and
+ * less than the number of bits in `GC_word`.  Has no effect in the other
+ * modes.
+ */
+GC_API void GC_CALL GC_set_kind_always_rescanned(int /* `kind` */,
+                                                 int /* `value` */);
+
+/**
  * The write-barrier checker of the manual VDB mode (enabled by
  * `GC_WBAR_VERIFY` environment variable) reports the pointer stores that
  * no barrier recorded, and the process exits with status 70 after

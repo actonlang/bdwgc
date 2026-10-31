@@ -4218,13 +4218,24 @@ GC_INNER GC_bool GC_page_was_dirty(const struct hblk *h);
 
 /*
  * Will a minor collection rescan the marked objects of block `h`?  That
- * is, is any page of it dirty?  Shared by `GC_push_next_marked_dirty()`
- * and the write-barrier checker.
+ * is, is any page of it dirty, or is it always rescanned (see below)?
+ * Shared by `GC_push_next_marked_dirty()` and the write-barrier checker.
  */
 GC_INNER GC_bool GC_block_was_dirty(const struct hblk *h, const hdr *hhdr);
 
 #  ifndef NO_MANUAL_VDB
-/* Write-barrier support for the manual VDB mode (`wbar.c` file). */
+/*
+ * Write-barrier support for the manual VDB mode (`wbar.c` file).
+ * In the manual VDB mode, a minor collection rescans every block of an
+ * uncollectable kind or of a kind set by `GC_set_kind_always_rescanned()`,
+ * whether or not it is dirty: uncollectable objects are marked from birth,
+ * and a client fills a new object without a write barrier.
+ */
+GC_EXTERN word GC_wbar_always_kinds;
+#    define GC_wbar_always_rescanned(hhdr)       \
+      (GC_manual_vdb                             \
+       && (IS_UNCOLLECTABLE((hhdr)->hb_obj_kind) \
+           || ((GC_wbar_always_kinds >> (hhdr)->hb_obj_kind) & 1) != 0))
 
 /* `GC_WBAR_VERIFY`: run the write-barrier checker at minor collections. */
 GC_EXTERN GC_bool GC_wbar_verify;
