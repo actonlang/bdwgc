@@ -15,20 +15,18 @@
  * The write-barrier checker of the manual VDB mode (`GC_WBAR_VERIFY`) and
  * the collector's own dirtying in that mode.  Run without arguments, the
  * cases marked clean below run, each of which must report no error: stores
- * with a barrier (`barrier`, `threads`), an object initialized across
- * a collection, which the collector itself must dirty (`stack`), a store
- * whose barrier runs after a collection found its target on a stack
- * (`window`), and a marked object freed onto a free list, whose link is
- * no store (`free-kept`).  The cases `tlfs` (an object from a thread-local
- * free list kept over a collection), `free` (an explicitly freed object
- * which is reused) and `uncoll` (an uncollectable object) need the
- * collector to dirty those objects and are not marked clean.  With an
- * argument, one case runs; the cases `lost`, `missed` and `missed-next`
- * store without a barrier and must be reported (as lost, as missed and as
- * missed at the next collection), after which the checker makes the
- * process exit with status 70.  So must the case `lost-exit`, in which
- * `exit()` is called while the report is printed.  Skipped unless the
- * manual VDB mode is built, and if `NO_INCREMENTAL` is defined.
+ * with a barrier (`barrier`, `threads`), a store whose barrier runs after
+ * a collection found its target on a stack (`window`), a marked object
+ * freed onto a free list, whose link is no store (`free-kept`), and
+ * objects the collector itself must dirty: an object initialized across
+ * a collection (`stack`) and an explicitly freed object which is reused
+ * (`free`).  With an argument, one case runs; the cases `lost`, `missed`
+ * and `missed-next` store without a barrier and must be reported (as
+ * lost, as missed and as missed at the next collection), after which the
+ * checker makes the process exit with status 70.  So must the case
+ * `lost-exit`, in which `exit()` is called while the report is printed.
+ * Skipped unless the manual VDB mode is built, and if `NO_INCREMENTAL` is
+ * defined.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -523,7 +521,9 @@ free_reuse(void)
   struct tl *b;
 
   g_obj = NULL;
-  GC_FREE(a);
+  /* Only the free may dirty its block for the next collection. */
+  clean_block(a);
+  GC_free(a);
   b = (struct tl *)GC_generic_malloc(200, NORMAL);
   CHECK(b != NULL);
   b->p = new_young(); /*< no barrier: a new object */
@@ -544,7 +544,7 @@ case_free(void)
   reused = free_reuse();
   clear_stack();
   for (i = 0; i < 3; i++)
-    collect();
+    collect_minor();
   report("free");
   if (0 == errors())
     CHECK(tlfs_intact());
@@ -574,7 +574,7 @@ free_kept_free(void)
   /* Fill the free list of the size, which the collections emptied. */
   CHECK(GC_generic_malloc(FREE_KEPT_SZ, NORMAL) != NULL);
   g_obj = NULL;
-  GC_FREE(a);
+  GC_free(a);
   CHECK(obj_link(a) != NULL);
   clean_block(a);
 }
@@ -816,7 +816,7 @@ struct test_case {
 static const struct test_case cases[] = {
   { "barrier", case_barrier, 1 },
   { "tlfs", case_tlfs, 0 },
-  { "free", case_free, 0 },
+  { "free", case_free, 1 },
   { "free-kept", case_free_kept, 1 },
   { "stack", case_stack, 1 },
   { "window", case_window, 1 },
