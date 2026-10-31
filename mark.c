@@ -3724,6 +3724,10 @@ GC_block_was_dirty(const struct hblk *h, const hdr *hhdr)
   size_t sz;
   ptr_t p;
 
+#  ifndef NO_MANUAL_VDB
+  if (GC_wbar_always_rescanned(hhdr))
+    return TRUE;
+#  endif
 #  ifdef AO_HAVE_load
   /* Atomic access is used to avoid racing with `GC_realloc`. */
   sz = AO_load((volatile AO_t *)&hhdr->hb_sz);

@@ -18,15 +18,16 @@
  * with a barrier (`barrier`, `threads`), a store whose barrier runs after
  * a collection found its target on a stack (`window`), a marked object
  * freed onto a free list, whose link is no store (`free-kept`), and
- * objects the collector itself must dirty: an object initialized across
- * a collection (`stack`) and an explicitly freed object which is reused
- * (`free`).  With an argument, one case runs; the cases `lost`, `missed`
- * and `missed-next` store without a barrier and must be reported (as
- * lost, as missed and as missed at the next collection), after which the
- * checker makes the process exit with status 70.  So must the case
- * `lost-exit`, in which `exit()` is called while the report is printed.
- * Skipped unless the manual VDB mode is built, and if `NO_INCREMENTAL` is
- * defined.
+ * objects the collector itself must dirty or rescan: an object initialized
+ * across a collection (`stack`), an explicitly freed object which is
+ * reused (`free`), an uncollectable object (`uncoll`) and an object of
+ * a kind set always rescanned (`kind`).  With an argument, one case runs;
+ * the cases `lost`, `missed`, `missed-next` and `kind-unflagged` store
+ * without a barrier and must be reported (as lost, as missed, as missed at
+ * the next collection and as lost), after which the checker makes the
+ * process exit with status 70.  So must the case `lost-exit`, in which
+ * `exit()` is called while the report is printed.  Skipped unless the
+ * manual VDB mode is built, and if `NO_INCREMENTAL` is defined.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -640,6 +641,8 @@ uncoll_store(void)
 {
   struct tl *t = (struct tl *)GC_REVEAL_POINTER(g_uncoll);
 
+  /* Only its kind may make the next collection rescan it. */
+  clean_block(t);
   t->p = new_young(); /*< no barrier */
 }
 
@@ -663,11 +666,75 @@ case_uncoll(void)
   uncoll_store();
   clear_stack();
   for (i = 0; i < 3; i++)
-    collect();
+    collect_minor();
   report("uncoll");
   if (0 == errors())
     CHECK(uncoll_intact());
   return errors() == 0;
+}
+
+/*
+ * An old object of a kind of its own, written without a barrier once its
+ * block is clean: no error if the kind is set always rescanned (`kind`),
+ * else it must be reported as lost (`kind-unflagged`).  The kind is
+ * scanned in full and has no thread-local free lists.
+ */
+static int g_kind = -1;
+
+static GC_ATTR_NOINLINE void
+make_old_of_kind(void)
+{
+  g_old = GC_generic_malloc(sizeof(struct old), g_kind);
+  CHECK(g_old != NULL);
+}
+
+static void
+setup_old_of_kind(int always)
+{
+  if (g_kind < 0) {
+    g_kind = (int)GC_new_kind(GC_new_free_list(), 0 | GC_DS_LENGTH, 1, 1);
+    /* The setting is turned on first, so that `kind-unflagged` clears it. */
+    GC_set_kind_always_rescanned(g_kind, 1);
+    GC_set_kind_always_rescanned(g_kind, always);
+  }
+  make_old_of_kind();
+  clear_stack();
+  collect();
+  collect();
+}
+
+static int
+case_kind(void)
+{
+  int i;
+
+  setup_old_of_kind(1);
+  clean_block(g_old);
+  store_young(0, 0);
+  clear_stack();
+  for (i = 0; i < 3; i++)
+    collect_minor();
+  report("kind");
+  if (0 == errors())
+    CHECK(old_intact());
+  return errors() == 0;
+}
+
+static int
+case_kind_unflagged(void)
+{
+  int round;
+
+  for (round = 0; round < N_ROUNDS; round++) {
+    setup_old_of_kind(0);
+    clean_block(g_old);
+    store_young(0, 0);
+    clear_stack();
+    collect_minor();
+    drop_old();
+  }
+  report("kind-unflagged");
+  return 0;
 }
 
 /*
@@ -820,8 +887,10 @@ static const struct test_case cases[] = {
   { "free-kept", case_free_kept, 1 },
   { "stack", case_stack, 1 },
   { "window", case_window, 1 },
-  { "uncoll", case_uncoll, 0 },
+  { "uncoll", case_uncoll, 1 },
   { "threads", case_threads, 1 },
+  { "kind", case_kind, 1 },
+  { "kind-unflagged", case_kind_unflagged, 0 },
   { "lost", case_lost, 0 },
   { "missed", case_missed, 0 },
   { "missed-next", case_missed_next, 0 },
