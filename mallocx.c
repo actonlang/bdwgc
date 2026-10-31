@@ -419,12 +419,18 @@ GC_generic_malloc_many(size_t lb_adjusted, int kind, void **result)
   GC_ASSERT(lb_adjusted != 0 && (lb_adjusted & (GC_GRANULE_BYTES - 1)) == 0);
   GC_ASSERT(kind < MAXOBJKINDS);
   ok = &GC_obj_kinds[kind];
-  /* Currently a single object is always allocated if manual VDB. */
   /*
-   * TODO: `GC_dirty` should be called for each linked object (but the
-   * last one) to support multiple objects allocation.
+   * Multiple objects are allocated in the manual VDB mode too, unless
+   * there is a time limit.  Their links need no `GC_dirty` call as long as
+   * the marking is done with the world stopped (there is no time limit
+   * and no client stop function): the objects are unmarked (or, if freed
+   * explicitly while marked, in a dirty block), the free lists are
+   * refilled only when they are empty, and a collection marks the
+   * thread-local free lists directly.  Otherwise, `GC_dirty` would be
+   * needed for each linked object (but the last one).
    */
-  if (UNLIKELY(lb_adjusted > MAXOBJBYTES) || GC_manual_vdb
+  if (UNLIKELY(lb_adjusted > MAXOBJBYTES)
+      || (GC_manual_vdb && GC_time_limit != GC_TIME_UNLIMITED)
       || IS_INDIR_PER_OBJ_DESCR(ok->ok_descriptor)) {
     op = GC_generic_malloc_aligned(lb_adjusted - EXTRA_BYTES, kind,
                                    0 /* `flags` */, 0 /* `align_m1` */);

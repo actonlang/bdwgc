@@ -77,7 +77,7 @@ checked(void *p)
  * next allocations from it are not counted), while a global allocation
  * counts the allocated object.  The collections should be disabled.
  * Skipped in the manual VDB mode, as a thread-local free list is refilled
- * by a single object at a time in that case.
+ * by a single object at a time there under a time limit.
  */
 static void
 check_first_allocations(int lg, int expect_warmup)
