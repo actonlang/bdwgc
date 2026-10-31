@@ -145,6 +145,9 @@ GC_core_gcj_malloc(size_t lb, const void *vtable_ptr, unsigned flags)
   if (SMALL_OBJ(lb)
       && (op = GC_gcjobjfreelist[lg = GC_size_map[lb]], LIKELY(op != NULL))) {
     GC_gcjobjfreelist[lg] = (ptr_t)obj_link(op);
+#  ifndef NO_MANUAL_VDB
+    GC_WBAR_DIRTY_ALLOC(op, 1);
+#  endif
 #  if GC_GCJ_MARK_DESCR_OFFSET > GC_SIZEOF_PTR
     GC_set_valid_ds_mark_obj(op);
 #  endif
