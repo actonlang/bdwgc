@@ -809,11 +809,13 @@ pub fn build(b: *std.Build) void {
         .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
     });
     addTest(b, gc, test_step, flags, "finalizemarktest", "tests/finalizemark.c");
-    // Likewise, `fulllivetest` includes the collector source.
+    // Likewise, `fulllivetest` includes the collector source.  It runs
+    // once more with `GC_GEN_FULL_LIVE_PCT` set.
     addTestExt(b, gc, test_step, flags, "fulllivetest", "tests/fulllive.c", .{
         .link_gc = false,
         .filename2 = if (t.abi == .msvc) "extra/msvc_dbg.c" else null,
         .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
+        .env_runs = &.{.{ .name = "GC_GEN_FULL_LIVE_PCT", .value = "30" }},
     });
     addTest(b, gc, test_step, flags, "heapgrowthtest", "tests/heapgrowth.c");
     addTest(b, gc, test_step, flags, "heaplimittest", "tests/heaplimit.c");
@@ -943,6 +945,12 @@ const FailingRun = struct {
     stderr_match: []const u8,
 };
 
+// A run of a test with an environment variable set.
+const EnvRun = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
 fn addTestExt(b: *std.Build, gc: *std.Build.Step.Compile, test_step: *std.Build.Step, flags: std.ArrayList([]const u8), testname: []const u8, filename: []const u8, ext_args: struct {
     link_gc: bool = true,
     filename2: ?[]const u8 = null,
@@ -951,6 +959,7 @@ fn addTestExt(b: *std.Build, gc: *std.Build.Step.Compile, test_step: *std.Build.
     sysLibName: ?[]const u8 = null,
     sysLibName2: ?[]const u8 = null,
     failing_runs: []const FailingRun = &.{},
+    env_runs: []const EnvRun = &.{},
 }) void {
     const test_exe = b.addExecutable(.{
         .name = testname,
@@ -1000,6 +1009,12 @@ fn addTestExt(b: *std.Build, gc: *std.Build.Step.Compile, test_step: *std.Build.
         // Run it every time, like the other tests.
         run_failing.has_side_effects = true;
         test_step.dependOn(&run_failing.step);
+    }
+    for (ext_args.env_runs) |e| {
+        const run_env = b.addRunArtifact(test_exe);
+        run_env.setEnvironmentVariable("GC_PROMPT_DISABLED", "1");
+        run_env.setEnvironmentVariable(e.name, e.value);
+        test_step.dependOn(&run_env.step);
     }
 }
 

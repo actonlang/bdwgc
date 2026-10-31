@@ -575,6 +575,12 @@ main(void)
   /* Handle `fork()` either by at-fork handlers or manually. */
   GC_set_handle_fork(-1);
 #  endif
+  /*
+   * No partial collection makes the next one full by the growth of the
+   * bytes in use since the last full collection (`GC_INIT()` reads the
+   * percentage, a negative one turns this off).
+   */
+  (void)setenv("GC_GEN_FULL_LIVE_PCT", "-1", 1);
   GC_INIT();
   page_size = (GC_uintptr_t)sysconf(_SC_PAGESIZE);
   if (GC_get_find_leak()) {

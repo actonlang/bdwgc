@@ -150,6 +150,12 @@ unlimited, and the incremental collector will behave completely like a simple
 generational collector.  Any value, except for the given special one, disables
 parallel marker (almost fully) for now.
 
+`GC_GEN_FULL_LIVE_PCT` - In the incremental mode, makes the next collection
+a full one when, after a minor collection, the bytes in use exceed the ones
+after the latest full collection by more than this percentage (a minor
+collection keeps the dead old objects marked).  The default is 50.  A negative
+value disables this.
+
 `GC_WBAR_VERIFY` - In the manual VDB mode, checks at every minor collection
 that no marked object in a block the collection does not rescan points to an
 unmarked object, i.e. that the client's write barrier recorded every pointer
