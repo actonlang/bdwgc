@@ -111,6 +111,9 @@ GC_alloc_large(size_t lb_adjusted, int kind, unsigned flags, size_t align_m1)
   /* FIXME: Do we need some way to reset `GC_max_large_allocd_bytes`? */
   result = h->hb_body;
   GC_ASSERT((ADDR(result) & align_m1) == 0);
+#ifndef NO_MANUAL_VDB
+  GC_WBAR_DIRTY_ALLOC(result, OBJ_SZ_TO_BLOCKS(lb_adjusted));
+#endif
   return result;
 }
 
@@ -235,6 +238,9 @@ GC_generic_malloc_inner_small(size_t lb, int kind)
   }
   *opp = obj_link(op);
   obj_link(op) = NULL;
+#ifndef NO_MANUAL_VDB
+  GC_WBAR_DIRTY_ALLOC(op, 1);
+#endif
   if (IS_INDIR_PER_OBJ_DESCR(ok->ok_descriptor))
     GC_set_valid_ds_mark_obj(op);
   GC_bytes_allocd += GRANULES_TO_BYTES((word)lg);
@@ -404,8 +410,12 @@ GC_malloc_kind_aligned_global(size_t lb, int kind, size_t align_m1)
                 || (ADDR(obj_link(op)) < GC_greatest_real_heap_addr
                     && GC_least_real_heap_addr < ADDR(obj_link(op))));
       *opp = obj_link(op);
-      if (kind != PTRFREE)
+      if (kind != PTRFREE) {
         obj_link(op) = NULL;
+#ifndef NO_MANUAL_VDB
+        GC_WBAR_DIRTY_ALLOC(op, 1);
+#endif
+      }
       if (IS_INDIR_PER_OBJ_DESCR(ok->ok_descriptor))
         GC_set_valid_ds_mark_obj(op);
       GC_bytes_allocd += GRANULES_TO_BYTES((word)lg);
