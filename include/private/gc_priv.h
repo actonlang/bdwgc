@@ -4259,6 +4259,56 @@ GC_INNER void GC_read_dirty(GC_bool output_unneeded);
 GC_INNER GC_bool GC_page_was_dirty(const struct hblk *h);
 
 /*
+ * Will a minor collection rescan the marked objects of block `h`?  That
+ * is, is any page of it dirty?  Shared by `GC_push_next_marked_dirty()`
+ * and the write-barrier checker.
+ */
+GC_INNER GC_bool GC_block_was_dirty(const struct hblk *h, const hdr *hhdr);
+
+#  ifndef NO_MANUAL_VDB
+/* Write-barrier support for the manual VDB mode (`wbar.c` file). */
+
+/* `GC_WBAR_VERIFY`: run the write-barrier checker at minor collections. */
+GC_EXTERN GC_bool GC_wbar_verify;
+
+/*
+ * Dirty the block of `p`, as `GC_dirty_inner()` does, unless it is dirty
+ * already.  Does not require locking.
+ */
+#    define GC_wbar_dirty(p)                                 \
+      (get_pht_entry_from_index(GC_dirty_pages, PHT_HASH(p)) \
+           ? (void)0                                         \
+           : GC_dirty_inner(p))
+
+/* Parse the environment variable.  Called by `GC_init()`. */
+GC_INNER void GC_wbar_init(void);
+
+/* Called by `GC_initiate_gc()` right after `GC_read_dirty()`. */
+GC_INNER void GC_wbar_after_read_dirty(GC_bool minor);
+
+#    ifdef THREADS
+/* Called by the stack scan for each value it pushes. */
+GC_INNER void GC_wbar_note_stack_ref(ptr_t p);
+#    endif
+
+/* Called by `GC_stopped_mark()` when the marking is complete. */
+GC_INNER void GC_wbar_after_mark(void);
+
+/* Called by `GC_stopped_mark()` after restarting the world. */
+GC_INNER void GC_wbar_after_start_world(GC_bool completed);
+
+/*
+ * The totals of the write-barrier checker, for the tests: the stores
+ * reported as lost and as missed, the deferred candidates whose block was
+ * dirty at the next collection, and the checked collections.
+ */
+struct GC_wbar_totals_s {
+  word lost, missed, window, checks;
+};
+GC_API_PRIV void GC_CALL GC_get_wbar_verify_totals(struct GC_wbar_totals_s *);
+#  endif
+
+/*
  * Block `h` is about to be written or allocated shortly.  Ensure that
  * all pages containing any part of the `nblocks` `hblk` entities starting
  * at `h` are no longer write-protected (by the virtual dirty bit

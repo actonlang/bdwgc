@@ -387,6 +387,15 @@ GC_initiate_gc(void)
 #  ifdef CHECKSUMS
     GC_read_dirty(FALSE);
     GC_check_dirty();
+#  elif !defined(NO_MANUAL_VDB)
+    {
+      GC_bool minor = GC_mark_state == MS_NONE;
+
+      /* The checker resolves its deferred candidates at every collection. */
+      GC_read_dirty(!minor && !(GC_wbar_verify && GC_manual_vdb));
+      if (UNLIKELY(GC_wbar_verify))
+        GC_wbar_after_read_dirty(minor);
+    }
 #  else
     GC_read_dirty(GC_mark_state == MS_INVALID);
 #  endif
@@ -3233,7 +3242,13 @@ GC_mark_and_push_stack(ptr_t p)
    * Pointer is on the stack.  We may have dirtied the object it points to,
    * but have not called `GC_dirty` yet.
    */
-  GC_dirty(p); /*< entire object */
+#  ifndef NO_MANUAL_VDB
+  if (GC_manual_vdb) {
+    GC_wbar_dirty(p); /*< entire object */
+    if (UNLIKELY(GC_wbar_verify))
+      GC_wbar_note_stack_ref(p);
+  }
+#  endif
 #endif
   GC_mark_stack_top = GC_ms_push_contents_hdr(
       r, hhdr, GC_mark_stack_top, GC_mark_stack_limit, source, FALSE);
@@ -3703,7 +3718,7 @@ GC_push_unconditionally(struct hblk *h, const hdr *hhdr)
 
 #ifndef GC_DISABLE_INCREMENTAL
 /* Test whether any page in the given block is dirty. */
-STATIC GC_bool
+GC_INNER GC_bool
 GC_block_was_dirty(const struct hblk *h, const hdr *hhdr)
 {
   size_t sz;

@@ -160,6 +160,7 @@ pub fn build(b: *std.Build) void {
         "ptr_chck.c",
         "reclaim.c",
         "typd_mlc.c",
+        "wbar.c",
     }) catch unreachable;
 
     if (enable_threads) {
@@ -852,6 +853,22 @@ pub fn build(b: *std.Build) void {
         }
         addTest(b, gc, test_step, flags, "initfromthreadtest", "tests/initfromthread.c");
         addTest(b, gc, test_step, flags, "markercounttest", "tests/markercount.c");
+        // The cases of `wbarverifytest` named here store without a barrier;
+        // the checker must report each store with its label and exit with
+        // status 70, also when `exit()` is called while the report is
+        // printed (`lost-exit`, whose describe function prints the text
+        // matched).  The manual VDB mode is not built with the malloc
+        // redirection or the back pointers of `enable_gc_debug`, and on
+        // Windows the checker aborts instead and the collector logs to
+        // a file.
+        addTestExt(b, gc, test_step, flags, "wbarverifytest", "tests/wbarverify.c", .{
+            .failing_runs = if (t.os.tag == .windows or enable_redirect_malloc or enable_gc_debug) &.{} else &.{
+                .{ .arg = "lost", .exit_code = 70, .stderr_match = "WBVERIFY LOST " },
+                .{ .arg = "missed", .exit_code = 70, .stderr_match = "WBVERIFY MISSED " },
+                .{ .arg = "missed-next", .exit_code = 70, .stderr_match = "WBVERIFY MISSED(next) " },
+                .{ .arg = "lost-exit", .exit_code = 70, .stderr_match = "Calling exit() while a report is printed" },
+            },
+        });
         addTest(b, gc, test_step, flags, "unmapmarktest", "tests/unmapmark.c");
         addTest(b, gc, test_step, flags, "subthreadcreatetest", "tests/subthreadcreate.c");
         addTest(b, gc, test_step, flags, "threadleaktest", "tests/threadleak.c");
@@ -895,6 +912,14 @@ fn addTest(b: *std.Build, gc: *std.Build.Step.Compile, test_step: *std.Build.Ste
     addTestExt(b, gc, test_step, flags, testname, filename, .{});
 }
 
+// A run of a test, with an argument, which must exit with the status and
+// print the text (to stderr) given.
+const FailingRun = struct {
+    arg: []const u8,
+    exit_code: u8,
+    stderr_match: []const u8,
+};
+
 fn addTestExt(b: *std.Build, gc: *std.Build.Step.Compile, test_step: *std.Build.Step, flags: std.ArrayList([]const u8), testname: []const u8, filename: []const u8, ext_args: struct {
     link_gc: bool = true,
     filename2: ?[]const u8 = null,
@@ -902,6 +927,7 @@ fn addTestExt(b: *std.Build, gc: *std.Build.Step.Compile, test_step: *std.Build.
     lib2: ?*std.Build.Step.Compile = null,
     sysLibName: ?[]const u8 = null,
     sysLibName2: ?[]const u8 = null,
+    failing_runs: []const FailingRun = &.{},
 }) void {
     const test_exe = b.addExecutable(.{
         .name = testname,
@@ -942,6 +968,16 @@ fn addTestExt(b: *std.Build, gc: *std.Build.Step.Compile, test_step: *std.Build.
     const run_test_exe = b.addRunArtifact(test_exe);
     run_test_exe.setEnvironmentVariable("GC_PROMPT_DISABLED", "1");
     test_step.dependOn(&run_test_exe.step);
+    for (ext_args.failing_runs) |f| {
+        const run_failing = b.addRunArtifact(test_exe);
+        run_failing.addArg(f.arg);
+        run_failing.setEnvironmentVariable("GC_PROMPT_DISABLED", "1");
+        run_failing.expectExitCode(f.exit_code);
+        run_failing.expectStdErrMatch(f.stderr_match);
+        // Run it every time, like the other tests.
+        run_failing.has_side_effects = true;
+        test_step.dependOn(&run_failing.step);
+    }
 }
 
 fn installHeader(b: *std.Build, lib: *std.Build.Step.Compile, hfile: []const u8) void {

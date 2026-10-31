@@ -1603,6 +1603,9 @@ GC_init(void)
   if (GC_REGISTER_MAIN_STATIC_DATA())
     GC_init_linux_data_start();
 #endif
+#ifndef NO_MANUAL_VDB
+  GC_wbar_init();
+#endif
 #ifndef GC_DISABLE_INCREMENTAL
   if (GC_incremental || GETENV("GC_ENABLE_INCREMENTAL") != NULL) {
     set_incremental_mode_on();

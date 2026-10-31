@@ -1262,6 +1262,10 @@ GC_stopped_mark(GC_stop_func stop_func)
     if (GC_on_collection_event)
       GC_on_collection_event(GC_EVENT_MARK_ABANDON);
   } else {
+#ifndef NO_MANUAL_VDB
+    if (UNLIKELY(GC_wbar_verify))
+      GC_wbar_after_mark();
+#endif
     GC_gc_no++;
 #if defined(GC_ASSERTIONS) && defined(THREAD_LOCAL_ALLOC) \
     && !defined(DBG_HDRS_ALL)
@@ -1299,6 +1303,11 @@ GC_stopped_mark(GC_stop_func stop_func)
                        " with disabled parallel marker\n",
                        serial_done_at - 1);
   }
+#endif
+#ifndef NO_MANUAL_VDB
+  /* Nothing is printed with the world stopped (it may deadlock). */
+  if (UNLIKELY(GC_wbar_verify))
+    GC_wbar_after_start_world(0 == abandoned_at);
 #endif
 
 #ifndef NO_CLOCK
