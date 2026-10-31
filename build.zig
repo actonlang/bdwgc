@@ -55,6 +55,10 @@ const DirtyTrackingBackend = enum {
     soft_dirty,
     // Only Linux `userfaultfd` in the write-protect mode (`UFFDWP_VDB`).
     userfaultfd,
+    // Only the manual mode (`MANUAL_VDB`): the client reports its pointer
+    // stores, e.g. by a write barrier; no `mprotect`, `userfaultfd`,
+    // soft-dirty bits or `GetWriteWatch`, on any target.
+    manual,
 };
 
 pub fn build(b: *std.Build) void {
@@ -355,6 +359,18 @@ pub fn build(b: *std.Build) void {
             // `UFFDWP_VDB` is defined by default for such targets, it takes
             // precedence over `SOFT_VDB`; exclude only the fallback.
             flags.append(b.allocator, "-D NO_MPROTECT_VDB") catch unreachable;
+        },
+        .manual => {
+            if (!enable_threads) {
+                @panic("The manual dirty tracking mode needs multi-threading support");
+            }
+            // The incremental mode then selects the manual one by itself,
+            // and no write fault handler is installed.
+            flags.append(b.allocator, "-D MANUAL_VDB") catch unreachable;
+            flags.append(b.allocator, "-D NO_MPROTECT_VDB") catch unreachable;
+            flags.append(b.allocator, "-D NO_UFFDWP_VDB") catch unreachable;
+            flags.append(b.allocator, "-D NO_SOFT_VDB") catch unreachable;
+            flags.append(b.allocator, "-D NO_GWW_VDB") catch unreachable;
         },
     }
     if (!enable_mprotect_vdb and dirty_tracking_backend == .auto) {
