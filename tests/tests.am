@@ -301,6 +301,11 @@ check_PROGRAMS += markercounttest
 markercounttest_SOURCES = tests/markercount.c
 markercounttest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
+TESTS += markslicestest$(EXEEXT)
+check_PROGRAMS += markslicestest
+markslicestest_SOURCES = tests/markslices.c
+markslicestest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+
 TESTS += wbarverifytest$(EXEEXT)
 check_PROGRAMS += wbarverifytest
 wbarverifytest_SOURCES = tests/wbarverify.c
@@ -411,6 +416,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f heapsectstest$(EXEEXT) || ./heapsectstest$(EXEEXT)
 	test ! -f initfromthreadtest$(EXEEXT) || ./initfromthreadtest$(EXEEXT)
 	test ! -f markercounttest$(EXEEXT) || ./markercounttest$(EXEEXT)
+	test ! -f markslicestest$(EXEEXT) || ./markslicestest$(EXEEXT)
 	test ! -f stackunmaptest$(EXEEXT) || ./stackunmaptest$(EXEEXT)
 	test ! -f subthreadcreatetest$(EXEEXT) || ./subthreadcreatetest$(EXEEXT)
 	test ! -f threadcanceltest$(EXEEXT) || ./threadcanceltest$(EXEEXT)
