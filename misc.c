@@ -1323,6 +1323,12 @@ GC_init(void)
     }
   }
 #endif
+  {
+    const char *str = GETENV("GC_GEN_FULL_LIVE_PCT");
+
+    if (str != NULL)
+      GC_gen_full_live_pct = atoi(str);
+  }
 #ifndef SMALL_CONFIG
   {
     const char *str = GETENV("GC_FULL_FREQUENCY");

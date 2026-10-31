@@ -147,6 +147,11 @@ int GC_full_freq = GC_FULL_FREQ;
 int GC_full_freq = 19;
 #endif
 
+GC_INNER int GC_gen_full_live_pct = 50;
+
+/* Bytes in use (marked) after the latest full collection, 0 before one. */
+STATIC word GC_in_use_after_full = 0;
+
 #ifdef THREAD_LOCAL_ALLOC
 GC_INNER GC_bool GC_world_stopped = FALSE;
 #endif
@@ -1682,6 +1687,7 @@ GC_finish_collection(void)
   }
   if (GC_is_full_gc) {
     GC_used_heap_size_after_full = GC_heapsize - GC_large_free_bytes;
+    GC_in_use_after_full = GC_composite_in_use + GC_atomic_in_use;
     GC_need_full_gc = FALSE;
   } else {
     /* The sum may overflow if `GC_alloc_budget_percent` is huge. */
@@ -1689,6 +1695,19 @@ GC_finish_collection(void)
 
     GC_need_full_gc = GC_heapsize - GC_used_heap_size_after_full
                       > SIZET_SAT_ADD(min_allocd, GC_large_free_bytes);
+    if (!GC_need_full_gc && GC_gen_full_live_pct >= 0 && GC_incremental
+        && GC_in_use_after_full != 0) {
+      /*
+       * A minor collection keeps the marks of the old objects, dead or
+       * alive, thus the bytes in use grow by the dead old objects too.
+       */
+      word in_use = GC_composite_in_use + GC_atomic_in_use;
+
+      GC_need_full_gc
+          = in_use > SIZET_SAT_ADD(
+                GC_in_use_after_full,
+                percent_of(GC_in_use_after_full, (word)GC_gen_full_live_pct));
+    }
   }
 
   /* Reset or increment counters for next cycle. */

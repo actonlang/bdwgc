@@ -3540,6 +3540,9 @@ GC_INNER void GC_mark_and_push_stack(ptr_t p);
 /* Is the block with the given header containing no pointers? */
 #define IS_PTRFREE(hhdr) (0 == (hhdr)->hb_descr)
 
+/* See `GC_GEN_FULL_LIVE_PCT` in `docs/environment.md` file. */
+GC_EXTERN int GC_gen_full_live_pct;
+
 /* Clear all mark bits in the header. */
 GC_INNER void GC_clear_hdr_marks(hdr *hhdr);
 

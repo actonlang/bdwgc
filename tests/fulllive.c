@@ -12,18 +12,28 @@
  */
 
 /*
- * Test which collections of the incremental mode are full when the old
- * objects die: the manual VDB mode without a time limit, no full
- * collection by the count of minor ones, and a free space divisor of 1,
- * so that the growth of the heap does not make a collection full.  The
- * client keeps a live tree and a ring of its latest objects, and replaces
- * the objects of the ring before each collection.  A minor collection
- * marks the objects in the ring, which die at the next refill but stay
- * marked until a full collection, thus the bytes in use after each minor
- * collection grow.  After a full collection, the minor collections go on
- * until the bytes in use exceed those after it by more than half, and no
- * collection may be full.  This test includes the collector source to read
- * the bytes in use and the state of the heap-growth trigger.  Skipped
+ * Test the full collections that `GC_GEN_FULL_LIVE_PCT` makes due in the
+ * incremental mode: the manual VDB mode without a time limit, and no full
+ * collection by the count of minor ones.  The client keeps a live tree and
+ * a ring of its latest objects, and replaces the objects of the ring
+ * before each collection.  A minor collection marks the objects in the
+ * ring, which die at the next refill but stay marked until a full
+ * collection, thus the bytes in use after each minor collection grow.
+ * With the percentage 0, no collection is full when nothing is allocated
+ * after a minor collection whose bytes in use the test sets as those after
+ * the latest full collection, as the bytes in use stay the same, nor when
+ * the bytes in use after the latest full collection are 0, as after the one
+ * in `GC_init()`, which finds nothing in use.  Then the next collection
+ * must be full if and only if the growth of the heap made it due or, after
+ * a minor collection, the bytes in use exceed those after the latest full
+ * collection by more than the percentage: the one of the variable (50 if
+ * it is unset, run only if this test can check it), 20, and -1, which
+ * makes no collection full, with a free space divisor of 1, so that the
+ * growth of the heap makes no collection due, then a percentage never
+ * exceeded with a divisor of 3, so that the growth of the heap alone makes
+ * collections full.  This test includes the collector source to set the
+ * percentage and the bytes in use after the latest full collection, and to
+ * read the bytes in use and the state of the heap-growth trigger.  Skipped
  * without the manual VDB mode.
  */
 
@@ -68,17 +78,34 @@
 
 #if !defined(NO_MANUAL_VDB) && !defined(NO_INCREMENTAL)
 
-/* The nodes of the live tree, of 4 words each (4 MiB). */
+/* The nodes of the live tree, of 4 words each. */
 #  define N_NODES (1 << 17)
 
-/* The objects in the ring (256 KiB of nodes). */
+/* The objects in the ring. */
 #  define N_RING (1 << 13)
 
 /* The collections recorded at most. */
 #  define MAX_COLLECTIONS 400
 
-/* The minor collections over the bound to run. */
-#  define N_OVER 3
+/*
+ * The full collections to run after the first one of a run (only those
+ * the growth of the heap alone makes due, if it may), or the minor
+ * collections over half the bytes in use after it, if the percentage is
+ * negative.  Also the collections of each part of `run_pct_0()`.
+ */
+#  define N_WANTED 3
+
+/*
+ * The range of the percentages that the run with the one of the variable
+ * can check.  Below `MIN_PCT`, the first minor collection after a full one
+ * can make the next one full, which `check_run()` does not allow: it adds
+ * a refill of the ring, under 1/17 of the bytes in use after the full
+ * collection, and the objects left on the thread-local free lists, up to
+ * about as many again.  Above `MAX_PCT`, the growth of the heap makes
+ * a collection due before the percentage does.
+ */
+#  define MIN_PCT 15
+#  define MAX_PCT 200
 
 struct node {
   struct node *left;
@@ -91,13 +118,17 @@ static struct node *volatile root;
 static struct node **volatile ring;
 
 /*
- * A collection: whether it was full, the bytes in use after it, and
- * whether the growth of the heap made the next collection full.
+ * A collection: whether it was full, the bytes in use after it, whether
+ * the growth of the heap made the next collection due, whether the
+ * collector made the next collection full (`GC_need_full_gc`), and the
+ * percentage after it.
  */
 struct collection {
   GC_bool full;
   GC_bool heap_growth;
+  GC_bool need_full;
   word in_use;
+  int pct;
 };
 
 /* The collections recorded.  Protected by the allocator lock. */
@@ -119,6 +150,8 @@ on_event(GC_EventType e)
     c->in_use = GC_composite_in_use + GC_atomic_in_use;
     c->heap_growth = GC_heapsize - GC_used_heap_size_after_full
                      > SIZET_SAT_ADD(min_bytes_allocd(), GC_large_free_bytes);
+    c->need_full = GC_need_full_gc;
+    c->pct = GC_gen_full_live_pct;
     n_colls++;
   }
 }
@@ -180,34 +213,154 @@ locked_n_colls(void)
   return n;
 }
 
+/* Return `after_full` plus `pct` percent of it, rounded down. */
+static word
+bound(word after_full, int pct)
+{
+  return after_full + after_full / 100 * (word)pct
+         + after_full % 100 * (word)pct / 100;
+}
+
 /*
  * Check the collections recorded from the full collection `first` to
- * `n`: none but the first one is full, and the growth of the heap never
- * made a collection full.  Return the number of minor collections whose
- * bytes in use exceed those after the full one by more than half.
+ * `n`: the collector makes the next collection full, and it is full, if
+ * and only if the growth of the heap made it due or, after a minor
+ * collection, the bytes in use exceed those after the latest full
+ * collection by more than the percentage.  Unless `growth`, the growth of
+ * the heap makes no collection due.  Two full collections are at least 3
+ * collections apart.  Return the number of full collections after the
+ * first one (only those the growth of the heap alone made due, if
+ * `growth`), plus the number of minor collections whose bytes in use
+ * exceed those after the latest full one by more than half while the
+ * percentage is negative.
  */
 static unsigned
-check_run(unsigned first, unsigned n)
+check_run(unsigned first, unsigned n, GC_bool growth)
 {
-  word bound = colls[first].in_use + colls[first].in_use / 2;
+  word after_full = colls[first].in_use;
   unsigned i;
-  unsigned n_over = 0;
+  unsigned n_minor = 0;
+  unsigned result = 0;
 
   CHECK(colls[first].full);
   for (i = first + 1; i < n; i++) {
-    CHECK(!colls[i - 1].heap_growth);
-    CHECK(!colls[i].full);
-    if (colls[i].in_use > bound)
-      n_over++;
+    const struct collection *prev = &colls[i - 1];
+    GC_bool live = !prev->full && prev->pct >= 0
+                   && prev->in_use > bound(after_full, prev->pct);
+    GC_bool due = prev->heap_growth || live;
+
+    CHECK(growth || !prev->heap_growth);
+    CHECK(prev->need_full == due);
+    CHECK(colls[i].full == due);
+    if (due) {
+      CHECK(n_minor >= 2);
+      after_full = colls[i].in_use;
+      n_minor = 0;
+      if (!growth || !live)
+        result++;
+    } else {
+      n_minor++;
+      if (colls[i].pct < 0 && colls[i].in_use > after_full + after_full / 2)
+        result++;
+    }
   }
-  return n_over;
+  return result;
+}
+
+static GC_word value;
+
+/*
+ * Set the percentage, collect fully, then refill the ring and collect
+ * until `check_run()` returns `N_WANTED`.
+ */
+static void
+run(int pct, GC_bool growth)
+{
+  unsigned first, n;
+
+  LOCK();
+  GC_gen_full_live_pct = pct;
+  UNLOCK();
+  GC_gcollect();
+  first = locked_n_colls() - 1;
+  do {
+    refill(++value);
+    GC_start_incremental_collection();
+    n = locked_n_colls();
+    CHECK(n < MAX_COLLECTIONS);
+  } while (check_run(first, n, growth) < N_WANTED);
+  printf("GC_GEN_FULL_LIVE_PCT=%d: %u collections, bytes in use after the"
+         " first one %lu KiB\n",
+         pct, n - first, (unsigned long)(colls[first].in_use >> 10));
+}
+
+/*
+ * Check that none of the collections recorded from `first` to `n` was
+ * full or made the next one full.
+ */
+static void
+check_minor(unsigned first, unsigned n)
+{
+  unsigned i;
+
+  for (i = first; i < n; i++)
+    CHECK(!colls[i].full && !colls[i].need_full);
+}
+
+/*
+ * Collect fully, then once more with the trigger off, and make the bytes
+ * in use after that minor collection the ones after the latest full
+ * collection: the minor collection may mark a free object through a stale
+ * pointer, as the full collection emptied the global free lists, whose
+ * objects it marks only to clear their marks again.  With the percentage
+ * 0, collect `N_WANTED` times without allocation: the bytes in use stay
+ * the same.  Then set the bytes in use after the latest full collection to
+ * 0, refill the ring and collect `N_WANTED` times.  None of the minor
+ * collections may be full.  Called before any object dies, so that no
+ * collection marks a dead object through a stale pointer, which would add
+ * to the bytes in use.
+ */
+static void
+run_pct_0(void)
+{
+  unsigned first, n, i;
+
+  LOCK();
+  GC_gen_full_live_pct = -1;
+  UNLOCK();
+  GC_gcollect();
+  GC_start_incremental_collection();
+  first = locked_n_colls() - 1;
+  LOCK();
+  GC_in_use_after_full = colls[first].in_use;
+  GC_gen_full_live_pct = 0;
+  UNLOCK();
+  for (i = 0; i < N_WANTED; i++)
+    GC_start_incremental_collection();
+  n = locked_n_colls();
+  CHECK(n == first + 1 + N_WANTED);
+  for (i = first + 1; i < n; i++)
+    CHECK(colls[i].in_use == colls[first].in_use);
+  check_minor(first, n);
+
+  first = n;
+  LOCK();
+  GC_in_use_after_full = 0;
+  UNLOCK();
+  for (i = 0; i < N_WANTED; i++) {
+    refill(++value);
+    GC_start_incremental_collection();
+  }
+  n = locked_n_colls();
+  CHECK(n == first + N_WANTED);
+  check_minor(first, n);
 }
 
 int
 main(void)
 {
-  unsigned first, n;
-  GC_word value = 0;
+  const char *str;
+  int pct;
 
   GC_set_manual_vdb_allowed(1);
   GC_INIT();
@@ -228,19 +381,22 @@ main(void)
   CHECK(ring != NULL);
   refill(value);
   GC_set_on_collection_event(on_event);
-  GC_gcollect();
-  first = locked_n_colls() - 1;
-  do {
-    refill(++value);
-    GC_start_incremental_collection();
-    n = locked_n_colls();
-    CHECK(n < MAX_COLLECTIONS);
-  } while (check_run(first, n) < N_OVER);
+  str = GETENV("GC_GEN_FULL_LIVE_PCT");
+  pct = GC_gen_full_live_pct;
+  CHECK(pct == (NULL == str ? 50 : atoi(str)));
+  run_pct_0();
+  if (pct >= MIN_PCT && pct <= MAX_PCT) {
+    run(pct, FALSE);
+  } else {
+    printf("GC_GEN_FULL_LIVE_PCT=%d: not run, outside %d..%d\n", pct, MIN_PCT,
+           MAX_PCT);
+  }
+  run(20, FALSE);
+  run(-1, FALSE);
+  GC_set_free_space_divisor(3);
+  run(1000, TRUE);
+  GC_set_free_space_divisor(1);
   GC_set_on_collection_event(0);
-  printf("%u collections, bytes in use after the full one %lu KiB, after"
-         " the last one %lu KiB\n",
-         n - first, (unsigned long)(colls[first].in_use >> 10),
-         (unsigned long)(colls[n - 1].in_use >> 10));
   printf("SUCCEEDED\n");
   return 0;
 }
