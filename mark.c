@@ -154,6 +154,16 @@ STATIC word GC_n_rescuing_pages = 0;
  */
 STATIC GC_bool GC_rescue_pass_ended = FALSE;
 STATIC word GC_n_rescued_pages = 0;
+
+/*
+ * The index of `GC_rescue_block_proc` in `GC_mark_procs`, or
+ * `GC_MAX_MARK_PROCS` until a collection in the incremental mode registers
+ * it.
+ */
+STATIC unsigned GC_rescue_proc_index = GC_MAX_MARK_PROCS;
+
+STATIC struct GC_ms_entry *GC_CALLBACK GC_rescue_block_proc(
+    word *addr, struct GC_ms_entry *msp, struct GC_ms_entry *msl, word env);
 #endif
 
 GC_API void GC_CALL
@@ -399,6 +409,8 @@ GC_initiate_gc(void)
 #  else
     GC_read_dirty(GC_mark_state == MS_INVALID);
 #  endif
+    if (GC_rescue_proc_index >= GC_MAX_MARK_PROCS)
+      GC_rescue_proc_index = GC_new_proc_inner(GC_rescue_block_proc);
   }
   GC_n_rescuing_pages = 0;
 #endif
@@ -3732,6 +3744,120 @@ GC_push_next_marked(struct hblk *h)
 }
 
 #ifndef GC_DISABLE_INCREMENTAL
+#  ifndef RESCUE_MAX_ENTRIES
+/* The most entries one call of `GC_rescue_block_proc` pushes. */
+#    define RESCUE_MAX_ENTRIES 512
+#  endif
+
+/*
+ * The mark procedure of a dirty block of small objects `addr`: push its
+ * objects marked by now, from object `env` on, a run of adjacent ones as
+ * one range if the descriptor of the block is the length of an object, at
+ * most `RESCUE_MAX_ENTRIES` entries with an entry for the rest below them.
+ * With fewer than 3 free entries in the mark stack, push the objects one
+ * by one, as `GC_push_marked` does.
+ */
+GC_ATTR_NO_SANITIZE_THREAD
+STATIC struct GC_ms_entry *GC_CALLBACK
+GC_rescue_block_proc(word *addr, struct GC_ms_entry *msp,
+                     struct GC_ms_entry *msl, word env)
+{
+  struct hblk *h = (struct hblk *)addr;
+  const hdr *hhdr = HDR(h);
+  size_t sz = hhdr->hb_sz;
+  word descr = hhdr->hb_descr;
+  GC_bool by_length = descr == (sz | GC_DS_LENGTH);
+  size_t n = HBLK_OBJS(sz);
+  size_t i = (size_t)env;
+  mse *base = msp + 1; /*< reserved for the entry of the rest */
+  mse *top = base;
+  size_t room = (size_t)(msl - msp);
+  size_t cap;
+  ptr_t run = NULL;
+  size_t run_len = 0;
+
+  GC_ASSERT(sz <= MAXOBJBYTES);
+  if (room < 4) {
+    for (; i < n; i++) {
+      if (mark_bit_from_hdr(hhdr, i * MARK_BIT_OFFSET(sz)))
+        msp = GC_ms_push_obj_descr(h->hb_body + i * sz, descr, msp, msl);
+    }
+    return msp;
+  }
+  cap = room - 3;
+  if (cap > RESCUE_MAX_ENTRIES)
+    cap = RESCUE_MAX_ENTRIES;
+  for (; i < n; i++) {
+    ptr_t p = h->hb_body + i * sz;
+
+    if (!mark_bit_from_hdr(hhdr, i * MARK_BIT_OFFSET(sz))) {
+      if (run != NULL) {
+        top++;
+        top->mse_start = run;
+        top->mse_descr = run_len | GC_DS_LENGTH;
+        run = NULL;
+        if ((size_t)(top - base) >= cap)
+          break;
+      }
+      continue;
+    }
+    if (by_length) {
+      if (NULL == run) {
+        run = p;
+        run_len = sz;
+      } else {
+        run_len += sz;
+      }
+    } else {
+      top++;
+      top->mse_start = p;
+      top->mse_descr = descr;
+      if ((size_t)(top - base) >= cap) {
+        i++;
+        break;
+      }
+    }
+  }
+  if (run != NULL) {
+    top++;
+    top->mse_start = run;
+    top->mse_descr = run_len | GC_DS_LENGTH;
+  }
+  if (i < n) {
+    base->mse_start = (ptr_t)h;
+    base->mse_descr = GC_MAKE_PROC(GC_rescue_proc_index, i);
+    return top;
+  }
+  if (top == base)
+    return msp;
+  /* Fill the reserved entry with the top one. */
+  base->mse_start = top->mse_start;
+  base->mse_descr = top->mse_descr;
+  return top - 1;
+}
+
+/*
+ * `GC_push_marked` for a pass over the dirty blocks: one entry per block
+ * of small objects, which a marker expands.
+ */
+STATIC void
+GC_push_marked_rescue(struct hblk *h, const hdr *hhdr)
+{
+  if (hhdr->hb_sz > MAXOBJBYTES) {
+    GC_push_marked(h, hhdr);
+    return;
+  }
+  if ((/* `0 |` */ GC_DS_LENGTH) == hhdr->hb_descr)
+    return;
+  if (GC_block_empty(hhdr))
+    return;
+  GC_n_rescuing_pages++;
+  GC_objects_are_marked = TRUE;
+  GC_mark_stack_top
+      = GC_ms_push_obj_descr(h, GC_MAKE_PROC(GC_rescue_proc_index, 0),
+                             GC_mark_stack_top, GC_mark_stack_limit);
+}
+
 /* Identical to `GC_push_next_marked`, but mark only from dirty pages. */
 STATIC struct hblk *
 GC_push_next_marked_dirty(struct hblk *h)
@@ -3762,9 +3888,11 @@ GC_push_next_marked_dirty(struct hblk *h)
     GC_push_unconditionally(h, hhdr);
   } else
 #  endif
-  /* else */ {
-    GC_push_marked(h, hhdr);
-  }
+    /* else */ if (GC_rescue_proc_index < GC_MAX_MARK_PROCS) {
+      GC_push_marked_rescue(h, hhdr);
+    } else {
+      GC_push_marked(h, hhdr);
+    }
   return h + OBJ_SZ_TO_BLOCKS(hhdr->hb_sz);
 }
 #endif /* !GC_DISABLE_INCREMENTAL */
