@@ -44,6 +44,7 @@
 #  endif
 
 GC_INNER GC_bool GC_wbar_verify = FALSE;
+GC_INNER word GC_wbar_always_kinds = 0;
 
 static const char *(GC_CALLBACK *wbar_describe_fn)(const void *, size_t) = 0;
 
@@ -94,6 +95,20 @@ GC_wbar_init(void)
     atexit(wbar_atexit);
 #  endif
   }
+}
+
+GC_API void GC_CALL
+GC_set_kind_always_rescanned(int kind, int value)
+{
+  if (kind < 0 || kind >= (int)(sizeof(word) * 8))
+    ABORT("GC_set_kind_always_rescanned: kind out of range");
+  LOCK();
+  if (value) {
+    GC_wbar_always_kinds |= (word)1 << kind;
+  } else {
+    GC_wbar_always_kinds &= ~((word)1 << kind);
+  }
+  UNLOCK();
 }
 
 GC_API void GC_CALL
@@ -580,6 +595,13 @@ GC_wbar_after_start_world(GC_bool completed)
 }
 
 #else /* NO_MANUAL_VDB */
+
+GC_API void GC_CALL
+GC_set_kind_always_rescanned(int kind, int value)
+{
+  UNUSED_ARG(kind);
+  UNUSED_ARG(value);
+}
 
 GC_API void GC_CALL
 GC_set_wbar_verify_describe(const char *(GC_CALLBACK *fn)(const void *,

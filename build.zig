@@ -866,6 +866,7 @@ pub fn build(b: *std.Build) void {
                 .{ .arg = "lost", .exit_code = 70, .stderr_match = "WBVERIFY LOST " },
                 .{ .arg = "missed", .exit_code = 70, .stderr_match = "WBVERIFY MISSED " },
                 .{ .arg = "missed-next", .exit_code = 70, .stderr_match = "WBVERIFY MISSED(next) " },
+                .{ .arg = "kind-unflagged", .exit_code = 70, .stderr_match = "WBVERIFY LOST " },
                 .{ .arg = "lost-exit", .exit_code = 70, .stderr_match = "Calling exit() while a report is printed" },
             },
         });
