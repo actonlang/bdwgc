@@ -1114,6 +1114,23 @@ if(BUILD_TESTING)
     target_link_libraries(finalizemarktest PRIVATE gc)
     add_test(NAME finalizemarktest COMMAND finalizemarktest)
 
+    # Likewise, the test includes the collector source.
+    add_executable(fulllivetest tests/fulllive.c ${NODIST_SRC})
+    if(MSVC)
+        target_sources(fulllivetest PRIVATE extra/msvc_dbg.c)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+        target_sources(fulllivetest PRIVATE sparc_mach_dep.S)
+    endif()
+    target_link_libraries(
+        fulllivetest
+        PRIVATE ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+    )
+    if(enable_cplusplus AND NOT (BORLAND OR MSVC OR WATCOM))
+        set_target_properties(fulllivetest PROPERTIES LINKER_LANGUAGE CXX)
+    endif()
+    add_test(NAME fulllivetest COMMAND fulllivetest)
+
     add_executable(heapgrowthtest tests/heapgrowth.c ${NODIST_SRC})
     target_link_libraries(heapgrowthtest PRIVATE gc)
     add_test(NAME heapgrowthtest COMMAND heapgrowthtest)
