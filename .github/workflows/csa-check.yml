@@ -55,6 +55,7 @@ jobs:
           -I include ${{ join(matrix.cflags_extra, ' ') }}
           `find . \( -name '*.c' -o -name '*.cc' \)
           ! -path ./tests/cpucount.c ! -path ./tests/expandfail.c
+          ! -path ./tests/fulllive.c
           ! -path ./tests/markstackgrowth.c ! -path ./tests/memlimit.c
           ! -path ./tests/serialgrowth.c
           ! -path ./tests/switchedstack.c ! -path ./tests/unmap.c` 2>&1
