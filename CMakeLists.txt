@@ -238,6 +238,7 @@ set(SRC
     ptr_chck.c
     reclaim.c
     typd_mlc.c
+    wbar.c
 )
 
 set(NODIST_SRC)
@@ -1325,6 +1326,10 @@ if(BUILD_TESTING)
         add_executable(markercounttest tests/markercount.c ${NODIST_SRC})
         target_link_libraries(markercounttest PRIVATE gc ${THREADDLLIBS_LIST})
         add_test(NAME markercounttest COMMAND markercounttest)
+
+        add_executable(wbarverifytest tests/wbarverify.c ${NODIST_SRC})
+        target_link_libraries(wbarverifytest PRIVATE gc ${THREADDLLIBS_LIST})
+        add_test(NAME wbarverifytest COMMAND wbarverifytest)
 
         if(NOT WIN32)
             add_executable(forktest tests/fork.c ${NODIST_SRC})

@@ -1418,6 +1418,18 @@ GC_API void GC_CALL GC_set_manual_vdb_allowed(int);
 GC_API int GC_CALL GC_get_manual_vdb_allowed(void);
 
 /**
+ * The write-barrier checker of the manual VDB mode (enabled by
+ * `GC_WBAR_VERIFY` environment variable) reports the pointer stores that
+ * no barrier recorded, and the process exits with status 70 after
+ * a collection that reports one.  The `describe` function, if set, is
+ * called (with the allocator lock held, after the world is restarted) for
+ * the object holding each reported pointer; it may return a static string
+ * naming the type of the object, or `NULL`.
+ */
+GC_API void GC_CALL GC_set_wbar_verify_describe(const char *(
+    GC_CALLBACK *)(const void * /* `obj` */, size_t /* `size` */));
+
+/**
  * Select whether to allow usage of the `mprotect`-based VDB (virtual dirty
  * bits) mode for the incremental collection.  The default value is on
  * regardless of the availability of this VDB mode.  Disallowing the

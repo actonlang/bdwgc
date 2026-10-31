@@ -287,6 +287,11 @@ check_PROGRAMS += markercounttest
 markercounttest_SOURCES = tests/markercount.c
 markercounttest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
+TESTS += wbarverifytest$(EXEEXT)
+check_PROGRAMS += wbarverifytest
+wbarverifytest_SOURCES = tests/wbarverify.c
+wbarverifytest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+
 endif
 
 if CPLUSPLUS
@@ -400,5 +405,6 @@ check-without-test-driver: $(TESTS)
 	test ! -f tracetest$(EXEEXT) || ./tracetest$(EXEEXT)
 	test ! -f treetest$(EXEEXT) || ./treetest$(EXEEXT)
 	test ! -f uffdwptest$(EXEEXT) || ./uffdwptest$(EXEEXT)
+	test ! -f wbarverifytest$(EXEEXT) || ./wbarverifytest$(EXEEXT)
 	test ! -f weakmaptest$(EXEEXT) || ./weakmaptest$(EXEEXT)
 	./cordtest$(EXEEXT)
