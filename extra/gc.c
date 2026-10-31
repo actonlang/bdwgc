@@ -63,6 +63,7 @@
 #include "../mark_rts.c"
 #include "../reclaim.c"
 #include "../typd_mlc.c"
+#include "../wbar.c"
 
 #include "../misc.c"
 #include "../os_dep.c"

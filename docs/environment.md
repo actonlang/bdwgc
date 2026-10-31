@@ -150,6 +150,14 @@ unlimited, and the incremental collector will behave completely like a simple
 generational collector.  Any value, except for the given special one, disables
 parallel marker (almost fully) for now.
 
+`GC_WBAR_VERIFY` - In the manual VDB mode, checks at every minor collection
+that no marked object in a block the collection does not rescan points to an
+unmarked object, i.e. that the client's write barrier recorded every pointer
+store.  A store found unrecorded is logged as a `WBVERIFY` line after the
+collection, and the process then exits with status 70.  Needs the unlimited
+pause time (the checker turns itself off otherwise).  Costs a scan of the clean
+marked pointer data at every minor collection.
+
 `GC_FULL_FREQUENCY` - Sets the desired number of partial collections between
 full collections; 0 makes every collection a full one.  Matters only if
 `GC_incremental` is set.  Has no effect if the collector is built with

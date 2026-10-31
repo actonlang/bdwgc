@@ -115,7 +115,7 @@ OBJS= allchblk.o alloc.o backgraph.o blacklst.o checksums.o \
   gcj_mlc.o headers.o mach_dep.o malloc.o mallocx.o mark.o mark_rts.o misc.o \
   new_hblk.o os_dep.o pthread_start.o pthread_stop_world.o pthread_support.o \
   ptr_chck.o reclaim.o specific.o thread_local_alloc.o typd_mlc.o \
-  win32_threads.o
+  wbar.o win32_threads.o
 
 # Almost matches `OBJS` but also includes `dyn_load.c` file.
 CSRCS= allchblk.c alloc.c backgraph.c blacklst.c checksums.c \
@@ -123,7 +123,7 @@ CSRCS= allchblk.c alloc.c backgraph.c blacklst.c checksums.c \
   gcj_mlc.c headers.c mach_dep.c malloc.c mallocx.c mark.c mark_rts.c misc.c \
   new_hblk.c os_dep.c pthread_start.c pthread_stop_world.c pthread_support.c \
   ptr_chck.c reclaim.c specific.c thread_local_alloc.c typd_mlc.c \
-  win32_threads.c
+  wbar.c win32_threads.c
 
 CORD_SRCS= cord/cordbscs.c cord/cordprnt.c cord/cordxtra.c cord/tests/de.c \
   cord/tests/cordtest.c include/gc/cord.h include/gc/ec.h \
@@ -203,8 +203,8 @@ $(OBJS) gctest.o dyn_load.o dyn_load_sunos53.o: \
   $(srcdir)/include/private/gcconfig.h $(srcdir)/include/gc/gc_typed.h \
   $(srcdir)/include/gc/gc_config_macros.h
 
-mark.o typd_mlc.o finalize.o ptr_chck.o: $(srcdir)/include/gc/gc_mark.h \
-					 $(srcdir)/include/private/gc_pmark.h
+mark.o typd_mlc.o finalize.o ptr_chck.o wbar.o: \
+  $(srcdir)/include/gc/gc_mark.h $(srcdir)/include/private/gc_pmark.h
 
 specific.o pthread_support.o thread_local_alloc.o win32_threads.o: \
   $(srcdir)/include/private/specific.h $(srcdir)/include/gc/gc_inline.h \
