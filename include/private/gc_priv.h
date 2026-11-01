@@ -4260,6 +4260,17 @@ GC_EXTERN GC_bool GC_wbar_verify;
 GC_EXTERN GC_bool GC_wbar_need_full;
 
 /*
+ * Whether the collections clear every dead object for the checker: the
+ * sweep takes every block with unmarked objects at once, also the nearly
+ * full ones it otherwise leaves alone, and dropped thread-local free lists
+ * have their links cleared.  A conservative collector marks a dead object
+ * again when a stale word (in a stack frame, a register, a static area)
+ * holds its address; then it must hold no pointer for the checker to
+ * mistake for a store without a barrier.
+ */
+#    define GC_WBAR_SWEEPS_ALL() (GC_wbar_verify && GC_manual_vdb)
+
+/*
  * Dirty the block of `p`, as `GC_dirty_inner()` does, unless it is dirty
  * already.  Does not require locking.
  */

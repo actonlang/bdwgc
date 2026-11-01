@@ -754,7 +754,11 @@ GC_reclaim_block(hdr *hhdr, void *walk_state)
         GC_bytes_found += (GC_signed_word)HBLKSIZE;
         GC_add_to_pending_run(pw, hhdr, HBLKSIZE);
       }
-    } else if (GC_find_leak_inner || !GC_block_nearly_full(hhdr, sz)) {
+    } else if (GC_find_leak_inner || !GC_block_nearly_full(hhdr, sz)
+#ifndef NO_MANUAL_VDB
+               || GC_WBAR_SWEEPS_ALL()
+#endif
+    ) {
       /* Group of smaller objects, enqueue the real work. */
       struct hblk **rlh = ok->ok_reclaim_list;
 

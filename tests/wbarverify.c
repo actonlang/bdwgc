@@ -34,7 +34,9 @@
  * in a far block after a collection marked it from the stack
  * (`large-stack`), a large uncollectable object filled in a far block
  * without a barrier (`large-uncoll`).  A report whose object was freed
- * before the full collection that checks it is stale (`stale`).  With an
+ * before the full collection that checks it is stale (`stale`).  A dead
+ * object marked again by a conservative reference, whose old pointers now
+ * point to new objects, holds no missed store (`revived`).  With an
  * argument, one case runs; the cases `lost`, `missed`, `missed-next`,
  * `kind-unflagged`, `large-missed`, `large-missed-next`, `missed-abandoned`
  * and `final-lost` store without a barrier and must be reported (as lost, as
@@ -1941,7 +1943,7 @@ static const struct test_case cases[] = {
   { "large-stack", case_large_stack, 1 },
   { "large-uncoll", case_large_uncoll, 1 },
   { "stale", case_stale, 1 },
-  { "revived", case_revived, 0 },
+  { "revived", case_revived, 1 },
   { "kind-unflagged", case_kind_unflagged, 0 },
   { "lost", case_lost, 0 },
   { "missed", case_missed, 0 },
