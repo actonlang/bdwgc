@@ -1390,9 +1390,9 @@ if(BUILD_TESTING)
         target_link_libraries(finalstoptest PRIVATE gc ${THREADDLLIBS_LIST})
         add_test(NAME finalstoptest COMMAND finalstoptest)
 
-        add_executable(fullsetuptest tests/fullsetup.c ${NODIST_SRC})
-        target_link_libraries(fullsetuptest PRIVATE gc ${THREADDLLIBS_LIST})
-        add_test(NAME fullsetuptest COMMAND fullsetuptest)
+        add_executable(finishtest tests/finish.c ${NODIST_SRC})
+        target_link_libraries(finishtest PRIVATE gc ${THREADDLLIBS_LIST})
+        add_test(NAME finishtest COMMAND finishtest)
 
         add_executable(collectwaittest tests/collectwait.c ${NODIST_SRC})
         target_link_libraries(collectwaittest PRIVATE gc ${THREADDLLIBS_LIST})
