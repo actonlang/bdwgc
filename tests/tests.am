@@ -317,6 +317,11 @@ check_PROGRAMS += wbarverifytest
 wbarverifytest_SOURCES = tests/wbarverify.c
 wbarverifytest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
+TESTS += finalstoptest$(EXEEXT)
+check_PROGRAMS += finalstoptest
+finalstoptest_SOURCES = tests/finalstop.c
+finalstoptest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+
 endif
 
 if CPLUSPLUS
@@ -419,6 +424,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f cpptest$(EXEEXT) || ./cpptest$(EXEEXT)
 	test ! -f disclaim_bench$(EXEEXT) || ./disclaim_bench$(EXEEXT)
 	test ! -f disclaimtest$(EXEEXT) || ./disclaimtest$(EXEEXT)
+	test ! -f finalstoptest$(EXEEXT) || ./finalstoptest$(EXEEXT)
 	test ! -f forktest$(EXEEXT) || ./forktest$(EXEEXT)
 	test ! -f heapsectstest$(EXEEXT) || ./heapsectstest$(EXEEXT)
 	test ! -f initfromthreadtest$(EXEEXT) || ./initfromthreadtest$(EXEEXT)
