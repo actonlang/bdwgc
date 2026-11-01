@@ -406,15 +406,12 @@ malloc_kind_tl(size_t lb, int kind)
     GC_ASSERT(lg == ALLOC_REQUEST_GRANS(lb));
     /*
      * The free-list entry is not dirtied here, unlike in
-     * `GC_FAST_MALLOC_GRANS()`, even in the manual VDB mode, as long as the
-     * marking is done with the world stopped (there is no time limit and
-     * no client stop function): every collection then marks the
-     * thread-local free lists directly.  Under a time limit the manual VDB
-     * mode is left to the slow path.
+     * `GC_FAST_MALLOC_GRANS()`, even in the manual VDB mode, which marks
+     * only with the world stopped: every collection marks the thread-local
+     * free lists directly, and dirties their blocks for the next read;
+     * a refill while a collection is in progress dirties the blocks too.
      */
-    if (LIKELY(ADDR(result) > DIRECT_GRANULES + GC_TINY_FREELISTS + 1)
-        && (PTRFREE == kind || LIKELY(!GC_manual_vdb)
-            || GC_time_limit == GC_TIME_UNLIMITED)) {
+    if (LIKELY(ADDR(result) > DIRECT_GRANULES + GC_TINY_FREELISTS + 1)) {
       void *next = *(void **)result;
 
       GC_FAST_M_AO_STORE(my_fl, next);

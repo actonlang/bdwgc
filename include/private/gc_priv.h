@@ -4263,10 +4263,10 @@ GC_EXTERN GC_bool GC_wbar_verify;
  * In the manual VDB mode, dirty the `nblocks` blocks starting at the one
  * of `p`, which the allocator hands out (a block of objects, a large
  * object, or the block of a small object) while a collection is in
- * progress.  A client fills a new object without a write barrier, and the
- * marking of the collection may have marked and scanned the object before
- * (e.g. if the client stored it into an object the marking scanned); the
- * final mark of the collection then rescans it.  Objects handed out
+ * progress.  A client fills a new object without a write barrier, and
+ * a world-stopped step of the collection may have marked and scanned the
+ * object before (if the client stored it into an object the step scanned);
+ * the final mark of the collection then rescans it.  Objects handed out
  * between collections need no such bit: they are unmarked, or (if on
  * a thread-local free list, or freed explicitly while marked) in a block
  * dirtied for the next read.  The allocator lock is held.
