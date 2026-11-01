@@ -3818,11 +3818,9 @@ GC_INNER GC_bool GC_expand_hp_inner(word n);
  * Restore unmarked objects to free lists, or (if `abort_if_found` is `TRUE`)
  * report them.  (I.e. perform `GC_reclaim_block()` on the entire heap.)
  * Unless `abort_if_found`, the small-object free lists are empty on
- * entry.  If `skip_new`, then the blocks set up since the latest marking
- * completed (thus holding only objects allocated since) are skipped.
- * Sweeping of small object pages is largely deferred.
+ * entry.  Sweeping of small object pages is largely deferred.
  */
-GC_INNER void GC_start_reclaim(GC_bool abort_if_found, GC_bool skip_new);
+GC_INNER void GC_start_reclaim(GC_bool abort_if_found);
 
 #ifdef THREAD_LOCAL_ALLOC
 /*
@@ -5285,6 +5283,20 @@ GC_INNER GC_bool GC_apply_to_hdrs_from(struct hblk **pnext, GC_walk_hdr_fn fn,
  */
 GC_INNER GC_bool GC_clear_marks_from(struct hblk **pnext,
                                      GC_stop_func stop_func);
+
+/*
+ * `GC_start_reclaim(FALSE)` in chunks, with the world running in between:
+ * `GC_start_reclaim_begin()` starts the walk (the free lists and the
+ * reclaim lists are empty), then each call of `GC_start_reclaim_some()`
+ * walks the blocks as `GC_apply_to_hdrs_from()` does, skipping those set
+ * up since the marking completed, and returns whether every block was
+ * visited.  The blocks to sweep are enqueued on `rlists` (empty reclaim
+ * lists, per kind), which the allocator gets once the walk is done.  The
+ * allocator lock is held.
+ */
+GC_INNER void GC_start_reclaim_begin(struct hblk ***rlists);
+GC_INNER GC_bool GC_start_reclaim_some(struct hblk **pnext,
+                                       GC_stop_func stop_func);
 #  endif
 
 /*

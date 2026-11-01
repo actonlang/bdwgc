@@ -575,6 +575,21 @@ struct reclaim_walk_s {
   /* Whether the blocks set up since the latest marking are skipped. */
   GC_bool skip_new;
 
+  /*
+   * Whether the walk visits the blocks in the ascending order of addresses
+   * (`GC_start_reclaim_some()`), so that a run grows upwards.  Then the
+   * headers of the blocks merged into the run are removed when the run is
+   * freed, and `first_bytes` is the size of its lowest block.
+   */
+  GC_bool ascending;
+  size_t first_bytes;
+
+  /*
+   * The reclaim lists the blocks are enqueued on, per kind, or `NULL` for
+   * those of the kinds (`ok_reclaim_list`).
+   */
+  struct hblk ***rlists;
+
   /* The lowest block of the pending run, or `NULL`. */
   struct hblk *run;
 
@@ -592,6 +607,16 @@ GC_free_pending_run(struct reclaim_walk_s *pw)
   GC_ASSERT(I_HOLD_LOCK());
   if (pw->run != NULL) {
     GC_ASSERT(HDR(pw->run) == pw->run_hdr && !HBLK_IS_FREE(pw->run_hdr));
+    if (pw->ascending) {
+      ptr_t p = (ptr_t)pw->run + pw->first_bytes;
+      ptr_t lim = (ptr_t)pw->run + pw->run_bytes;
+
+      /* Remove the headers of the blocks merged into the run. */
+      for (; ADDR_LT(p, lim); p += HBLKSIZE) {
+        if (HDR(p) != NULL)
+          GC_remove_header((struct hblk *)p);
+      }
+    }
     pw->run_hdr->hb_sz = pw->run_bytes;
     GC_freehblk(pw->run);
     pw->run = NULL;
@@ -620,6 +645,27 @@ GC_add_to_pending_run(struct reclaim_walk_s *pw, hdr *hhdr, size_t bytes)
 #else
   /* Remove the forwarding counts of a multi-block object. */
   GC_remove_counts(hbp, bytes);
+  if (pw->ascending) {
+    /*
+     * The header of `hbp` stays until the run is freed, as the caller
+     * still reads it.
+     */
+    if (pw->run != NULL && ADDR(pw->run) + pw->run_bytes == ADDR(hbp)
+        && ((pw->run_bytes + bytes) & SIZET_SIGNB) == 0
+#  ifdef CHERI_PURECAP
+        && CAPABILITY_COVERS_RANGE(pw->run, ADDR(hbp), ADDR(hbp) + bytes)
+#  endif
+    ) {
+      pw->run_bytes += bytes;
+    } else {
+      GC_free_pending_run(pw);
+      pw->run = hbp;
+      pw->run_hdr = hhdr;
+      pw->run_bytes = bytes;
+      pw->first_bytes = bytes;
+    }
+    return;
+  }
   if (pw->run != NULL && ADDR(hbp) + bytes == ADDR(pw->run)
       && ((pw->run_bytes + bytes) & SIZET_SIGNB) == 0
 #  ifdef CHERI_PURECAP
@@ -771,7 +817,8 @@ GC_reclaim_block(hdr *hhdr, void *walk_state)
 #endif
     ) {
       /* Group of smaller objects, enqueue the real work. */
-      struct hblk **rlh = ok->ok_reclaim_list;
+      struct hblk **rlh = pw->rlists != NULL ? pw->rlists[hhdr->hb_obj_kind]
+                                             : ok->ok_reclaim_list;
 
       if (rlh != NULL) {
         rlh += BYTES_TO_GRANULES(sz);
@@ -955,61 +1002,11 @@ GC_clear_fl_links(void *fl)
 }
 #endif
 
-GC_INNER void
-GC_start_reclaim(GC_bool report_if_found, GC_bool skip_new)
+/* The part of the start of the sweep after the walk of the blocks. */
+static void
+start_reclaim_end(void)
 {
-  int kind;
-  struct reclaim_walk_s walk_state;
-
   GC_ASSERT(I_HOLD_LOCK());
-#ifdef PARALLEL_MARK
-  GC_ASSERT(0 == GC_fl_builder_count);
-#endif
-  /* Reset in-use counters.  `GC_reclaim_block` recomputes them. */
-  GC_composite_in_use = 0;
-  GC_atomic_in_use = 0;
-
-  /*
-   * Clear the reclaim lists.  Unless `report_if_found` or `skip_new`, the
-   * free lists are empty (the caller emptied them, see
-   * `clear_free_lists()`).  If `report_if_found`, their objects are
-   * marked, and it is safe to leave them.  If `skip_new`, they hold only
-   * objects put on them since the marking: marked ones (freed explicitly,
-   * or returned from a thread-local free list) and ones of the blocks set
-   * up since, which the walk skips, thus the sweep never puts any of them
-   * on a free list again.
-   */
-  for (kind = 0; kind < (int)GC_n_kinds; kind++) {
-    struct obj_kind *ok = &GC_obj_kinds[kind];
-    struct hblk **rlist = ok->ok_reclaim_list;
-
-    if (NULL == rlist) {
-      /* Means this object kind is not used. */
-      continue;
-    }
-#ifdef GC_ASSERTIONS
-    if (!report_if_found && !skip_new) {
-      size_t lg;
-
-      for (lg = 1; lg <= MAXOBJGRANULES; lg++)
-        GC_ASSERT(NULL == ok->ok_freelist[lg]);
-    }
-#endif
-    BZERO(rlist, (MAXOBJGRANULES + 1) * sizeof(void *));
-  }
-
-  /*
-   * Go through all heap blocks, and reclaim unmarked objects or enqueue
-   * the block for later processing.
-   */
-  walk_state.report_if_found = report_if_found;
-  walk_state.skip_new = skip_new;
-  walk_state.run = NULL;
-  walk_state.run_hdr = NULL;
-  walk_state.run_bytes = 0;
-  GC_apply_to_all_hdrs(GC_reclaim_block, &walk_state);
-  GC_free_pending_run(&walk_state);
-
 #ifdef EAGER_SWEEP
   /*
    * This is a very stupid thing to do.  We make it possible anyway.
@@ -1027,6 +1024,129 @@ GC_start_reclaim(GC_bool report_if_found, GC_bool skip_new)
   GC_ASSERT(0 == GC_fl_builder_count);
 #endif
 }
+
+GC_INNER void
+GC_start_reclaim(GC_bool report_if_found)
+{
+  int kind;
+  struct reclaim_walk_s walk_state;
+
+  GC_ASSERT(I_HOLD_LOCK());
+#ifdef PARALLEL_MARK
+  GC_ASSERT(0 == GC_fl_builder_count);
+#endif
+  /* Reset in-use counters.  `GC_reclaim_block` recomputes them. */
+  GC_composite_in_use = 0;
+  GC_atomic_in_use = 0;
+
+  /*
+   * Clear the reclaim lists.  Unless `report_if_found`, the free lists are
+   * empty (the caller emptied them, see `clear_free_lists()`); otherwise
+   * their objects are marked, and it is safe to leave them.
+   */
+  for (kind = 0; kind < (int)GC_n_kinds; kind++) {
+    struct obj_kind *ok = &GC_obj_kinds[kind];
+    struct hblk **rlist = ok->ok_reclaim_list;
+
+    if (NULL == rlist) {
+      /* Means this object kind is not used. */
+      continue;
+    }
+#ifdef GC_ASSERTIONS
+    if (!report_if_found) {
+      size_t lg;
+
+      for (lg = 1; lg <= MAXOBJGRANULES; lg++)
+        GC_ASSERT(NULL == ok->ok_freelist[lg]);
+    }
+#endif
+    BZERO(rlist, (MAXOBJGRANULES + 1) * sizeof(void *));
+  }
+
+  /*
+   * Go through all heap blocks, and reclaim unmarked objects or enqueue
+   * the block for later processing.
+   */
+  walk_state.report_if_found = report_if_found;
+  walk_state.skip_new = FALSE;
+  walk_state.ascending = FALSE;
+  walk_state.first_bytes = 0;
+  walk_state.rlists = NULL;
+  walk_state.run = NULL;
+  walk_state.run_hdr = NULL;
+  walk_state.run_bytes = 0;
+  GC_apply_to_all_hdrs(GC_reclaim_block, &walk_state);
+  GC_free_pending_run(&walk_state);
+  start_reclaim_end();
+}
+
+#ifdef PARALLEL_MARK_DEADLINE
+/* The state of the walk of `GC_start_reclaim_some()`. */
+static struct reclaim_walk_s chunked_walk;
+
+/*
+ * The bytes in use counted by the walk of `GC_start_reclaim_some()` so
+ * far.  Between its chunks, `GC_composite_in_use` and `GC_atomic_in_use`
+ * keep the counts of the previous collection.
+ */
+static word walk_composite_in_use;
+static word walk_atomic_in_use;
+
+GC_INNER void
+GC_start_reclaim_begin(struct hblk ***rlists)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  chunked_walk.report_if_found = FALSE;
+  chunked_walk.skip_new = TRUE;
+  chunked_walk.ascending = TRUE;
+  chunked_walk.first_bytes = 0;
+  chunked_walk.rlists = rlists;
+  chunked_walk.run = NULL;
+  chunked_walk.run_hdr = NULL;
+  chunked_walk.run_bytes = 0;
+  walk_composite_in_use = 0;
+  walk_atomic_in_use = 0;
+}
+
+GC_INNER GC_bool
+GC_start_reclaim_some(struct hblk **pnext, GC_stop_func stop_func)
+{
+  word composite_in_use = GC_composite_in_use;
+  word atomic_in_use = GC_atomic_in_use;
+  struct hblk ***rlists = chunked_walk.rlists;
+  unsigned kind;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  GC_composite_in_use = walk_composite_in_use;
+  GC_atomic_in_use = walk_atomic_in_use;
+  if (!GC_apply_to_hdrs_from(pnext, GC_reclaim_block, &chunked_walk,
+                             stop_func)) {
+    /* The world runs until the next chunk. */
+    GC_free_pending_run(&chunked_walk);
+    walk_composite_in_use = GC_composite_in_use;
+    walk_atomic_in_use = GC_atomic_in_use;
+    GC_composite_in_use = composite_in_use;
+    GC_atomic_in_use = atomic_in_use;
+    return FALSE;
+  }
+  GC_free_pending_run(&chunked_walk);
+  /* Hand the reclaim lists built by the walk to the allocator. */
+  for (kind = 0; kind < GC_n_kinds; kind++) {
+    struct hblk **rlist = GC_obj_kinds[kind].ok_reclaim_list;
+    size_t lg;
+
+    if (NULL == rlists[kind] || NULL == rlist)
+      continue;
+    for (lg = 1; lg <= MAXOBJGRANULES; lg++) {
+      GC_ASSERT(NULL == rlist[lg]);
+      rlist[lg] = rlists[kind][lg];
+      rlists[kind][lg] = NULL;
+    }
+  }
+  start_reclaim_end();
+  return TRUE;
+}
+#endif
 
 GC_INNER void
 GC_continue_reclaim(size_t lg, int kind)

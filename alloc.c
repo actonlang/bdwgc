@@ -1072,22 +1072,32 @@ STATIC word GC_clear_fl_marks(ptr_t *pq, GC_bool clear_links,
  *   - `FINISH_CLEAR`: the detached lists are emptied as by
  *     `clear_free_lists()`, from `pending_kind` and `pending_lg`; nothing
  *     else reads them;
- *   - `FINISH_WALK`: the walk of the blocks that starts the sweep
- *     (`GC_start_reclaim()`), which skips the blocks set up since the
- *     final mark (all their objects were allocated since);
+ *   - `FINISH_WALK`: the walk of the blocks that starts the sweep, in the
+ *     ascending order of the block addresses from `walk_next`
+ *     (`GC_start_reclaim_some()`): it skips the blocks set up since the
+ *     final mark (all their objects were allocated since), frees the runs
+ *     of empty blocks at the end of each chunk, and enqueues the other
+ *     blocks on the reclaim lists `pending_rl`, which the allocator gets
+ *     when the walk is done; a block freed or set up meanwhile is below
+ *     `walk_next` or skipped;
  *   - `FINISH_REST`: the unmapping and the rest of the finish.
- * The walk and the rest each run in the chunk that completes the phase
- * before if less than half of the time limit has passed, else in the next
- * chunk.  A chunk is due after the allocation volume between two steps, and
- * at the latest the time limit after the end of the previous chunk.  No
- * collection starts while the finish is pending; `GC_try_to_collect_inner()`
- * completes it at once.  Protected by the allocator lock.
+ * The walk (from `FINISH_WALK_START`) and the rest each start in the
+ * chunk that completes the phase before if less than half of the time
+ * limit has passed, else in the next chunk.  A chunk is due after the
+ * allocation volume between two steps, and at the latest the time limit after
+ * the end of the previous chunk.  No collection starts while the finish is
+ * pending; `GC_try_to_collect_inner()` completes it at once.  Protected by
+ * the allocator lock.
  */
 #  define FINISH_NONE 0
 #  define FINISH_CLEAR 1
-#  define FINISH_WALK 2
-#  define FINISH_REST 3
+#  define FINISH_WALK_START 2
+#  define FINISH_WALK 3
+#  define FINISH_REST 4
 static int finish_phase = FINISH_NONE;
+
+/* In the `FINISH_WALK` phase, the first block not visited yet. */
+static struct hblk *walk_next = NULL;
 
 /* Whether the collection of the pending finish is a full one. */
 static GC_bool finish_full = FALSE;
@@ -1098,6 +1108,12 @@ static GC_bool finish_full = FALSE;
  * `GC_scratch_alloc()`, thus not a root.
  */
 static ptr_t *pending_fl[MAXOBJKINDS];
+
+/*
+ * The reclaim lists of the walk, per kind, allocated as `pending_fl`,
+ * empty except during the walk.
+ */
+static struct hblk **pending_rl[MAXOBJKINDS];
 
 /* The kind and the size of the next detached list to empty. */
 static unsigned pending_kind = 0;
@@ -1133,13 +1149,21 @@ detach_free_lists(void)
   unsigned kind;
 
   for (kind = 0; kind < GC_n_kinds; kind++) {
-    if (GC_obj_kinds[kind].ok_reclaim_list != NULL
-        && NULL == pending_fl[kind]) {
+    if (NULL == GC_obj_kinds[kind].ok_reclaim_list)
+      continue;
+    if (NULL == pending_fl[kind]) {
       pending_fl[kind]
           = (ptr_t *)GC_scratch_alloc((MAXOBJGRANULES + 1) * sizeof(ptr_t));
       if (NULL == pending_fl[kind])
         return FALSE;
       BZERO(pending_fl[kind], (MAXOBJGRANULES + 1) * sizeof(ptr_t));
+    }
+    if (NULL == pending_rl[kind]) {
+      pending_rl[kind] = (struct hblk **)GC_scratch_alloc(
+          (MAXOBJGRANULES + 1) * sizeof(struct hblk *));
+      if (NULL == pending_rl[kind])
+        return FALSE;
+      BZERO(pending_rl[kind], (MAXOBJGRANULES + 1) * sizeof(struct hblk *));
     }
   }
   for (kind = 0; kind < GC_n_kinds; kind++) {
@@ -1212,23 +1236,32 @@ half_limit_left(GC_bool unlimited)
 static void
 run_finish_chunk(GC_bool unlimited)
 {
+  GC_stop_func stop_func = unlimited ? GC_never_stop_func : setup_stop_func;
+
   GC_ASSERT(I_HOLD_LOCK());
   GC_ASSERT(FINISH_PENDING());
+  setup_stop_calls = 0;
   if (FINISH_CLEAR == finish_phase) {
-    setup_stop_calls = 0;
     ENTER_GC();
-    if (clear_pending_fl(unlimited ? GC_never_stop_func : setup_stop_func))
-      finish_phase = FINISH_WALK;
+    if (clear_pending_fl(stop_func))
+      finish_phase = FINISH_WALK_START;
     EXIT_GC();
   }
-  if (FINISH_WALK == finish_phase && half_limit_left(unlimited)) {
+  if (FINISH_WALK_START == finish_phase && half_limit_left(unlimited)) {
+    GC_start_reclaim_begin(pending_rl);
+    walk_next = NULL;
+    finish_phase = FINISH_WALK;
+  }
+  if (FINISH_WALK == finish_phase) {
 #  ifdef PARALLEL_MARK
-    /* The walk needs every free-list builder done. */
+    /* The walk ends with no builder of free lists running. */
     if (GC_parallel)
       GC_wait_for_reclaim();
 #  endif
-    GC_start_reclaim(FALSE, TRUE);
-    finish_phase = FINISH_REST;
+    ENTER_GC();
+    if (GC_start_reclaim_some(&walk_next, stop_func))
+      finish_phase = FINISH_REST;
+    EXIT_GC();
   }
   if (FINISH_REST == finish_phase && half_limit_left(unlimited)) {
     finish_phase = FINISH_NONE;
@@ -2471,7 +2504,7 @@ GC_finish_collection(void)
   if (GC_find_leak_inner) {
     set_all_fl_marks();
     /* This just checks; it does not really reclaim anything. */
-    GC_start_reclaim(TRUE, FALSE);
+    GC_start_reclaim(TRUE);
   }
 #endif
 #ifndef GC_NO_FINALIZATION
@@ -2517,7 +2550,7 @@ GC_finish_collection(void)
                         (long)GC_bytes_found);
 
   /* Reconstruct free lists to contain everything not marked. */
-  GC_start_reclaim(FALSE, FALSE);
+  GC_start_reclaim(FALSE);
 #ifndef NO_MANUAL_VDB
   if (GC_WBAR_SWEEPS_ALL())
     (void)GC_reclaim_all((GC_stop_func)0, FALSE);
