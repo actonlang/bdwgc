@@ -1914,6 +1914,10 @@ GC_finish_collection(void)
 
   /* Reconstruct free lists to contain everything not marked. */
   GC_start_reclaim(FALSE);
+#ifndef NO_MANUAL_VDB
+  if (GC_WBAR_SWEEPS_ALL())
+    (void)GC_reclaim_all((GC_stop_func)0, FALSE);
+#endif
 
 #ifdef USE_MUNMAP
   if (GC_unmap_threshold > 0    /*< memory unmapping enabled? */

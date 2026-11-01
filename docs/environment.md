@@ -178,6 +178,9 @@ not on a free list when the report was found: the report is then logged as
 a `WBVERIFY` line, and the process exits with status 70.  Otherwise
 the report is logged as stale.  At exit, a full collection checks the reports
 still waiting.  Costs a scan of the clean marked pointer data at every check.
+Every collection then also sweeps every block with unmarked objects at once, so
+that a dead object marked again by a stale reference holds no pointer to
+check.
 
 `GC_FULL_FREQUENCY` - Sets the desired number of partial collections between
 full collections; 0 makes every collection a full one.  Matters only if
