@@ -1068,7 +1068,9 @@ STATIC word GC_clear_fl_marks(ptr_t *pq, GC_bool clear_links,
  * (marked, or in new blocks); it neither sweeps a block nor hands out an
  * object which the finish takes for a free one.  The rest of the finish
  * runs in chunks, each holding the allocator lock for at most about the
- * time limit:
+ * time limit; the first one follows in the hold of the final mark if less
+ * than half of the time limit has passed since the mark started, and
+ * keeps the rest of it:
  *   - `FINISH_CLEAR`: the detached lists are emptied as by
  *     `clear_free_lists()`, from `pending_kind` and `pending_lg`; nothing
  *     else reads them;
@@ -1233,8 +1235,8 @@ half_limit_left(GC_bool unlimited)
 }
 
 /*
- * Run a chunk of the pending finish, from `GC_start_time` until the time
- * limit (or to the end if `unlimited`).
+ * Run a chunk of the pending finish until the time limit since
+ * `GC_start_time` (or to the end if `unlimited`).
  */
 static void
 run_finish_chunk(GC_bool unlimited)
@@ -2554,6 +2556,14 @@ GC_finish_collection(void)
 #ifdef PARALLEL_MARK_DEADLINE
   if (finish_in_chunks() && detach_free_lists()) {
     start_finish_chunks(full);
+    /*
+     * The first chunk follows at once if less than half of the time limit
+     * has passed since the start of the mark that completed the marking
+     * (`GC_start_time`, set if that mark had the time limit), and keeps the
+     * rest of it.
+     */
+    if (half_limit_left(FALSE))
+      run_finish_chunk(FALSE);
     return;
   }
 #endif
