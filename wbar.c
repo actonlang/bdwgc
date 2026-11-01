@@ -12,8 +12,9 @@
  */
 
 /*
- * The write-barrier checker of the manual VDB mode (`GC_WBAR_VERIFY`),
- * which reports pointer stores that no barrier recorded.
+ * Support for a client write barrier in the manual VDB mode, and its
+ * checker (`GC_WBAR_VERIFY`), which reports pointer stores that no barrier
+ * recorded.
  *
  * The checker runs inside `GC_stopped_mark()`, with the world stopped and
  * the allocator lock held, at every minor collection.  Right after the
@@ -119,6 +120,60 @@ GC_set_kind_always_rescanned(int kind, int value)
     GC_wbar_always_kinds &= ~((word)1 << kind);
   }
   UNLOCK();
+}
+
+GC_INNER void
+GC_wbar_dirty_blocks(const void *p, size_t nblocks)
+{
+  ptr_t h = (ptr_t)HBLKPTR(p);
+  size_t i;
+
+  for (i = 0; i < nblocks; i++)
+    GC_wbar_dirty(h + i * HBLKSIZE);
+}
+
+GC_INNER GC_bool
+GC_wbar_large_by_block(const hdr *hhdr)
+{
+  if (!GC_manual_vdb || hhdr->hb_sz <= MAXOBJBYTES
+      || (hhdr->hb_descr & GC_DS_TAGS) != GC_DS_LENGTH
+      || GC_wbar_always_rescanned(hhdr))
+    return FALSE;
+#  ifdef ENABLE_DISCLAIM
+  if ((hhdr->hb_flags & MARK_UNCONDITIONALLY) != 0)
+    return FALSE;
+#  endif
+  return TRUE;
+}
+
+GC_INNER void
+GC_wbar_dirty_object(const void *p)
+{
+  hdr *hhdr = HDR(p);
+  ptr_t h;
+  size_t i, n;
+
+  if (NULL == hhdr || !GC_manual_vdb)
+    return;
+  if (IS_FORWARDING_ADDR_OR_NIL(hhdr)) {
+    /* An interior block of a large object. */
+    ptr_t base = (ptr_t)GC_base(MAKE_CPTR(ADDR(p)));
+
+    if (NULL == base)
+      return;
+    hhdr = HDR(base);
+  }
+  if (HBLK_IS_FREE(hhdr) || hhdr->hb_sz <= MAXOBJBYTES
+      || !GC_wbar_large_by_block(hhdr))
+    return;
+  h = (ptr_t)hhdr->hb_block;
+  n = OBJ_SZ_TO_BLOCKS(hhdr->hb_sz);
+  for (i = 0; i < n; i++) {
+    size_t index = PHT_HASH(h + i * HBLKSIZE);
+
+    if (!get_pht_entry_from_index(GC_dirty_pages, index))
+      set_pht_entry_from_index_concurrent(GC_dirty_pages, index);
+  }
 }
 
 GC_API void GC_CALL
@@ -429,6 +484,32 @@ check_obj(ptr_t p, const hdr *hhdr)
   }
 }
 
+/*
+ * Check the clean blocks of the marked large object `h`, of which a pass
+ * over the dirty blocks pushes only the dirty ones (see
+ * `GC_wbar_large_by_block()`).
+ */
+static void
+check_large_by_block(struct hblk *h, const hdr *hhdr)
+{
+  word descr = hhdr->hb_descr;
+  ptr_t start = h->hb_body;
+  ptr_t lim = start + (descr < hhdr->hb_sz ? (size_t)descr : hhdr->hb_sz);
+  ptr_t b;
+
+  if (!mark_bit_from_hdr(hhdr, 0))
+    return;
+  for (b = start; ADDR_LT(b, lim); b += HBLKSIZE) {
+    ptr_t q;
+    ptr_t blim = ADDR_LT(b + HBLKSIZE, lim) ? b + HBLKSIZE : lim;
+
+    if (GC_page_was_dirty((struct hblk *)b))
+      continue;
+    for (q = b; ADDR_LT(q, blim - sizeof(ptr_t) + 1); q += sizeof(ptr_t))
+      check_word(start, hhdr, q);
+  }
+}
+
 static void
 check_block(hdr *hhdr, void *cd)
 {
@@ -438,6 +519,10 @@ check_block(hdr *hhdr, void *cd)
   UNUSED_ARG(cd);
   if ((/* `0 |` */ GC_DS_LENGTH) == hhdr->hb_descr || GC_block_empty(hhdr))
     return;
+  if (sz > MAXOBJBYTES && GC_wbar_large_by_block(hhdr)) {
+    check_large_by_block(h, hhdr);
+    return;
+  }
   /* The same predicate as `GC_push_next_marked_dirty()`. */
   if (GC_block_was_dirty(h, hhdr))
     return;
@@ -479,7 +564,10 @@ resolve_deferred(void)
     h = HBLKPTR((ptr_t)c->obj);
     if (hhdr->hb_sz > MAXOBJBYTES)
       h = hhdr->hb_block;
-    if (GC_block_was_dirty(h, hhdr)) {
+    if (hhdr->hb_sz > MAXOBJBYTES && GC_wbar_large_by_block(hhdr)
+            /* Of a large object rescanned by block, the block of the word. */
+            ? GC_page_was_dirty(HBLKPTR((ptr_t)c->slot))
+            : GC_block_was_dirty(h, hhdr)) {
       tot.window++;
     } else {
       add_report(c, WBAR_MISSED_LATER);

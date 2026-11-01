@@ -4313,16 +4313,37 @@ GC_EXTERN GC_bool GC_wbar_verify;
  * a thread-local free list, or freed explicitly while marked) in a block
  * dirtied for the next read.  The allocator lock is held.
  */
-#    define GC_WBAR_DIRTY_ALLOC(p, nblocks)                       \
-      do {                                                        \
-        if (GC_manual_vdb && GC_collection_in_progress()) {       \
-          size_t wbar_i;                                          \
-                                                                  \
-          GC_ASSERT(I_HOLD_LOCK());                               \
-          for (wbar_i = 0; wbar_i < (size_t)(nblocks); wbar_i++)  \
-            GC_wbar_dirty((ptr_t)HBLKPTR(p) + wbar_i * HBLKSIZE); \
-        }                                                         \
+#    define GC_WBAR_DIRTY_ALLOC(p, nblocks)                 \
+      do {                                                  \
+        if (GC_manual_vdb && GC_collection_in_progress()) { \
+          GC_ASSERT(I_HOLD_LOCK());                         \
+          GC_wbar_dirty_blocks(p, nblocks);                 \
+        }                                                   \
       } while (0)
+
+/*
+ * Dirty the `nblocks` blocks starting at the one of `p`, as
+ * `GC_wbar_dirty()` does each.  Does not require locking.
+ */
+GC_INNER void GC_wbar_dirty_blocks(const void *p, size_t nblocks);
+
+/*
+ * Does a pass over the dirty blocks push only the dirty blocks of the
+ * marked large object of `hhdr`, instead of all of it if any block of it
+ * is dirty?  In the manual VDB mode, for a large object scanned by length
+ * (not always rescanned, not `MARK_UNCONDITIONALLY`).  Shared by
+ * `GC_push_next_marked_dirty()`, the stack scan (which then dirties every
+ * block of such an object it references) and the write-barrier checker.
+ */
+GC_INNER GC_bool GC_wbar_large_by_block(const hdr *hhdr);
+
+/*
+ * If `p` is inside a large object rescanned by block, dirty all of its
+ * blocks: `GC_dirty_inner()` dirties the entire object logically (its
+ * callers, e.g. `GC_end_stubborn_change()`, may have stored anywhere in
+ * it).  Does not require locking.
+ */
+GC_INNER void GC_wbar_dirty_object(const void *p);
 
 /* Parse the environment variable.  Called by `GC_init()`. */
 GC_INNER void GC_wbar_init(void);

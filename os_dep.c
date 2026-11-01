@@ -5621,6 +5621,8 @@ GC_dirty_inner(const void *p)
   GC_ASSERT(GC_manual_vdb);
 #  endif
   async_set_pht_entry_from_index(GC_dirty_pages, index);
+  /* The other blocks of a large object rescanned by block. */
+  GC_wbar_dirty_object(p);
 }
 #endif
 

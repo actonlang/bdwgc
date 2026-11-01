@@ -2747,8 +2747,11 @@ GC_API void GC_CALL GC_debug_ptr_store_and_dirty(void * /* `p` */,
  * macros of `gc_inline.h`) which was kept over a collection: the
  * collection marks the objects of the list.  The collector reads and
  * clears the bits only with the world stopped, and the table never moves.
- * The bits are ignored unless the manual VDB mode is on; in the other
- * incremental modes they only make the next collection rescan more.
+ * Of a large object, only the blocks whose bits are set are rescanned (in
+ * the manual VDB mode), so a bit set by such a barrier covers the stores
+ * into its block only, whereas `GC_end_stubborn_change()` covers the whole
+ * object.  The bits are ignored unless the manual VDB mode is on; in the
+ * other incremental modes they only make the next collection rescan more.
  * Returns `NULL` (and leaves the sizes unset) if the collector is built
  * without the manual VDB mode.
  */
