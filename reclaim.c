@@ -931,6 +931,7 @@ GC_print_free_list(int kind, size_t lg)
 }
 #endif /* !NO_DEBUGGING */
 
+#ifdef THREAD_LOCAL_ALLOC
 GC_INNER void
 GC_clear_fl_links(void *fl)
 {
@@ -941,6 +942,7 @@ GC_clear_fl_links(void *fl)
     *flp = NULL;
   } while (fl != NULL);
 }
+#endif
 
 GC_INNER void
 GC_start_reclaim(GC_bool report_if_found)
@@ -956,7 +958,11 @@ GC_start_reclaim(GC_bool report_if_found)
   GC_composite_in_use = 0;
   GC_atomic_in_use = 0;
 
-  /* Clear reclaim- and free-lists. */
+  /*
+   * Clear the reclaim lists.  Unless `report_if_found`, the free lists
+   * are empty (the caller emptied them, see `clear_free_lists()`);
+   * otherwise their objects are marked, and it is safe to leave them.
+   */
   for (kind = 0; kind < (int)GC_n_kinds; kind++) {
     struct obj_kind *ok = &GC_obj_kinds[kind];
     struct hblk **rlist = ok->ok_reclaim_list;
@@ -965,22 +971,14 @@ GC_start_reclaim(GC_bool report_if_found)
       /* Means this object kind is not used. */
       continue;
     }
-
+#ifdef GC_ASSERTIONS
     if (!report_if_found) {
       size_t lg;
 
-      for (lg = 1; lg <= MAXOBJGRANULES; lg++) {
-        void *fl = ok->ok_freelist[lg];
-
-        if (fl != NULL) {
-          ok->ok_freelist[lg] = NULL;
-          if (ok->ok_descriptor != 0) /*< should clobber? */
-            GC_clear_fl_links(fl);
-        }
-      }
-    } else {
-      /* Free-list objects are marked, and it is safe to leave them. */
+      for (lg = 1; lg <= MAXOBJGRANULES; lg++)
+        GC_ASSERT(NULL == ok->ok_freelist[lg]);
     }
+#endif
     BZERO(rlist, (MAXOBJGRANULES + 1) * sizeof(void *));
   }
 
