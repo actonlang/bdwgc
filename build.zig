@@ -905,23 +905,33 @@ pub fn build(b: *std.Build) void {
         // the checker must report each store with its label and exit with
         // status 70, also when `exit()` is called while the report is
         // printed (`lost-exit`, whose describe function prints the text
-        // matched).  The manual VDB mode is not built with the malloc
-        // redirection or the back pointers of `enable_gc_debug`, and on
-        // Windows the checker aborts instead and the collector logs to
+        // matched) or while the report waits for a full collection
+        // (`lost-at-exit`).  The manual VDB mode is not built with the
+        // malloc redirection or the back pointers of `enable_gc_debug`, and
+        // on Windows the checker aborts instead and the collector logs to
         // a file.  Every run gets `GC_WBAR_VERIFY` from the environment:
         // the test sets it itself, but with msvc and dynamic linkage the
         // program links its own static copy of the C library (see
         // `cordtest` above), whose environment the collector DLL does not
         // read.
+        const wbar_failing_runs = [_]FailingRun{
+            .{ .arg = "lost", .exit_code = 70, .stderr_match = "WBVERIFY LOST " },
+            .{ .arg = "missed", .exit_code = 70, .stderr_match = "WBVERIFY MISSED " },
+            .{ .arg = "missed-next", .exit_code = 70, .stderr_match = "WBVERIFY MISSED(next) " },
+            .{ .arg = "kind-unflagged", .exit_code = 70, .stderr_match = "WBVERIFY LOST " },
+            .{ .arg = "lost-exit", .exit_code = 70, .stderr_match = "Calling exit() while a report is printed" },
+            .{ .arg = "lost-at-exit", .exit_code = 70, .stderr_match = "WBVERIFY LOST " },
+            .{ .arg = "large-missed", .exit_code = 70, .stderr_match = "WBVERIFY LOST " },
+            .{ .arg = "large-missed-next", .exit_code = 70, .stderr_match = "WBVERIFY MISSED(next) " },
+            .{ .arg = "missed-abandoned", .exit_code = 70, .stderr_match = "WBVERIFY MISSED " },
+            // The last one needs the marking in steps, which only the
+            // parallel marker builds.
+            .{ .arg = "final-lost", .exit_code = 70, .stderr_match = "WBVERIFY LOST " },
+        };
+        const n_wbar_failing_runs: usize = if (t.os.tag == .windows or enable_redirect_malloc or enable_gc_debug) 0 else if (enable_parallel_mark) wbar_failing_runs.len else wbar_failing_runs.len - 1;
         addTestExt(b, gc, test_step, flags, "wbarverifytest", "tests/wbarverify.c", .{
             .env = &.{.{ .name = "GC_WBAR_VERIFY", .value = "1" }},
-            .failing_runs = if (t.os.tag == .windows or enable_redirect_malloc or enable_gc_debug) &.{} else &.{
-                .{ .arg = "lost", .exit_code = 70, .stderr_match = "WBVERIFY LOST " },
-                .{ .arg = "missed", .exit_code = 70, .stderr_match = "WBVERIFY MISSED " },
-                .{ .arg = "missed-next", .exit_code = 70, .stderr_match = "WBVERIFY MISSED(next) " },
-                .{ .arg = "kind-unflagged", .exit_code = 70, .stderr_match = "WBVERIFY LOST " },
-                .{ .arg = "lost-exit", .exit_code = 70, .stderr_match = "Calling exit() while a report is printed" },
-            },
+            .failing_runs = wbar_failing_runs[0..n_wbar_failing_runs],
         });
         addTest(b, gc, test_step, flags, "unmapmarktest", "tests/unmapmark.c");
         addTest(b, gc, test_step, flags, "subthreadcreatetest", "tests/subthreadcreate.c");

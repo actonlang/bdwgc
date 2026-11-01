@@ -22,14 +22,32 @@
  * a thread-local free list kept over a collection (`tlfs`), an explicitly
  * freed object which is reused (`free`), an object initialized across
  * a collection (`stack`), an uncollectable object (`uncoll`) and an object
- * of a kind set always rescanned (`kind`).  With an argument, one case runs;
- * the cases `lost`, `missed`, `missed-next` and `kind-unflagged` store
- * without a barrier and must be reported (as lost, as missed, as missed at
- * the next collection and as lost), after which the full collection that
+ * of a kind set always rescanned (`kind`).  An object held by a local and
+ * filled after the stop function abandoned a first world-stopped mark
+ * (`abandon`).  An object allocated during a collection marked in
+ * world-stopped steps (a time limit of 10 microseconds) and filled after
+ * a step scanned it (`alloc`, skipped in builds without the parallel
+ * marker, and where the clock does not resolve 10 microseconds, e.g. on
+ * Windows).  Large objects, of which only the dirty blocks are rescanned,
+ * unless they are of a kind always rescanned: stores with a barrier into
+ * a far block (`large-barrier`, `large-stubborn`), a new large object filled
+ * in a far block after a collection marked it from the stack
+ * (`large-stack`), a large uncollectable object filled in a far block
+ * without a barrier (`large-uncoll`).  A report whose object was freed
+ * before the full collection that checks it is stale (`stale`).  With an
+ * argument, one case runs; the cases `lost`, `missed`, `missed-next`,
+ * `kind-unflagged`, `large-missed`, `large-missed-next`, `missed-abandoned`
+ * and `final-lost` store without a barrier and must be reported (as lost, as
+ * missed, as missed at the next collection, as lost, as lost in a clean
+ * block of a large object whose first block is dirty, as missed at the next
+ * collection in such a block, as missed at the read of a first world-stopped
+ * mark that the stop function abandons, and as lost at the final read of
+ * a collection marked in steps), after which the full collection that
  * confirms the report makes the process exit with status 70.  So must the
- * case `lost-exit`, in which `exit()` is called while the report is printed.
- * Skipped unless the manual VDB mode is built, and if `NO_INCREMENTAL` is
- * defined.
+ * case `lost-exit`, in which `exit()` is called while the report is printed,
+ * and the case `lost-at-exit`, whose report the full collection at exit
+ * confirms.  Skipped unless the manual VDB mode is built, and if
+ * `NO_INCREMENTAL` is defined.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -129,7 +147,12 @@ collect_minor(void)
   collect();
 }
 
-/* Overwrite the stack below the caller, to drop stale pointers. */
+/*
+ * Overwrite the stack below the caller, to drop stale pointers.  Not
+ * instrumented by AddressSanitizer, whose redzones in the frame would keep
+ * the stale words that the frame of the caller's next callee covers.
+ */
+GC_ATTR_NO_SANITIZE_ADDR
 static GC_ATTR_NOINLINE void
 clear_stack(void)
 {
@@ -191,8 +214,11 @@ store_young(int barrier, int keep)
      * a stack, and is deferred to the next collection.  A second store
      * without a barrier, into the last word, whose target is kept like
      * the first one, is checked after it and leaves its own target there
-     * instead.
+     * instead.  The first target holds a child of its own, which the
+     * marking must reach from it once it is kept alive (see
+     * `expect_kept()`).
      */
+    y->pad[0] = new_young();
     o->last = new_young();
   }
   if (keep) {
@@ -262,6 +288,24 @@ windows(void)
   return t.window;
 }
 
+static GC_word
+stales(void)
+{
+  struct GC_wbar_totals_s t;
+
+  totals(&t);
+  return t.stale;
+}
+
+static GC_word
+pending(void)
+{
+  struct GC_wbar_totals_s t;
+
+  GC_get_wbar_verify_totals(&t);
+  return t.pending;
+}
+
 static void
 report(const char *name)
 {
@@ -300,6 +344,16 @@ clean_block(const void *p)
   volatile GC_word *w = dirty_word(p, &m);
 
   *w &= ~m;
+}
+
+/* Set the dirty bit of the block of `p`, as the inline barrier does. */
+static void
+dirty_block(const void *p)
+{
+  GC_word m;
+  volatile GC_word *w = dirty_word(p, &m);
+
+  *w |= m;
 }
 
 static int
@@ -351,12 +405,32 @@ expect_window(GC_word w)
   }
 }
 
+/*
+ * Exit with status 1 unless the target `p`, after the collection that
+ * checked the store, is intact and marked, and so is the child it holds
+ * if any: the target of a report must stay alive, with the objects it
+ * references, until a full collection confirms the report.  As in
+ * `expect_window()`, the at-exit handler of the checker is skipped.
+ */
+static void
+expect_kept(const struct young *p)
+{
+  const struct young *c = NULL == p ? NULL : (const struct young *)p->pad[0];
+
+  if (NULL == p || p->magic != MAGIC || !GC_is_marked(p)
+      || (c != NULL && (c->magic != MAGIC || !GC_is_marked(c)))) {
+    fprintf(stderr, "The target of a report was not kept alive\n");
+    _Exit(1);
+  }
+}
+
 /* Dirty the old object and collect: its deferred target becomes a window. */
 static GC_ATTR_NOINLINE void
 drop_old(void)
 {
   GC_word w = windows();
 
+  expect_kept(((const struct old *)g_old)->p);
   GC_END_STUBBORN_CHANGE(g_old);
   collect();
   expect_window(w);
@@ -494,6 +568,30 @@ case_lost_exit(void)
 {
   GC_set_wbar_verify_describe(describe_exit);
   return case_lost();
+}
+
+/*
+ * A report still waiting when the process exits (`lost-at-exit`): the case
+ * returns once a report waits, and the at-exit handler of the checker lets
+ * a full collection confirm it.
+ */
+static int
+case_lost_at_exit(void)
+{
+  int round;
+
+  for (round = 0; round < N_ROUNDS; round++) {
+    setup_old();
+    clean_block(g_old);
+    store_young(0, 0);
+    clear_stack();
+    collect_minor();
+    if (pending() != 0)
+      return 0;
+    drop_old();
+  }
+  report("lost-at-exit");
+  return 0;
 }
 
 /*
@@ -807,6 +905,726 @@ case_kind_unflagged(void)
 }
 
 /*
+ * Collections marked in world-stopped steps.  `start_sliced()` sets the
+ * time limit to 10 microseconds and allocates until a minor collection
+ * starts (a world-stopped mark is notified); it returns whether the
+ * collection is in progress after its first mark.  `finish_sliced()`
+ * restores the unlimited time and completes the collection.  A long chain
+ * of new objects, reachable from a root, makes the marking span many
+ * steps.  The steps are built only with the parallel marker; without it
+ * the cases are skipped.
+ */
+#  ifdef PARALLEL_MARK_DEADLINE
+#    define HAVE_STEPS 1
+#  else
+#    define HAVE_STEPS 0
+#  endif
+
+#  define NO_STEPS_MSG \
+    "no marking in steps without the parallel marker, skipped"
+
+struct chain {
+  struct chain *next;
+  void *x;
+};
+
+static struct chain *volatile g_chain;
+static volatile GC_hidden_pointer g_mid;
+static volatile GC_word g_mark_starts;
+
+static void GC_CALLBACK
+on_event(GC_EventType e)
+{
+  if (GC_EVENT_MARK_START == e)
+    g_mark_starts++;
+}
+
+static GC_ATTR_NOINLINE void
+build_chain(size_t n)
+{
+  struct chain *head = NULL;
+  size_t i;
+
+  GC_disable();
+  for (i = 0; i < n; i++) {
+    struct chain *c = (struct chain *)GC_MALLOC(sizeof(struct chain));
+
+    CHECK(c != NULL);
+    c->next = head;
+    if (n / 2 == i)
+      g_mid = GC_HIDE_POINTER(c);
+    head = c;
+  }
+  g_chain = head;
+  GC_enable();
+}
+
+static void
+set_limit_us(unsigned long us)
+{
+  struct GC_timeval_s tv;
+
+  tv.tv_ms = us / 1000;
+  tv.tv_nsec = (us % 1000) * 1000;
+  GC_set_time_limit_tv(tv);
+}
+
+#  ifdef PARALLEL_MARK_DEADLINE
+/*
+ * Whether the clock of the collector resolves the time limit of the steps:
+ * one of a few tries must see it advance by less (a try fails if the
+ * thread is preempted meanwhile).  On Windows it counts milliseconds, and
+ * a step runs until the clock advances, often to the end of the marking.
+ */
+static int
+fine_clock(void)
+{
+  int i;
+
+  for (i = 0; i < 10; i++) {
+    CLOCK_TYPE start, now;
+    unsigned long us;
+
+    GET_TIME(start);
+    do {
+      GET_TIME(now);
+      us = MS_TIME_DIFF(now, start) * 1000UL
+           + NS_FRAC_TIME_DIFF(now, start) / 1000UL;
+    } while (0 == us);
+    if (us < 10)
+      return 1;
+  }
+  return 0;
+}
+#  endif
+
+static GC_ATTR_NOINLINE int
+start_sliced(void)
+{
+  GC_word starts = g_mark_starts;
+  GC_word n = gc_no();
+  int i;
+
+  GC_alloc_lock();
+  GC_need_full_gc = FALSE;
+  GC_alloc_unlock();
+  set_limit_us(10);
+  for (i = 0; g_mark_starts == starts; i++) {
+    CHECK(i < 100000000);
+    CHECK(GC_MALLOC_ATOMIC(16) != NULL);
+  }
+  return gc_no() == n;
+}
+
+static GC_ATTR_NOINLINE void
+finish_sliced(void)
+{
+  int i;
+
+  GC_set_time_limit(GC_TIME_UNLIMITED);
+  for (i = 0; GC_collect_a_little(); i++)
+    CHECK(i < 10000000);
+}
+
+/*
+ * Build a chain and start a collection that is marked in steps, with the
+ * block of `p` clean at the first read of the dirty bits: else the pass
+ * over the dirty blocks would push the block, and a step would rescan it.
+ */
+static void
+start_chain_sliced(const void *p)
+{
+  int i;
+
+  for (i = 0;; i++) {
+    CHECK(i < 20);
+    build_chain(200000);
+    clear_stack();
+    clean_block(p);
+    if (start_sliced())
+      return;
+    finish_sliced();
+  }
+}
+
+/*
+ * An object allocated during a collection marked in steps (`alloc`),
+ * linked to the middle of a chain the marking follows, held by a local,
+ * and filled without a barrier after a step scanned it and before the next
+ * world-stopped mark.  Its block is dirty for the final read since it was
+ * handed out during the collection.  The second store, into the last word,
+ * takes the stale words that the checker leaves on its stack, as in
+ * `store_young()`.
+ */
+static GC_ATTR_NOINLINE int
+alloc_round(void)
+{
+  struct chain *t = (struct chain *)GC_REVEAL_POINTER(g_mid);
+  GC_word starts = g_mark_starts;
+  struct old *x = new_old();
+  int scanned = 0;
+  int i;
+
+  t->x = x;
+  GC_END_STUBBORN_CHANGE(&t->x);
+  /* Steps only: a world-stopped mark would dirty the block of `x`. */
+  for (i = 0; GC_collect_a_little() && g_mark_starts == starts; i++) {
+    CHECK(i < 10000000);
+    if (GC_is_marked(x)) {
+      /* Let a step scan it. */
+      scanned = GC_collect_a_little() && g_mark_starts == starts;
+      break;
+    }
+  }
+  x->p = new_young();    /*< no barrier: a new object */
+  x->last = new_young(); /*< likewise */
+  GC_reachable_here(x);
+  return scanned;
+}
+
+static GC_ATTR_NOINLINE int
+alloc_intact(void)
+{
+  const struct chain *t = (const struct chain *)GC_REVEAL_POINTER(g_mid);
+  const struct old *x = (const struct old *)t->x;
+
+  return x->p != NULL && x->p->magic == MAGIC && x->last != NULL
+         && x->last->magic == MAGIC;
+}
+
+static int
+case_alloc(void)
+{
+  int round;
+  int exercised = 0;
+
+  if (!HAVE_STEPS) {
+    printf("alloc: %s\n", NO_STEPS_MSG);
+    return 1;
+  }
+#  ifdef PARALLEL_MARK_DEADLINE
+  if (!fine_clock()) {
+    printf("alloc: the clock does not resolve 10 microseconds, skipped\n");
+    return 1;
+  }
+#  endif
+  for (round = 0; round < 20 && !exercised; round++) {
+    build_chain(200000);
+    clear_stack();
+    if (start_sliced())
+      exercised = alloc_round();
+    clear_stack();
+    finish_sliced();
+    /* A deferred target is resolved while the chain holds the object. */
+    collect();
+    if (!exercised)
+      g_chain = NULL;
+  }
+  report("alloc");
+  if (!exercised)
+    printf("alloc: no step scanned the object first, case not exercised\n");
+  if (0 == errors() && exercised)
+    CHECK(alloc_intact());
+  g_chain = NULL;
+  return exercised && errors() == 0;
+}
+
+/*
+ * A world-stopped mark which the stop function abandons at once
+ * (`abandon`) pushes the roots first: the stack scan dirties, for the next
+ * read of the dirty bits, the block of an object a local holds, and the
+ * final mark rescans a store into it without a barrier after the world
+ * restarts.  The block is dirty when the world restarts, while the read
+ * at the start of the mark cleared it.  (Without the parallel marker the
+ * mark is not abandoned.)
+ */
+static int GC_CALLBACK
+always_stop(void)
+{
+  return 1;
+}
+
+static GC_ATTR_NOINLINE int
+abandon_held(void)
+{
+  struct old *volatile x = new_old();
+  GC_stop_func stop_func = GC_get_stop_func();
+  GC_word m;
+  const volatile GC_word *w = dirty_word(x, &m);
+  int dirty;
+
+  GC_set_stop_func(always_stop);
+  GC_start_incremental_collection();
+  GC_set_stop_func(stop_func);
+  dirty = (*w & m) != 0;
+  x->p = new_young(); /*< no barrier: a new object */
+  g_old = x;
+  return dirty;
+}
+
+static int
+case_abandon(void)
+{
+  int dirty;
+  int i;
+
+  dirty = abandon_held();
+  clear_stack();
+  while (GC_collect_a_little()) {
+    /* Empty. */
+  }
+  for (i = 0; i < 2; i++)
+    collect_minor();
+  report("abandon");
+  if (!dirty)
+    printf("abandon: no root push before the mark was abandoned\n");
+  if (0 == errors())
+    CHECK(old_intact());
+  return dirty && errors() == 0;
+}
+
+/*
+ * Run a collection whose first world-stopped mark the stop function
+ * abandons once the roots are pushed, and let it complete in steps:
+ * a minor one, unless a report waits for a full one.
+ */
+static GC_ATTR_NOINLINE void
+collect_abandoned_first(void)
+{
+  GC_stop_func stop_func = GC_get_stop_func();
+
+  GC_alloc_lock();
+  GC_need_full_gc = FALSE;
+  GC_alloc_unlock();
+  GC_set_stop_func(always_stop);
+  GC_start_incremental_collection();
+  GC_set_stop_func(stop_func);
+  clear_stack();
+  while (GC_collect_a_little()) {
+    /* Empty. */
+  }
+}
+
+/*
+ * A store without a barrier found at the read of a first world-stopped
+ * mark that the stop function abandons (`missed-abandoned`): its target,
+ * which a static root keeps, is marked by the steps that follow, and the
+ * store must still be reported, as missed.  The full collection that
+ * confirms the report starts with an abandoned mark too, and must confirm
+ * it when it completes in steps.  (Without the parallel marker the marks
+ * are not abandoned.)
+ */
+static int
+case_missed_abandoned(void)
+{
+  int round;
+
+  for (round = 0; round < N_ROUNDS; round++) {
+    GC_word w;
+
+    setup_old();
+    clean_block(g_old);
+    store_young(0, 1);
+    clear_stack();
+    w = windows();
+    collect_abandoned_first();
+    if (0 == pending()) {
+      /*
+       * Deferred: unless the final read of the collection counted it as
+       * a window, the next one resolves it.
+       */
+      if (windows() == w)
+        drop_old();
+      continue;
+    }
+    expect_kept(((const struct old *)g_old)->p);
+    collect_abandoned_first();
+    fprintf(stderr, "A full collection marked in steps confirmed no report\n");
+    _Exit(1);
+  }
+  report("missed-abandoned");
+  return 0;
+}
+
+/*
+ * A store without a barrier into an old object during a collection marked
+ * in steps, which the final read reports (`final-lost`).
+ */
+static int
+case_final_lost(void)
+{
+  int round;
+
+  if (!HAVE_STEPS) {
+    printf("final-lost: %s\n", NO_STEPS_MSG);
+    return 1;
+  }
+  for (round = 0; round < N_ROUNDS; round++) {
+    setup_old();
+    start_chain_sliced(g_old);
+    /* The root push of the first mark may have dirtied it. */
+    clean_block(g_old);
+    store_young(0, 0);
+    clear_stack();
+    finish_sliced();
+    g_chain = NULL;
+    drop_old();
+  }
+  report("final-lost");
+  return 0;
+}
+
+/*
+ * Large objects: a pass over the dirty blocks pushes only their dirty
+ * blocks.  `large-barrier` stores into a far block of an old one and sets
+ * the bit of that block, as the inline barrier does; `large-stubborn`
+ * stores into a far block and calls `GC_end_stubborn_change()` for the
+ * start of the object, which dirties all of its blocks; `large-missed`
+ * dirties the first block of the object and stores into a far block
+ * without a barrier, which must be reported as lost; `large-stack` fills
+ * a far block of a new one, held by a local, after a collection marked it
+ * from the stack, which dirtied all of its blocks.
+ */
+#  define LARGE_WORDS (64 * 16384 / sizeof(void *))
+#  define LARGE_FAR (LARGE_WORDS - 8)
+
+static void **volatile g_large;
+
+/*
+ * Without the debug header that `GC_MALLOC()` adds with `GC_DEBUG`, which
+ * would move the last words of the object out of the block of
+ * `a[LARGE_FAR]`.
+ */
+static void **
+new_large(void)
+{
+  void **a = (void **)GC_generic_malloc(LARGE_WORDS * sizeof(void *), NORMAL);
+
+  CHECK(a != NULL);
+  return a;
+}
+
+static GC_ATTR_NOINLINE void
+large_make_old(void)
+{
+  g_large = new_large();
+}
+
+/* `barrier`: 0 none, 1 the bit of the block, 2 `GC_end_stubborn_change()`. */
+static GC_ATTR_NOINLINE void
+large_store(int barrier)
+{
+  void **a = g_large;
+  struct young *y = new_young();
+
+  /* Only the barrier may make the next collection rescan the far block. */
+  clean_block(&a[LARGE_FAR]);
+  a[0] = NULL;
+  dirty_block(&a[0]);
+  a[LARGE_FAR] = y;
+  /* Checked after the first, its target takes the stale words. */
+  a[LARGE_WORDS - 4] = new_young();
+  if (1 == barrier)
+    dirty_block(&a[LARGE_FAR]);
+  if (2 == barrier)
+    GC_END_STUBBORN_CHANGE(a);
+  GC_reachable_here(y);
+}
+
+static GC_ATTR_NOINLINE int
+large_intact(void)
+{
+  const struct young *y = (const struct young *)g_large[LARGE_FAR];
+
+  return y != NULL && y->magic == MAGIC;
+}
+
+static void
+setup_large(void)
+{
+  large_make_old();
+  clear_stack();
+  collect();
+  collect();
+}
+
+static int
+large_case(int barrier)
+{
+  int i;
+
+  setup_large();
+  large_store(barrier);
+  clear_stack();
+  for (i = 0; i < 3; i++)
+    collect_minor();
+  report(1 == barrier ? "large-barrier" : "large-stubborn");
+  if (0 == errors())
+    CHECK(large_intact());
+  return 0 == errors();
+}
+
+static int
+case_large_barrier(void)
+{
+  return large_case(1);
+}
+
+static int
+case_large_stubborn(void)
+{
+  return large_case(2);
+}
+
+/* Dirty the whole large object and collect, as `drop_old()` does. */
+static GC_ATTR_NOINLINE void
+drop_large(void)
+{
+  GC_word w = windows();
+
+  expect_kept((const struct young *)g_large[LARGE_FAR]);
+  GC_END_STUBBORN_CHANGE(g_large);
+  collect();
+  expect_window(w);
+}
+
+static int
+case_large_missed(void)
+{
+  int round;
+
+  for (round = 0; round < N_ROUNDS; round++) {
+    setup_large();
+    large_store(0);
+    clear_stack();
+    collect_minor();
+    drop_large();
+  }
+  report("large-missed");
+  return 0;
+}
+
+/*
+ * A store without a barrier into a far block of an old large object, whose
+ * target a local holds at the collection that finds it, which defers it
+ * (`large-missed-next`): at the next read the far block is clean, while
+ * the first block is dirty, and the store must be reported as missed.
+ */
+static GC_ATTR_NOINLINE struct young *
+large_store_held(void)
+{
+  void **a = g_large;
+  struct young *y = new_young();
+
+  clean_block(&a[LARGE_FAR]);
+  a[LARGE_FAR] = y;
+  return y;
+}
+
+static int
+case_large_missed_next(void)
+{
+  int round;
+
+  for (round = 0; round < N_ROUNDS; round++) {
+    struct young *volatile y;
+    GC_word w;
+
+    setup_large();
+    y = large_store_held();
+    clear_stack();
+    collect_holding(&y);
+    y = NULL;
+    /* The stack scan of that collection may have dirtied the far block. */
+    clean_block(&g_large[LARGE_FAR]);
+    dirty_block(g_large);
+    clear_stack();
+    w = windows();
+    collect();
+    expect_window(w);
+  }
+  report("large-missed-next");
+  return 0;
+}
+
+static GC_ATTR_NOINLINE void
+large_stack_init(void)
+{
+  void **a = new_large();
+
+  collect();                  /*< marks `a`, referenced by the stack only */
+  a[LARGE_FAR] = new_young(); /*< no barrier: a new object */
+  /* Checked after the first, its target takes the stale words. */
+  a[LARGE_WORDS - 4] = new_young();
+  g_large = a;
+}
+
+static int
+case_large_stack(void)
+{
+  int i;
+
+  large_stack_init();
+  clear_stack();
+  for (i = 0; i < 3; i++)
+    collect_minor();
+  report("large-stack");
+  if (0 == errors())
+    CHECK(large_intact());
+  return errors() == 0;
+}
+
+/*
+ * A large uncollectable object filled in a far block without a barrier
+ * (`large-uncoll`): the objects of the always-rescanned kinds are pushed
+ * whole, not by dirty block.  Its address is kept hidden, as in `uncoll`.
+ */
+static volatile GC_hidden_pointer g_large_uncoll;
+
+static GC_ATTR_NOINLINE void
+large_uncoll_prepare(void)
+{
+  const void *u = GC_MALLOC_UNCOLLECTABLE(LARGE_WORDS * sizeof(void *));
+
+  CHECK(u != NULL);
+  g_large_uncoll = GC_HIDE_POINTER(u);
+}
+
+static GC_ATTR_NOINLINE void
+large_uncoll_store(void)
+{
+  void **a = (void **)GC_REVEAL_POINTER(g_large_uncoll);
+
+  /* Only its kind may make the next collection rescan the far block. */
+  clean_block(&a[LARGE_FAR]);
+  a[LARGE_FAR] = new_young(); /*< no barrier */
+}
+
+static GC_ATTR_NOINLINE int
+large_uncoll_intact(void)
+{
+  void **a = (void **)GC_REVEAL_POINTER(g_large_uncoll);
+  const struct young *y = (const struct young *)a[LARGE_FAR];
+
+  return y != NULL && y->magic == MAGIC;
+}
+
+static int
+case_large_uncoll(void)
+{
+  int i;
+
+  large_uncoll_prepare();
+  clear_stack();
+  collect();
+  collect();
+  large_uncoll_store();
+  clear_stack();
+  for (i = 0; i < 3; i++)
+    collect_minor();
+  report("large-uncoll");
+  if (0 == errors())
+    CHECK(large_uncoll_intact());
+  return errors() == 0;
+}
+
+/*
+ * Reports whose object is dead at the full collection that checks them are
+ * stale (`stale`).  First a store without a barrier into an old object
+ * which then becomes unreachable.  The checker leaves the target of the
+ * last word it records on its stack, where the stack scan of the same
+ * collection finds it, and a later read touches the object of a deferred
+ * candidate.  So another old object above it in the same block, which
+ * stays reachable, gets a pointer to a freed object (a report of it is
+ * stale too), and the block is dirtied for the next read (so a deferred
+ * candidate of it is a window).  Then a store without a barrier into a far
+ * block of an old large object which is then freed.
+ */
+static void *volatile g_decoy;
+
+/*
+ * Make two old objects in one block, the lower one not the first object of
+ * the block: `g_old` and `g_decoy`.
+ */
+static GC_ATTR_NOINLINE void
+make_old_pair(void)
+{
+  int i;
+
+  for (i = 0;; i++) {
+    struct old *a = new_old();
+    struct old *b = new_old();
+    struct old *lo = ADDR_LT((ptr_t)a, (ptr_t)b) ? a : b;
+
+    CHECK(i < 1000);
+    if (HBLKPTR(a) == HBLKPTR(b) && (ptr_t)lo != (ptr_t)HBLKPTR(lo)) {
+      g_old = lo;
+      g_decoy = lo == a ? b : a;
+      return;
+    }
+  }
+}
+
+static GC_ATTR_NOINLINE void
+store_dead_pair(void)
+{
+  struct old *o = (struct old *)g_old;
+  struct old *d = (struct old *)g_decoy;
+  struct young *f = new_young();
+
+  o->p = new_young(); /*< no barrier */
+  /* A pointer to an object freed before any collection marked it. */
+  d->p = f; /*< no barrier */
+  GC_free(f);
+}
+
+static int
+case_stale(void)
+{
+  int round;
+  GC_word dead;
+
+  for (round = 0; round < N_ROUNDS && 0 == stales(); round++) {
+    make_old_pair();
+    clear_stack();
+    collect();
+    collect();
+    clean_block(g_old);
+    store_dead_pair();
+    clear_stack();
+    collect_minor();
+    GC_END_STUBBORN_CHANGE(g_decoy);
+    g_old = NULL;
+    clear_stack();
+    collect();
+  }
+  /*
+   * The decoy still points to the freed object, which the allocations
+   * below may hand out again: it would then point to a new object nobody
+   * stored into it, which is reported, and stands.
+   */
+  if (g_decoy != NULL)
+    ((struct old *)g_decoy)->p = NULL;
+  g_decoy = NULL;
+  dead = stales();
+  for (round = 0; round < N_ROUNDS && stales() == dead; round++) {
+    void **a;
+
+    setup_large();
+    large_store(0);
+    clear_stack();
+    collect_minor();
+    a = g_large;
+    g_large = NULL;
+    GC_free(a);
+    clear_stack();
+    collect();
+  }
+  report("stale");
+  return 0 == errors() && dead >= 1 && stales() > dead;
+}
+
+/*
  * Threads storing with the inline barrier (the form a compiler emits)
  * while another thread allocates.
  */
@@ -958,11 +1776,23 @@ static const struct test_case cases[] = {
   { "uncoll", case_uncoll, 1 },
   { "threads", case_threads, 1 },
   { "kind", case_kind, 1 },
+  { "alloc", case_alloc, 1 },
+  { "abandon", case_abandon, 1 },
+  { "large-barrier", case_large_barrier, 1 },
+  { "large-stubborn", case_large_stubborn, 1 },
+  { "large-stack", case_large_stack, 1 },
+  { "large-uncoll", case_large_uncoll, 1 },
+  { "stale", case_stale, 1 },
   { "kind-unflagged", case_kind_unflagged, 0 },
   { "lost", case_lost, 0 },
   { "missed", case_missed, 0 },
   { "missed-next", case_missed_next, 0 },
   { "lost-exit", case_lost_exit, 0 },
+  { "lost-at-exit", case_lost_at_exit, 0 },
+  { "large-missed", case_large_missed, 0 },
+  { "large-missed-next", case_large_missed_next, 0 },
+  { "missed-abandoned", case_missed_abandoned, 0 },
+  { "final-lost", case_final_lost, 0 },
 };
 
 #  define N_CASES (sizeof(cases) / sizeof(cases[0]))
@@ -998,6 +1828,7 @@ main(int argc, char **argv)
   CHECK(g_log_block_size == LOG_HBLKSIZE);
   CHECK(g_log_entries == LOG_PHT_ENTRIES);
   GC_set_full_freq(100000);
+  GC_set_on_collection_event(on_event);
   /* Without a time limit, every collection is one world-stopped mark. */
   GC_set_time_limit(GC_TIME_UNLIMITED);
   for (i = 0; i < N_CASES; i++) {
