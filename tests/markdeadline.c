@@ -49,7 +49,10 @@
  * limit of 50 ms, a world-stopped mark of a collection must run a parallel
  * mark phase (`GC_mark_no` advances).  With a time limit of 0.1 ms, the
  * world-stopped mark that starts a collection is abandoned, and it must
- * leave no deadline set.  The checks with the time limit of 0.1 ms are
+ * leave no deadline set.  Then a step must be due once `slice_bytes` were
+ * allocated since the latest slice, and not earlier (with something
+ * allocated since the previous call of `GC_collect_a_little_inner()`),
+ * and leave no deadline set.  The checks with the time limit of 0.1 ms are
  * skipped if the clock of the collector does not resolve it (on Windows
  * it counts milliseconds).  The trees must stay intact.
  */
@@ -473,6 +476,9 @@ mark_with_deadlines(unsigned long far_ms)
 /* The calls of `GC_collect_a_little()` which a collection takes at most. */
 #  define MAX_COLLECT_CALLS 100000L
 
+/* The size of the objects allocated to pass `slice_bytes`. */
+#  define ALLOC_CHUNK_BYTES 65536
+
 /*
  * The world-stopped marks (from `GC_EVENT_MARK_START` until the world is
  * restarted), and those of them which ran a parallel mark phase.  Updated
@@ -484,10 +490,16 @@ static word mark_no_at_mark_start;
 static unsigned long n_stopped_marks;
 static unsigned long n_parallel_stopped_marks;
 
+/* The world stops, counted by `on_collection_event()` too. */
+static unsigned long n_stops;
+
 static void GC_CALLBACK
 on_collection_event(GC_EventType e)
 {
   switch (e) {
+  case GC_EVENT_POST_STOP_WORLD:
+    n_stops++;
+    break;
   case GC_EVENT_MARK_START:
     in_stopped_mark = TRUE;
     mark_no_at_mark_start = GC_mark_no;
@@ -549,6 +561,52 @@ check_abandoned_mark(void)
   GC_start_incremental_collection();
   LOCK();
   CHECK(GC_collection_in_progress());
+  CHECK(!GC_mark_deadline_on);
+  UNLOCK();
+  complete_collection();
+}
+
+/*
+ * Check that a step is due once `slice_bytes` were allocated since the
+ * latest slice, and not earlier if something was allocated since the
+ * previous call of `GC_collect_a_little_inner()`, and that a step leaves
+ * no deadline set.
+ */
+static void
+check_step_trigger(void)
+{
+  unsigned long stops;
+  GC_bool enough;
+
+  /* The time limit is 0.1 ms, thus the collection stays in progress. */
+  GC_start_incremental_collection();
+  /* Allocate more than `slice_bytes`, without marking. */
+  GC_disable();
+  do {
+    CHECK(GC_MALLOC_ATOMIC(ALLOC_CHUNK_BYTES) != NULL);
+    LOCK();
+    enough = allocd_now() > slice_bytes;
+    UNLOCK();
+  } while (!enough);
+  GC_enable();
+
+  LOCK();
+  CHECK(GC_collection_in_progress());
+  CHECK(slice_bytes > 0);
+  /*
+   * One byte short of `slice_bytes` since the latest slice, and some since
+   * the previous call.
+   */
+  allocd_at_slice = allocd_now() - (slice_bytes - 1);
+  allocd_at_call = allocd_now() - 1;
+  stops = n_stops;
+  GC_collect_a_little_inner(1);
+  CHECK(n_stops == stops);
+  /* Exactly `slice_bytes` since the latest slice. */
+  allocd_at_slice = allocd_now() - slice_bytes;
+  allocd_at_call = allocd_now() - 1;
+  GC_collect_a_little_inner(1);
+  CHECK(n_stops > stops);
   CHECK(!GC_mark_deadline_on);
   UNLOCK();
   complete_collection();
@@ -635,6 +693,7 @@ main(void)
       check_stopped_marks();
       if (fine) {
         check_abandoned_mark();
+        check_step_trigger();
       } else {
         printf("The clock does not resolve 0.1 ms, the checks with that"
                " time limit skipped\n");
