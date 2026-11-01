@@ -3554,7 +3554,12 @@ GC_mark_and_push_stack(ptr_t p)
    */
 #  ifndef NO_MANUAL_VDB
   if (GC_manual_vdb) {
-    GC_wbar_dirty(p); /*< entire object */
+    if (hhdr->hb_sz > MAXOBJBYTES && GC_wbar_large_by_block(hhdr)) {
+      /* Only the dirty blocks of the object are rescanned. */
+      GC_wbar_dirty_blocks(hhdr->hb_block, OBJ_SZ_TO_BLOCKS(hhdr->hb_sz));
+    } else {
+      GC_wbar_dirty(p); /*< entire object */
+    }
     if (UNLIKELY(GC_wbar_verify))
       GC_wbar_note_stack_ref(p);
   }
@@ -4198,6 +4203,42 @@ GC_push_marked_rescue(struct hblk *h, const hdr *hhdr)
                              GC_mark_stack_top, GC_mark_stack_limit);
 }
 
+#  ifndef NO_MANUAL_VDB
+/*
+ * Push the dirty blocks of the large object `h` if it is marked (see
+ * `GC_wbar_large_by_block()`), a run of adjacent dirty blocks as one
+ * range.
+ */
+STATIC void
+GC_push_marked_large_dirty(struct hblk *h, const hdr *hhdr)
+{
+  word descr = hhdr->hb_descr;
+  ptr_t start = h->hb_body;
+  ptr_t lim = start + (descr < hhdr->hb_sz ? (size_t)descr : hhdr->hb_sz);
+  ptr_t p;
+  ptr_t run = NULL;
+
+  if (!mark_bit_from_hdr(hhdr, 0))
+    return;
+  GC_n_rescuing_pages++;
+  GC_objects_are_marked = TRUE;
+  for (p = start; ADDR_LT(p, lim); p += HBLKSIZE) {
+    if (GC_page_was_dirty((struct hblk *)p)) {
+      if (NULL == run)
+        run = p;
+    } else if (run != NULL) {
+      GC_mark_stack_top
+          = GC_ms_push_all(run, p, GC_mark_stack_top, GC_mark_stack_limit);
+      run = NULL;
+    }
+  }
+  if (run != NULL) {
+    GC_mark_stack_top
+        = GC_ms_push_all(run, lim, GC_mark_stack_top, GC_mark_stack_limit);
+  }
+}
+#  endif
+
 /* Identical to `GC_push_next_marked`, but mark only from dirty pages. */
 STATIC struct hblk *
 GC_push_next_marked_dirty(struct hblk *h)
@@ -4223,6 +4264,12 @@ GC_push_next_marked_dirty(struct hblk *h)
     if (GC_block_was_dirty(h, hhdr))
       break;
   }
+#  ifndef NO_MANUAL_VDB
+  if (hhdr->hb_sz > MAXOBJBYTES && GC_wbar_large_by_block(hhdr)) {
+    GC_push_marked_large_dirty(h, hhdr);
+    return h + OBJ_SZ_TO_BLOCKS(hhdr->hb_sz);
+  }
+#  endif
 #  ifdef ENABLE_DISCLAIM
   if ((hhdr->hb_flags & MARK_UNCONDITIONALLY) != 0) {
     GC_push_unconditionally(h, hhdr);
