@@ -101,6 +101,12 @@ mallocmanytest_SOURCES = tests/mallocmany.c
 mallocmanytest_LDADD = $(test_ldadd)
 
 # Likewise, the test includes the collector source.
+TESTS += markdeadlinetest$(EXEEXT)
+check_PROGRAMS += markdeadlinetest
+markdeadlinetest_SOURCES = tests/markdeadline.c
+markdeadlinetest_LDADD = $(nodist_libgc_la_OBJECTS) $(EXTRA_TEST_LIBS) \
+                         @addobjs@ $(THREADDLLIBS) $(UNWINDLIBS) $(ATOMIC_OPS_LIBS)
+
 TESTS += markstackgrowthtest$(EXEEXT)
 check_PROGRAMS += markstackgrowthtest
 markstackgrowthtest_SOURCES = tests/markstackgrowth.c
@@ -392,6 +398,7 @@ check-without-test-driver: $(TESTS)
 	./hugetest$(EXEEXT)
 	./leaktest$(EXEEXT)
 	./mallocmanytest$(EXEEXT)
+	./markdeadlinetest$(EXEEXT)
 	./markstackgrowthtest$(EXEEXT)
 	./memaligntest$(EXEEXT)
 	./memlimittest$(EXEEXT)
