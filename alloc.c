@@ -1083,11 +1083,14 @@ STATIC word GC_clear_fl_marks(ptr_t *pq, GC_bool clear_links,
  *   - `FINISH_REST`: the unmapping and the rest of the finish.
  * The walk (from `FINISH_WALK_START`) and the rest each start in the
  * chunk that completes the phase before if less than half of the time
- * limit has passed, else in the next chunk.  A chunk is due after the
- * allocation volume between two steps, and at the latest the time limit after
- * the end of the previous chunk.  No collection starts while the finish is
- * pending; `GC_try_to_collect_inner()` completes it at once.  Protected by
- * the allocator lock.
+ * limit has passed, else in the next chunk.  A chunk is due after
+ * a quarter of the allocation volume between two steps, and at the latest
+ * a quarter of the time limit after the end of the previous chunk:
+ * meanwhile the allocator cannot reuse the memory the collection found
+ * free, thus the chunks run closer together than the steps of the
+ * marking.  No collection starts while the finish is pending;
+ * `GC_try_to_collect_inner()` completes it at once.  Protected by the
+ * allocator lock.
  */
 #  define FINISH_NONE 0
 #  define FINISH_CLEAR 1
@@ -1282,6 +1285,17 @@ start_finish_chunks(GC_bool full)
   finish_full = full;
   GET_TIME(setup_chunk_end);
   pace_next_slice();
+}
+
+/* Whether the next chunk of the pending finish is due. */
+static GC_bool
+finish_chunk_due(void)
+{
+  word allocd = allocd_now();
+
+  return allocd - allocd_at_slice >= slice_bytes / 4
+         || allocd < allocd_at_slice
+         || 4 * us_since(setup_chunk_end) >= time_limit_us();
 }
 
 /* Complete the pending finish, if any, at once. */
@@ -1723,7 +1737,7 @@ GC_collect_a_little_inner(size_t n_blocks)
 #ifdef PARALLEL_MARK_DEADLINE
   } else if (FINISH_PENDING()) {
     /* The finish of a collection proceeds even if collections are disabled. */
-    if (setup_chunk_due()) {
+    if (finish_chunk_due()) {
       DISABLE_CANCEL_FOR_WORK(cancel_state);
       GET_TIME(GC_start_time);
       run_finish_chunk(FALSE);
