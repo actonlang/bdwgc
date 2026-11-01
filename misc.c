@@ -1017,6 +1017,10 @@ set_incremental_mode_on(void)
      */
     GC_incremental = GC_dirty_init();
   }
+#  ifdef PARALLEL_MARK_DEADLINE
+  if (GC_incremental)
+    GC_parallel_slices = TRUE;
+#  endif
 }
 #endif /* !GC_DISABLE_INCREMENTAL */
 
@@ -1320,6 +1324,31 @@ GC_init(void)
       if (time_limit > 0) {
         GC_time_limit = (unsigned long)time_limit;
       }
+#  ifdef PARALLEL_MARK_DEADLINE
+      /* A fraction of a millisecond, e.g. "0.05" for 50 microseconds. */
+      {
+        const char *dot = strchr(str, '.');
+
+        if (time_limit >= 0 && time_limit < (long)GC_TIME_UNLIMITED
+            && dot != NULL && NULL == strchr(str, '-')) {
+          unsigned long nsec = 0;
+          unsigned long scale = 100000UL;
+          const char *p;
+
+          for (p = dot + 1; *p >= '0' && *p <= '9' && scale > 0; p++) {
+            nsec += (unsigned long)(*p - '0') * scale;
+            scale /= 10;
+          }
+          if (time_limit > 0 || nsec > 0) {
+            struct GC_timeval_s tv;
+
+            tv.tv_ms = (unsigned long)time_limit;
+            tv.tv_nsec = nsec;
+            GC_set_time_limit_tv(tv);
+          }
+        }
+      }
+#  endif
     }
   }
 #endif
