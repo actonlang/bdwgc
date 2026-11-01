@@ -155,7 +155,10 @@ start and complete the marking, the slices are steps, each run when the
 allocation since the previous slice reaches a share of the allocation between
 collections (that divided by twice the slices of the previous collection, by
 8 at least), or when nothing has been allocated since the previous attempt,
-e.g. before the heap grows.  If the parallel marker is supported, the value may
+e.g. before the heap grows.  The manual VDB mode never marks with the world
+running: it runs the steps on one thread if the parallel marker is not used,
+and in builds without the parallel marker, every world-stopped mark of that
+mode runs to completion.  If the parallel marker is supported, the value may
 have a fraction of a millisecond, e.g. "0.05" for 50 microseconds.
 
 `GC_GEN_FULL_LIVE_PCT` - In the incremental mode, makes the next collection
