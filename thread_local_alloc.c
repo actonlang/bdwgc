@@ -294,7 +294,11 @@ drop_stale_freelists(void **fl, const struct GC_tl_refill_s *refill, int first,
                      unsigned char gc_no, int kind)
 {
   GC_bool clear_links
-      = (GC_obj_kinds[kind].ok_descriptor & GC_DS_TAGS) == GC_DS_PER_OBJECT;
+      = (GC_obj_kinds[kind].ok_descriptor & GC_DS_TAGS) == GC_DS_PER_OBJECT
+#  ifndef NO_MANUAL_VDB
+        || GC_WBAR_SWEEPS_ALL()
+#  endif
+      ;
   int j;
 
   for (j = first; j < GC_TINY_FREELISTS; ++j) {
