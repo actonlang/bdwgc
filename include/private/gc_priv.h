@@ -3280,6 +3280,13 @@ GC_INNER void GC_initiate_gc(void);
 GC_INNER GC_bool GC_collection_in_progress(void);
 
 /*
+ * The number of times the marking has pushed the roots (and thus, in the
+ * manual VDB mode, dirtied the blocks of the objects the stacks reference
+ * and of the thread-local free lists).  Protected by the allocator lock.
+ */
+GC_EXTERN word GC_roots_pushes;
+
+/*
  * Push contents of the symbol residing in the static roots area excluded
  * from scanning by the collector for a reason.  Note: it should be used only
  * for symbols of relatively small size (containing one or several pointers).

@@ -16,9 +16,9 @@
  * a collection and waits for it (`GC_gcollect()`), which marks in steps
  * without allocation.  Then, with a stop function which always returns
  * true, every world-stopped mark with the time limit is abandoned before it
- * marks anything, and a collection must still complete, marked only by
- * steps, each of which calls `GC_mark_some()` once, and by the final mark
- * without the time limit.
+ * marks anything (in the manual VDB mode, once it pushed the roots), and
+ * a collection must still complete, marked only by steps, each of which
+ * calls `GC_mark_some()` once, and by the final mark without the time limit.
  *
  * If `NO_CLOCK` is defined, the collector has no time limit, and the test
  * checks only the forests.
