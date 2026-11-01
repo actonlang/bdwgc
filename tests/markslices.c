@@ -7,8 +7,15 @@
  * Unless `NO_INCREMENTAL` is defined, the test turns the incremental mode
  * on with a time limit of 0.1 ms (by `GC_ENABLE_INCREMENTAL` and
  * `GC_PAUSE_TIME_TARGET` environment variables).  With the parallel
- * marker, the test checks that the time limit was parsed, and that some
- * collections were marked in several world-stopped marks.
+ * marker, the test checks that the time limit was parsed, that some
+ * collections were marked in several world-stopped marks, and that the
+ * world was stopped for marking steps between them too.  At last, it
+ * starts a collection and waits for it (`GC_gcollect()`), which marks in
+ * steps without allocation.  Then, with a stop function which always
+ * returns true, every world-stopped mark with the time limit is abandoned
+ * before it marks anything, and a collection must still complete, marked
+ * only by steps, each of which calls `GC_mark_some()` once, and by the final
+ * mark without the time limit.
  *
  * If `NO_CLOCK` is defined, the collector has no time limit, and the test
  * checks only the forests.
@@ -225,10 +232,45 @@ run(LPVOID arg)
 #endif
 }
 
+#ifndef NO_CLOCK
+static int GC_CALLBACK
+always_stop(void)
+{
+  return 1;
+}
+
+/*
+ * Start a collection and complete it with the stop function always
+ * returning true: it is marked only by steps and by the final mark without
+ * the time limit.
+ */
+static void
+check_step_progress(void)
+{
+  GC_stop_func stop_func = GC_get_stop_func();
+  GC_word gc_no = GC_get_gc_no();
+  long n;
+
+  GC_set_stop_func(always_stop);
+  GC_start_incremental_collection();
+  for (n = 0; n < 100000L && GC_collect_a_little(); n++) {
+    /* Empty. */
+  }
+  GC_set_stop_func(stop_func);
+  if (GC_get_gc_no() == gc_no) {
+    fprintf(stderr, "No collection completed in steps\n");
+    exit(1);
+  }
+}
+#endif
+
 int
 main(void)
 {
   int i;
+#ifndef NO_CLOCK
+  unsigned long n_marks_run;
+#endif
 #ifdef GC_PTHREADS
   pthread_t th[N_THREADS];
 #else
@@ -286,6 +328,11 @@ main(void)
 #endif
   }
 #ifndef NO_CLOCK
+  n_marks_run = n_marks;
+#endif
+  GC_start_incremental_collection();
+  GC_gcollect();
+#ifndef NO_CLOCK
   if (GC_is_incremental_mode() && GC_get_parallel()) {
     struct GC_timeval_s tv = GC_get_time_limit_tv();
 
@@ -294,10 +341,19 @@ main(void)
               tv.tv_nsec);
       exit(1);
     }
+    if (0 == n_marks_run) {
+      fprintf(stderr, "No collection completed while the threads ran\n");
+      exit(1);
+    }
     if (n_stopped_marks <= n_marks) {
       fprintf(stderr, "No collection spans several world-stopped marks\n");
       exit(1);
     }
+    if (n_stops <= n_stopped_marks) {
+      fprintf(stderr, "No marking step\n");
+      exit(1);
+    }
+    check_step_progress();
   }
 #endif
   printf("SUCCEEDED (%lu collections, %lu world stops, %lu world-stopped"

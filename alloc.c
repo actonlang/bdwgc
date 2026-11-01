@@ -314,12 +314,33 @@ parallel_slices_on(void)
 }
 
 /*
- * The slices (world-stopped marks) of the collection in progress, and their
- * longest and total time in microseconds.  Protected by the allocator lock.
+ * The slices (world-stopped marks and steps) of the collection in progress,
+ * and their longest and total time in microseconds.  Protected by the
+ * allocator lock, as the following.
  */
 static unsigned n_slices = 0;
 static unsigned long longest_slice_us = 0;
 static unsigned long total_slice_us = 0;
+
+/*
+ * The bytes allocated (`GC_bytes_allocd` plus `GC_bytes_allocd_tmp`) at
+ * the latest slice, and at the latest call of `GC_collect_a_little_inner()`
+ * while marking, for pacing the steps.
+ */
+static word allocd_at_slice = 0;
+static word allocd_at_call = 0;
+
+/* The bytes to allocate between two steps of the collection in progress. */
+static word slice_bytes = 0;
+
+/* The slices of the latest collection whose marking completed. */
+static unsigned prev_n_slices = 0;
+
+static word
+allocd_now(void)
+{
+  return GC_bytes_allocd + (word)AO_load(&GC_bytes_allocd_tmp);
+}
 #endif
 
 #if defined(GC_DISABLE_INCREMENTAL) || defined(NO_CLOCK)
@@ -792,6 +813,9 @@ GC_notify_full_gc(void)
 }
 
 STATIC GC_bool GC_stopped_mark(GC_stop_func stop_func);
+#ifdef PARALLEL_MARK_DEADLINE
+STATIC GC_bool GC_parallel_mark_step(void);
+#endif
 STATIC void GC_finish_collection(void);
 
 #if defined(GC_ASSERTIONS) && defined(THREAD_LOCAL_ALLOC)
@@ -1069,24 +1093,45 @@ GC_collect_a_little_inner(size_t n_blocks)
   if (GC_incremental && GC_collection_in_progress()) {
     size_t i;
     size_t max_deficit = GC_rate * n_blocks;
+    GC_bool stack_empty = FALSE;
 
     DISABLE_CANCEL_FOR_WORK(cancel_state);
     ENTER_GC();
-#ifdef PARALLEL_MARK
-    if (GC_time_limit != GC_TIME_UNLIMITED)
-      GC_parallel_mark_disabled = TRUE;
+#ifdef PARALLEL_MARK_DEADLINE
+    if (parallel_slices_on()) {
+      /*
+       * Mark only in world-stopped steps, one per `slice_bytes` allocated,
+       * or when nothing was allocated since the previous call (the caller
+       * waits for the collection to complete, or the heap is to grow).
+       */
+      word allocd = allocd_now();
+
+      if (allocd - allocd_at_slice >= slice_bytes || allocd < allocd_at_slice
+          || allocd == allocd_at_call) {
+        stack_empty = GC_parallel_mark_step();
+      }
+      allocd_at_call = allocd;
+    } else
 #endif
-    for (i = GC_mark_deficit; i < max_deficit; i++) {
-      if (GC_mark_some(NULL))
-        break;
+    /* else */ {
+#ifdef PARALLEL_MARK
+      if (GC_time_limit != GC_TIME_UNLIMITED)
+        GC_parallel_mark_disabled = TRUE;
+#endif
+      for (i = GC_mark_deficit; i < max_deficit; i++) {
+        if (GC_mark_some(NULL)) {
+          stack_empty = TRUE;
+          break;
+        }
+      }
+#ifdef PARALLEL_MARK
+      GC_parallel_mark_disabled = FALSE;
+#endif
     }
-#ifdef PARALLEL_MARK
-    GC_parallel_mark_disabled = FALSE;
-#endif
     EXIT_GC();
     GC_after_marking();
 
-    if (i < max_deficit && !GC_dont_gc) {
+    if (stack_empty && !GC_dont_gc) {
       GC_ASSERT(!GC_collection_in_progress());
       /* Need to follow up with a full collection. */
       SAVE_CALLERS_TO_LAST_STACK();
@@ -1195,16 +1240,25 @@ GC_INNER unsigned GC_unmap_threshold = MUNMAP_THRESHOLD;
 #endif /* !USE_MUNMAP */
 
 #ifdef PARALLEL_MARK_DEADLINE
+/* The outcomes of a slice, for `end_slice()`. */
+#  define SLICE_CONTINUES 0
+#  define SLICE_STACK_EMPTY 1 /*< a step emptied the mark stack */
+#  define SLICE_DONE 2        /*< the marking of the collection completed */
+
 /*
  * Count a slice of the collection in progress: the world was stopped
- * from `start` until now.  If `done`, the marking is complete; then log
- * the slices of the collection and reset the counts.
+ * from `start` until now.  If the marking is complete (`SLICE_DONE`), log
+ * the slices of the collection.  Otherwise the next step is due after
+ * allocating the allocation budget divided by twice the slices of the
+ * previous collection (by 8 at least), so that a marking of as many
+ * slices completes within half the budget.
  */
 static void
-end_slice(CLOCK_TYPE start, GC_bool done)
+end_slice(CLOCK_TYPE start, int outcome)
 {
   CLOCK_TYPE now;
   unsigned long us;
+  GC_bool done = SLICE_DONE == outcome;
 
   GC_ASSERT(I_HOLD_LOCK());
   GET_TIME(now);
@@ -1215,17 +1269,24 @@ end_slice(CLOCK_TYPE start, GC_bool done)
     longest_slice_us = us;
   total_slice_us += us;
   GC_COND_LOG_PRINTF("Slice %u of collection #%lu: world stopped for %lu us,"
-                     " marking %s\n",
+                     " %s\n",
                      n_slices, (unsigned long)GC_gc_no + (done ? 0 : 1), us,
-                     done ? "complete" : "continues");
+                     done                           ? "marking complete"
+                     : SLICE_STACK_EMPTY == outcome ? "mark stack empty"
+                                                    : "marking continues");
   if (done) {
     GC_COND_LOG_PRINTF("Marked collection #%lu in %u slices: longest %lu us,"
                        " total %lu us\n",
                        (unsigned long)GC_gc_no, n_slices, longest_slice_us,
                        total_slice_us);
+    prev_n_slices = n_slices;
     n_slices = 0;
     longest_slice_us = 0;
     total_slice_us = 0;
+  } else {
+    allocd_at_slice = allocd_now();
+    slice_bytes = min_bytes_allocd()
+                  / (prev_n_slices > 4 ? 2 * (word)prev_n_slices : 8);
   }
 }
 #endif
@@ -1388,7 +1449,7 @@ GC_stopped_mark(GC_stop_func stop_func)
 #endif
 #ifdef PARALLEL_MARK_DEADLINE
   if (count_slice)
-    end_slice(slice_start, 0 == abandoned_at);
+    end_slice(slice_start, 0 == abandoned_at ? SLICE_DONE : SLICE_CONTINUES);
 #endif
 #ifdef PARALLEL_MARK
   if (serial_done_at != 0) {
@@ -1455,6 +1516,66 @@ GC_stopped_mark(GC_stop_func stop_func)
                      abandoned_at - 1);
   return FALSE;
 }
+
+#ifdef PARALLEL_MARK_DEADLINE
+/*
+ * Run a step of the collection in progress: stop the world, mark (in
+ * parallel) until the mark stack is empty or the time limit passes, and
+ * restart the world.  Unlike `GC_stopped_mark()`, this reads no dirty
+ * bits.  Return whether the mark stack is empty (a final mark follows).
+ */
+STATIC GC_bool
+GC_parallel_mark_step(void)
+{
+  ptr_t cold_gc_frame = GC_approx_sp();
+  CLOCK_TYPE slice_start;
+  GC_bool stack_empty = FALSE;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  GC_ASSERT(GC_collection_in_progress());
+  GC_ASSERT(parallel_slices_on());
+  /* Builders of free lists read the mark bits outside the lock. */
+  GC_wait_for_reclaim();
+  GET_TIME(GC_start_time);
+  slice_start = GC_start_time;
+#  ifdef THREADS
+  if (GC_on_collection_event)
+    GC_on_collection_event(GC_EVENT_PRE_STOP_WORLD);
+#  endif
+  STOP_WORLD();
+#  ifdef THREADS
+  if (GC_on_collection_event)
+    GC_on_collection_event(GC_EVENT_POST_STOP_WORLD);
+#    ifdef THREAD_LOCAL_ALLOC
+  GC_world_stopped = TRUE;
+#    endif
+#  endif
+  GC_set_mark_deadline(GC_time_limit, GC_time_lim_nsec);
+  /* Make progress even if stopping the world took the whole time limit. */
+  do {
+    if (GC_mark_some(cold_gc_frame)) {
+      stack_empty = TRUE;
+      break;
+    }
+  } while (!GC_timeout_stop_func());
+  GC_clear_mark_deadline();
+#  ifdef THREADS
+  if (GC_on_collection_event)
+    GC_on_collection_event(GC_EVENT_PRE_START_WORLD);
+#  endif
+#  ifdef THREAD_LOCAL_ALLOC
+  GC_world_stopped = FALSE;
+#  endif
+  START_WORLD();
+#  ifdef THREADS
+  if (GC_on_collection_event)
+    GC_on_collection_event(GC_EVENT_POST_START_WORLD);
+#  endif
+  log_timeout_stop();
+  end_slice(slice_start, stack_empty ? SLICE_STACK_EMPTY : SLICE_CONTINUES);
+  return stack_empty;
+}
+#endif
 
 #if !defined(NO_FIND_LEAK) || defined(THREAD_LOCAL_ALLOC)
 /*

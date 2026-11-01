@@ -52,8 +52,13 @@
 
 #define MiB ((size_t)1 << 20)
 
-/* Whether the marking can stop at the time limit and span steps. */
-#ifdef NO_CLOCK
+/*
+ * Whether the marking can stop at the time limit and span steps.  On
+ * Windows the clock of the collector counts milliseconds: a step runs
+ * until the clock advances, not for 10 microseconds, and often marks to
+ * the end.
+ */
+#if defined(NO_CLOCK) || defined(_WIN32)
 #  define MARK_STEPS 0
 #else
 #  define MARK_STEPS 1
