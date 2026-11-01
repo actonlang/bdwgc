@@ -6,7 +6,12 @@
  * reused by another allocation, thus its key or check word is wrong.
  * Unless `NO_INCREMENTAL` is defined, the test turns the incremental mode
  * on with a time limit of 0.1 ms (by `GC_ENABLE_INCREMENTAL` and
- * `GC_PAUSE_TIME_TARGET` environment variables).
+ * `GC_PAUSE_TIME_TARGET` environment variables).  With the parallel
+ * marker, the test checks that the time limit was parsed, and that some
+ * collections were marked in several world-stopped marks.
+ *
+ * If `NO_CLOCK` is defined, the collector has no time limit, and the test
+ * checks only the forests.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -280,6 +285,21 @@ main(void)
     CloseHandle(th[i]);
 #endif
   }
+#ifndef NO_CLOCK
+  if (GC_is_incremental_mode() && GC_get_parallel()) {
+    struct GC_timeval_s tv = GC_get_time_limit_tv();
+
+    if (tv.tv_ms != 0 || tv.tv_nsec != 100000UL) {
+      fprintf(stderr, "Wrong time limit: %lu ms %lu ns\n", tv.tv_ms,
+              tv.tv_nsec);
+      exit(1);
+    }
+    if (n_stopped_marks <= n_marks) {
+      fprintf(stderr, "No collection spans several world-stopped marks\n");
+      exit(1);
+    }
+  }
+#endif
   printf("SUCCEEDED (%lu collections, %lu world stops, %lu world-stopped"
          " marks, %lu completed)\n",
          (unsigned long)GC_get_gc_no(), n_stops, n_stopped_marks, n_marks);
