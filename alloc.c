@@ -848,6 +848,7 @@ STATIC GC_bool GC_stopped_mark(GC_stop_func stop_func);
 STATIC GC_bool GC_parallel_mark_step(void);
 #endif
 STATIC void GC_finish_collection(void);
+static void finish_rest(GC_bool full);
 
 #if defined(GC_ASSERTIONS) && defined(THREAD_LOCAL_ALLOC)
 void GC_check_tls(void);
@@ -1053,6 +1054,215 @@ GC_redo_mark_clearing(void)
   }
 }
 
+STATIC word GC_clear_fl_marks(ptr_t *pq, GC_bool clear_links,
+                              GC_stop_func stop_func);
+
+/*
+ * The finish of a collection in chunks.  With world-stopped steps and
+ * a time limit (and neither the leak finder nor the write-barrier checker
+ * on), the hold of the final mark ends after the finalization, with the
+ * free lists of the kinds in use detached (into `pending_fl`) and the
+ * reclaim lists emptied.  The allocator then takes objects only from the
+ * thread-local free lists (marked by the final mark), from new blocks and
+ * from the objects freed explicitly or returned by exiting threads since
+ * (marked, or in new blocks); it neither sweeps a block nor hands out an
+ * object which the finish takes for a free one.  The rest of the finish
+ * runs in chunks, each holding the allocator lock for at most about the
+ * time limit:
+ *   - `FINISH_CLEAR`: the detached lists are emptied as by
+ *     `clear_free_lists()`, from `pending_kind` and `pending_lg`; nothing
+ *     else reads them;
+ *   - `FINISH_WALK`: the walk of the blocks that starts the sweep
+ *     (`GC_start_reclaim()`), which skips the blocks set up since the
+ *     final mark (all their objects were allocated since);
+ *   - `FINISH_REST`: the unmapping and the rest of the finish.
+ * The walk and the rest each run in the chunk that completes the phase
+ * before if less than half of the time limit has passed, else in the next
+ * chunk.  A chunk is due after the allocation volume between two steps, and
+ * at the latest the time limit after the end of the previous chunk.  No
+ * collection starts while the finish is pending; `GC_try_to_collect_inner()`
+ * completes it at once.  Protected by the allocator lock.
+ */
+#  define FINISH_NONE 0
+#  define FINISH_CLEAR 1
+#  define FINISH_WALK 2
+#  define FINISH_REST 3
+static int finish_phase = FINISH_NONE;
+
+/* Whether the collection of the pending finish is a full one. */
+static GC_bool finish_full = FALSE;
+
+/*
+ * The detached free lists, per kind (`NULL` until a finish in chunks
+ * needs them), in the layout of `ok_freelist`.  Allocated with
+ * `GC_scratch_alloc()`, thus not a root.
+ */
+static ptr_t *pending_fl[MAXOBJKINDS];
+
+/* The kind and the size of the next detached list to empty. */
+static unsigned pending_kind = 0;
+static size_t pending_lg = 1;
+
+#  define FINISH_PENDING() (finish_phase != FINISH_NONE)
+
+/*
+ * Whether the finish of the collection that just completed its marking
+ * runs in chunks.
+ */
+static GC_bool
+finish_in_chunks(void)
+{
+  return steps_on() && GC_time_limit != GC_TIME_UNLIMITED
+#  ifndef NO_FIND_LEAK
+         && !GC_find_leak_inner
+#  endif
+#  ifndef NO_MANUAL_VDB
+         && !GC_WBAR_SWEEPS_ALL()
+#  endif
+      ;
+}
+
+/*
+ * Detach the free lists of the kinds in use and empty the reclaim lists.
+ * Return false if the storage for the detached lists cannot be allocated
+ * (then nothing is changed).
+ */
+static GC_bool
+detach_free_lists(void)
+{
+  unsigned kind;
+
+  for (kind = 0; kind < GC_n_kinds; kind++) {
+    if (GC_obj_kinds[kind].ok_reclaim_list != NULL
+        && NULL == pending_fl[kind]) {
+      pending_fl[kind]
+          = (ptr_t *)GC_scratch_alloc((MAXOBJGRANULES + 1) * sizeof(ptr_t));
+      if (NULL == pending_fl[kind])
+        return FALSE;
+      BZERO(pending_fl[kind], (MAXOBJGRANULES + 1) * sizeof(ptr_t));
+    }
+  }
+  for (kind = 0; kind < GC_n_kinds; kind++) {
+    struct obj_kind *ok = &GC_obj_kinds[kind];
+    size_t lg;
+
+    if (NULL == ok->ok_reclaim_list) {
+      /* The kind is not in use; its free lists are kept. */
+      for (lg = 1; lg <= MAXOBJGRANULES; lg++) {
+        ptr_t q = (ptr_t)ok->ok_freelist[lg];
+
+        if (q != NULL)
+          GC_bytes_found
+              -= (GC_signed_word)GC_clear_fl_marks(&q, FALSE, (GC_stop_func)0);
+      }
+      continue;
+    }
+    for (lg = 1; lg <= MAXOBJGRANULES; lg++) {
+      GC_ASSERT(NULL == pending_fl[kind][lg]);
+      pending_fl[kind][lg] = (ptr_t)ok->ok_freelist[lg];
+      ok->ok_freelist[lg] = NULL;
+    }
+    BZERO(ok->ok_reclaim_list, (MAXOBJGRANULES + 1) * sizeof(struct hblk *));
+  }
+  pending_kind = 0;
+  pending_lg = 1;
+  return TRUE;
+}
+
+/*
+ * Empty the detached free lists until `stop_func` returns true.  Return
+ * whether they are all empty.
+ */
+static GC_bool
+clear_pending_fl(GC_stop_func stop_func)
+{
+  for (; pending_kind < GC_n_kinds; pending_kind++, pending_lg = 1) {
+    ptr_t *fl = pending_fl[pending_kind];
+    GC_bool clear_links;
+
+    if (NULL == fl || NULL == GC_obj_kinds[pending_kind].ok_reclaim_list)
+      continue;
+    clear_links = GC_obj_kinds[pending_kind].ok_descriptor != 0;
+    for (; pending_lg <= MAXOBJGRANULES; pending_lg++) {
+      if (NULL == fl[pending_lg])
+        continue;
+      GC_bytes_found -= (GC_signed_word)GC_clear_fl_marks(
+          &fl[pending_lg], clear_links, stop_func);
+      if (fl[pending_lg] != NULL)
+        return FALSE;
+    }
+  }
+  return TRUE;
+}
+
+/*
+ * Whether less than half of the time limit has passed since
+ * `GC_start_time`, or `unlimited`.
+ */
+static GC_bool
+half_limit_left(GC_bool unlimited)
+{
+  return unlimited || 2 * us_since(GC_start_time) < time_limit_us();
+}
+
+/*
+ * Run a chunk of the pending finish, from `GC_start_time` until the time
+ * limit (or to the end if `unlimited`).
+ */
+static void
+run_finish_chunk(GC_bool unlimited)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  GC_ASSERT(FINISH_PENDING());
+  if (FINISH_CLEAR == finish_phase) {
+    setup_stop_calls = 0;
+    ENTER_GC();
+    if (clear_pending_fl(unlimited ? GC_never_stop_func : setup_stop_func))
+      finish_phase = FINISH_WALK;
+    EXIT_GC();
+  }
+  if (FINISH_WALK == finish_phase && half_limit_left(unlimited)) {
+#  ifdef PARALLEL_MARK
+    /* The walk needs every free-list builder done. */
+    if (GC_parallel)
+      GC_wait_for_reclaim();
+#  endif
+    GC_start_reclaim(FALSE, TRUE);
+    finish_phase = FINISH_REST;
+  }
+  if (FINISH_REST == finish_phase && half_limit_left(unlimited)) {
+    finish_phase = FINISH_NONE;
+    finish_rest(finish_full);
+  }
+  if (FINISH_PENDING()) {
+    GET_TIME(setup_chunk_end);
+    pace_next_slice();
+  }
+}
+
+/* Start the pending finish (the caller detached the free lists). */
+static void
+start_finish_chunks(GC_bool full)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  finish_phase = FINISH_CLEAR;
+  finish_full = full;
+  GET_TIME(setup_chunk_end);
+  pace_next_slice();
+}
+
+/* Complete the pending finish, if any, at once. */
+STATIC void
+GC_complete_finish(void)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  if (FINISH_PENDING()) {
+    GET_TIME(GC_start_time);
+    run_finish_chunk(TRUE);
+  }
+  GC_ASSERT(!FINISH_PENDING());
+}
+
 /*
  * When the final mark of the collection in progress became due (see
  * `GC_final_mark_due`).  Protected by the allocator lock.
@@ -1061,10 +1271,14 @@ static CLOCK_TYPE final_due_since;
 
 #  define FINAL_DUE() GC_final_mark_due
 
-/* Whether the set-up of a full collection or a final mark is to run. */
-#  define WORK_PENDING() (SETUP_PENDING() || FINAL_DUE())
+/*
+ * Whether the set-up of a full collection, a final mark or the finish of
+ * a collection is still to run.
+ */
+#  define WORK_PENDING() (SETUP_PENDING() || FINAL_DUE() || FINISH_PENDING())
 #else
 #  define FINAL_DUE() FALSE
+#  define FINISH_PENDING() FALSE
 #  define WORK_PENDING() FALSE
 #endif /* !PARALLEL_MARK_DEADLINE */
 
@@ -1159,6 +1373,10 @@ GC_try_to_collect_inner(GC_stop_func stop_func)
     return FALSE;
   if (GC_on_collection_event)
     GC_on_collection_event(GC_EVENT_START);
+#ifdef PARALLEL_MARK_DEADLINE
+  /* Finish the previous collection. */
+  GC_complete_finish();
+#endif
   if (GC_incremental && (GC_collection_in_progress() || FINAL_DUE())) {
     GC_COND_LOG_PRINTF(
         "GC_try_to_collect_inner: finishing collection in progress\n");
@@ -1167,6 +1385,9 @@ GC_try_to_collect_inner(GC_stop_func stop_func)
       /* TODO: Notify `GC_EVENT_ABANDON`. */
       return FALSE;
     }
+#ifdef PARALLEL_MARK_DEADLINE
+    GC_complete_finish();
+#endif
   }
   GC_notify_full_gc();
 #ifndef NO_CLOCK
@@ -1228,6 +1449,10 @@ GC_try_to_collect_inner(GC_stop_func stop_func)
     return FALSE;
   }
   GC_finish_collection();
+#ifdef PARALLEL_MARK_DEADLINE
+  /* The caller expects the collection to be finished on return. */
+  GC_complete_finish();
+#endif
 #ifndef NO_CLOCK
   if (start_time_valid) {
     CLOCK_TYPE current_time;
@@ -1463,6 +1688,14 @@ GC_collect_a_little_inner(size_t n_blocks)
     }
     RESTORE_CANCEL_FOR_WORK(cancel_state);
 #ifdef PARALLEL_MARK_DEADLINE
+  } else if (FINISH_PENDING()) {
+    /* The finish of a collection proceeds even if collections are disabled. */
+    if (setup_chunk_due()) {
+      DISABLE_CANCEL_FOR_WORK(cancel_state);
+      GET_TIME(GC_start_time);
+      run_finish_chunk(FALSE);
+      RESTORE_CANCEL_FOR_WORK(cancel_state);
+    }
   } else if (SETUP_PENDING()) {
     if (!GC_dont_gc && setup_chunk_due()) {
       DISABLE_CANCEL_FOR_WORK(cancel_state);
@@ -1513,11 +1746,11 @@ GC_collect_a_little(void)
    */
   GC_collect_a_little_inner(1);
   /*
-   * The work counted by `WORK_PENDING()` does not run while the collections
-   * are disabled.
+   * A pending set-up and a due final mark do not run while the collections
+   * are disabled, unlike a pending finish.
    */
-  result
-      = (int)(GC_collection_in_progress() || (WORK_PENDING() && !GC_dont_gc));
+  result = (int)(GC_collection_in_progress() || FINISH_PENDING()
+                 || (WORK_PENDING() && !GC_dont_gc));
   UNLOCK();
   if (GC_debugging_started && !result)
     GC_print_all_smashed();
@@ -2039,18 +2272,28 @@ GC_check_fl_marks(void **pfreelist)
 #endif /* GC_ASSERTIONS && THREAD_LOCAL_ALLOC */
 
 /*
- * Clear all mark bits for the free list (specified by the first entry),
- * and its links if `clear_links`.  Return number of bytes on the free
- * list.
+ * The objects of a free list visited by `GC_clear_fl_marks()` between two
+ * calls of its stop function.
+ */
+#define FL_CLEAR_CHECK 512
+
+/*
+ * Clear the mark bits of the free list starting at `*pq`, and its links if
+ * `clear_links`, until the end of the list or until `stop_func` (if not
+ * zero, called after every `FL_CLEAR_CHECK` objects) returns true.  Set
+ * `*pq` to the first object not visited (`NULL` at the end).  Return the
+ * number of bytes of the objects visited.
  */
 STATIC word
-GC_clear_fl_marks(ptr_t q, GC_bool clear_links)
+GC_clear_fl_marks(ptr_t *pq, GC_bool clear_links, GC_stop_func stop_func)
 {
+  ptr_t q = *pq;
   struct hblk *h = HBLKPTR(q);
   const struct hblk *last_h = h;
   hdr *hhdr = HDR(h);
   size_t sz = hhdr->hb_sz; /*< normally set only once */
   word bytes = 0;
+  unsigned n = 0;
 
   for (;;) {
     size_t bit_no = MARK_BIT_NO((size_t)((ptr_t)q - (ptr_t)h), sz);
@@ -2087,6 +2330,11 @@ GC_clear_fl_marks(ptr_t q, GC_bool clear_links)
     }
     if (NULL == q)
       break;
+    if (UNLIKELY(++n >= FL_CLEAR_CHECK) && stop_func != 0) {
+      n = 0;
+      if ((*stop_func)())
+        break;
+    }
 
     h = HBLKPTR(q);
     if (UNLIKELY(h != last_h)) {
@@ -2096,6 +2344,7 @@ GC_clear_fl_marks(ptr_t q, GC_bool clear_links)
       sz = hhdr->hb_sz;
     }
   }
+  *pq = q;
   return bytes;
 }
 
@@ -2152,7 +2401,7 @@ clear_free_lists(void)
       if (q != NULL) {
         if (drop)
           ok->ok_freelist[lg] = NULL;
-        bytes += GC_clear_fl_marks(q, clear_links);
+        bytes += GC_clear_fl_marks(&q, clear_links, (GC_stop_func)0);
       }
     }
   }
@@ -2180,22 +2429,29 @@ GC_compute_heap_usage_percent(void)
                    TO_KiB_UL(GC_atomic_in_use + GC_bytes_allocd))
 
 /*
+ * The start of `GC_finish_collection()` and the end of its finalization,
+ * for its log line.  Protected by the allocator lock.
+ */
+#ifndef NO_CLOCK
+static CLOCK_TYPE finish_start_time;
+static CLOCK_TYPE finish_finalize_time;
+#endif
+
+/*
  * Finish up a collection.  Assumes mark bits are consistent, but the
- * world is otherwise running.
+ * world is otherwise running.  The part after the finalization runs in
+ * chunks if `finish_in_chunks()`.
  */
 STATIC void
 GC_finish_collection(void)
 {
-#ifndef NO_CLOCK
-  CLOCK_TYPE start_time = CLOCK_TYPE_INITIALIZER;
-  CLOCK_TYPE finalize_time = CLOCK_TYPE_INITIALIZER;
-#endif
+  GC_bool full = GC_is_full_gc;
 
   GC_ASSERT(I_HOLD_LOCK());
 
 #ifndef NO_CLOCK
   if (GC_print_stats)
-    GET_TIME(start_time);
+    GET_TIME(finish_start_time);
 #endif
   if (GC_on_collection_event)
     GC_on_collection_event(GC_EVENT_RECLAIM_START);
@@ -2215,7 +2471,7 @@ GC_finish_collection(void)
   if (GC_find_leak_inner) {
     set_all_fl_marks();
     /* This just checks; it does not really reclaim anything. */
-    GC_start_reclaim(TRUE);
+    GC_start_reclaim(TRUE, FALSE);
   }
 #endif
 #ifndef GC_NO_FINALIZATION
@@ -2224,7 +2480,7 @@ GC_finish_collection(void)
 #endif
 #ifndef NO_CLOCK
   if (GC_print_stats)
-    GET_TIME(finalize_time);
+    GET_TIME(finish_finalize_time);
 #endif
 #ifdef MAKE_BACK_GRAPH
   if (GC_print_back_height) {
@@ -2232,6 +2488,28 @@ GC_finish_collection(void)
   }
 #endif
 
+  /*
+   * Reset or increment counters for next cycle: what is allocated from
+   * now on counts for the next collection.
+   */
+  GC_n_attempts = 0;
+#if !defined(NO_CLOCK) && !defined(GC_DISABLE_INCREMENTAL)
+  n_final_abandoned = 0;
+#endif
+  GC_is_full_gc = FALSE;
+  GC_bytes_allocd_before_gc += GC_bytes_allocd;
+  GC_non_gc_bytes_at_gc = GC_non_gc_bytes;
+  GC_bytes_allocd = 0;
+  GC_bytes_dropped = 0;
+  GC_bytes_freed = 0;
+  GC_finalizer_bytes_freed = 0;
+
+#ifdef PARALLEL_MARK_DEADLINE
+  if (finish_in_chunks() && detach_free_lists()) {
+    start_finish_chunks(full);
+    return;
+  }
+#endif
   /* Also update the counter of bytes of memory reclaimed. */
   GC_bytes_found -= (GC_signed_word)clear_free_lists();
 
@@ -2239,12 +2517,23 @@ GC_finish_collection(void)
                         (long)GC_bytes_found);
 
   /* Reconstruct free lists to contain everything not marked. */
-  GC_start_reclaim(FALSE);
+  GC_start_reclaim(FALSE, FALSE);
 #ifndef NO_MANUAL_VDB
   if (GC_WBAR_SWEEPS_ALL())
     (void)GC_reclaim_all((GC_stop_func)0, FALSE);
 #endif
+  finish_rest(full);
+}
 
+/*
+ * The rest of `GC_finish_collection()` after the walk of the blocks: the
+ * unmapping, the logging and the trigger of the next collection, for
+ * a full collection if `full`.
+ */
+static void
+finish_rest(GC_bool full)
+{
+  GC_ASSERT(I_HOLD_LOCK());
 #ifdef USE_MUNMAP
   if (GC_unmap_threshold > 0    /*< memory unmapping enabled? */
       && LIKELY(GC_gc_no != 1)) /*< do not unmap during `GC_init` */
@@ -2278,7 +2567,7 @@ GC_finish_collection(void)
                   TO_KiB_UL(volume), (unsigned long)percent, TO_KiB_UL(live),
                   TO_KiB_UL(heap_target()));
   }
-  if (GC_is_full_gc) {
+  if (full) {
     GC_used_heap_size_after_full = GC_heapsize - GC_large_free_bytes;
     GC_in_use_after_full = GC_composite_in_use + GC_atomic_in_use;
     GC_need_full_gc = FALSE;
@@ -2303,19 +2592,6 @@ GC_finish_collection(void)
     }
   }
 
-  /* Reset or increment counters for next cycle. */
-  GC_n_attempts = 0;
-#if !defined(NO_CLOCK) && !defined(GC_DISABLE_INCREMENTAL)
-  n_final_abandoned = 0;
-#endif
-  GC_is_full_gc = FALSE;
-  GC_bytes_allocd_before_gc += GC_bytes_allocd;
-  GC_non_gc_bytes_at_gc = GC_non_gc_bytes;
-  GC_bytes_allocd = 0;
-  GC_bytes_dropped = 0;
-  GC_bytes_freed = 0;
-  GC_finalizer_bytes_freed = 0;
-
   if (GC_on_collection_event)
     GC_on_collection_event(GC_EVENT_RECLAIM_END);
 #ifndef NO_CLOCK
@@ -2329,10 +2605,10 @@ GC_finish_collection(void)
 #  endif
     GC_log_printf(
         "Finalize and initiate sweep took %lu ms %lu ns + %lu ms %lu ns\n",
-        MS_TIME_DIFF(finalize_time, start_time),
-        NS_FRAC_TIME_DIFF(finalize_time, start_time),
-        MS_TIME_DIFF(done_time, finalize_time),
-        NS_FRAC_TIME_DIFF(done_time, finalize_time));
+        MS_TIME_DIFF(finish_finalize_time, finish_start_time),
+        NS_FRAC_TIME_DIFF(finish_finalize_time, finish_start_time),
+        MS_TIME_DIFF(done_time, finish_finalize_time),
+        NS_FRAC_TIME_DIFF(done_time, finish_finalize_time));
   }
 #elif !defined(SMALL_CONFIG) && !defined(GC_NO_FINALIZATION)
   if (GC_print_stats)

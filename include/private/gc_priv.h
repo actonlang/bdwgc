@@ -3818,9 +3818,11 @@ GC_INNER GC_bool GC_expand_hp_inner(word n);
  * Restore unmarked objects to free lists, or (if `abort_if_found` is `TRUE`)
  * report them.  (I.e. perform `GC_reclaim_block()` on the entire heap.)
  * Unless `abort_if_found`, the small-object free lists are empty on
- * entry.  Sweeping of small object pages is largely deferred.
+ * entry.  If `skip_new`, then the blocks set up since the latest marking
+ * completed (thus holding only objects allocated since) are skipped.
+ * Sweeping of small object pages is largely deferred.
  */
-GC_INNER void GC_start_reclaim(GC_bool abort_if_found);
+GC_INNER void GC_start_reclaim(GC_bool abort_if_found, GC_bool skip_new);
 
 #ifdef THREAD_LOCAL_ALLOC
 /*

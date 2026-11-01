@@ -579,14 +579,23 @@ start_collection(void)
   UNLOCK();
 }
 
-/* Complete the collection in progress, if any. */
+/*
+ * Complete the collection in progress, if any, and its finish, which
+ * nothing allocated makes due only by the time limit.
+ */
 static void
 complete_collection(void)
 {
   long n;
+  IF_CANCEL(int cancel_state;)
 
-  for (n = 0; GC_collect_a_little(); n++)
+  for (n = 0; GC_collect_a_little() && !FINISH_PENDING(); n++)
     CHECK(n < MAX_COLLECT_CALLS);
+  LOCK();
+  DISABLE_CANCEL(cancel_state);
+  GC_complete_finish();
+  RESTORE_CANCEL(cancel_state);
+  UNLOCK();
 }
 
 /* Check that the world-stopped marks with the time limit mark in parallel. */
