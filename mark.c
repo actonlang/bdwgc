@@ -239,6 +239,8 @@ GC_collection_in_progress(void)
   return GC_mark_state != MS_NONE;
 }
 
+GC_INNER word GC_roots_pushes = 0;
+
 GC_INNER void
 GC_clear_hdr_marks(hdr *hhdr)
 {
@@ -705,6 +707,7 @@ push_roots_and_advance(GC_bool push_all, ptr_t cold_gc_frame)
    * beforehand.
    */
   GC_objects_are_marked = TRUE;
+  GC_roots_pushes++;
   GC_push_roots(push_all, cold_gc_frame);
   if (GC_mark_state != MS_INVALID) {
     GC_mark_state = MS_ROOTS_PUSHED;

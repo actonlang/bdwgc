@@ -1332,6 +1332,10 @@ GC_stopped_mark(GC_stop_func stop_func)
   CLOCK_TYPE slice_start = CLOCK_TYPE_INITIALIZER;
   GC_bool count_slice = GC_parallel_slices;
 #endif
+#ifndef NO_MANUAL_VDB
+  GC_bool roots_first = GC_manual_vdb;
+  word roots_pushes_at;
+#endif
 
   GC_ASSERT(I_HOLD_LOCK());
   GC_ASSERT(GC_is_initialized);
@@ -1401,6 +1405,9 @@ GC_stopped_mark(GC_stop_func stop_func)
   GC_noop6(0, 0, 0, 0, 0, 0);
 
   GC_initiate_gc();
+#ifndef NO_MANUAL_VDB
+  roots_pushes_at = GC_roots_pushes;
+#endif
 #ifdef PARALLEL_MARK
   if (stop_func != GC_never_stop_func) {
 #  ifdef PARALLEL_MARK_DEADLINE
@@ -1414,7 +1421,22 @@ GC_stopped_mark(GC_stop_func stop_func)
     }
   }
 #endif
-  for (abandoned_at = 1; !(*stop_func)(); abandoned_at++) {
+  for (abandoned_at = 1;; abandoned_at++) {
+#ifndef NO_MANUAL_VDB
+    /*
+     * In the manual VDB mode, the dirty bits read (or cleared) by
+     * `GC_initiate_gc()` above are followed by the bits for the next read
+     * that the root push sets: of the objects the stacks reference, which
+     * a client may fill without a barrier after the world restarts, and
+     * of the thread-local free lists.  Thus the marking is not abandoned
+     * before the roots are pushed.
+     */
+    if (!roots_first || GC_roots_pushes != roots_pushes_at)
+#endif
+    {
+      if ((*stop_func)())
+        break;
+    }
     if (GC_mark_some(cold_gc_frame)) {
 #ifdef PARALLEL_MARK
       if (GC_parallel && GC_parallel_mark_disabled)
