@@ -322,10 +322,10 @@ check_PROGRAMS += finalstoptest
 finalstoptest_SOURCES = tests/finalstop.c
 finalstoptest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
-TESTS += fullsetuptest$(EXEEXT)
-check_PROGRAMS += fullsetuptest
-fullsetuptest_SOURCES = tests/fullsetup.c
-fullsetuptest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+TESTS += finishtest$(EXEEXT)
+check_PROGRAMS += finishtest
+finishtest_SOURCES = tests/finish.c
+finishtest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
 TESTS += collectwaittest$(EXEEXT)
 check_PROGRAMS += collectwaittest
@@ -436,8 +436,8 @@ check-without-test-driver: $(TESTS)
 	test ! -f disclaim_bench$(EXEEXT) || ./disclaim_bench$(EXEEXT)
 	test ! -f disclaimtest$(EXEEXT) || ./disclaimtest$(EXEEXT)
 	test ! -f finalstoptest$(EXEEXT) || ./finalstoptest$(EXEEXT)
+	test ! -f finishtest$(EXEEXT) || ./finishtest$(EXEEXT)
 	test ! -f forktest$(EXEEXT) || ./forktest$(EXEEXT)
-	test ! -f fullsetuptest$(EXEEXT) || ./fullsetuptest$(EXEEXT)
 	test ! -f heapsectstest$(EXEEXT) || ./heapsectstest$(EXEEXT)
 	test ! -f initfromthreadtest$(EXEEXT) || ./initfromthreadtest$(EXEEXT)
 	test ! -f markercounttest$(EXEEXT) || ./markercounttest$(EXEEXT)

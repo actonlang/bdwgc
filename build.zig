@@ -935,7 +935,11 @@ pub fn build(b: *std.Build) void {
         });
         addTest(b, gc, test_step, flags, "unmapmarktest", "tests/unmapmark.c");
         addTest(b, gc, test_step, flags, "finalstoptest", "tests/finalstop.c");
-        addTest(b, gc, test_step, flags, "fullsetuptest", "tests/fullsetup.c");
+        // `finishtest` runs once more with the write-barrier checker, under
+        // which the finish of a collection must run at once.
+        addTestExt(b, gc, test_step, flags, "finishtest", "tests/finish.c", .{
+            .env_runs = &.{.{ .name = "GC_WBAR_VERIFY", .value = "1" }},
+        });
         addTest(b, gc, test_step, flags, "collectwaittest", "tests/collectwait.c");
         addTest(b, gc, test_step, flags, "subthreadcreatetest", "tests/subthreadcreate.c");
         addTest(b, gc, test_step, flags, "threadleaktest", "tests/threadleak.c");

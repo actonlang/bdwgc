@@ -1413,12 +1413,12 @@ if(BUILD_TESTING)
         )
         add_test(NAME finalstoptest COMMAND finalstoptest)
 
-        add_executable(fullsetuptest tests/fullsetup.c ${NODIST_SRC})
+        add_executable(finishtest tests/finish.c ${NODIST_SRC})
         target_link_libraries(
-            fullsetuptest
+            finishtest
             PRIVATE gc gc_build_flags ${THREADDLLIBS_LIST}
         )
-        add_test(NAME fullsetuptest COMMAND fullsetuptest)
+        add_test(NAME finishtest COMMAND finishtest)
 
         add_executable(collectwaittest tests/collectwait.c ${NODIST_SRC})
         target_link_libraries(

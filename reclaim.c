@@ -573,6 +573,9 @@ GC_disclaim_and_reclaim_small_block(struct hblk *hbp)
 struct reclaim_walk_s {
   GC_bool report_if_found;
 
+  /* Whether the blocks set up since the latest marking are skipped. */
+  GC_bool skip_new;
+
   /* The lowest block of the pending run, or `NULL`. */
   struct hblk *run;
 
@@ -655,6 +658,14 @@ GC_reclaim_block(hdr *hhdr, void *walk_state)
   struct obj_kind *ok;
 
   GC_ASSERT(I_HOLD_LOCK());
+  if (pw->skip_new && hhdr->hb_last_reclaimed == (unsigned short)GC_gc_no) {
+    /*
+     * The block was set up after the marking completed (and `GC_gc_no`
+     * was incremented), thus its objects were allocated since; the next
+     * collection decides on them.
+     */
+    return;
+  }
   ok = &GC_obj_kinds[hhdr->hb_obj_kind];
 #ifdef AO_HAVE_load
   /* Atomic access is used to avoid racing with `GC_realloc`. */
@@ -949,7 +960,7 @@ GC_clear_fl_links(void *fl)
 #endif
 
 GC_INNER void
-GC_start_reclaim(GC_bool report_if_found)
+GC_start_reclaim(GC_bool report_if_found, GC_bool skip_new)
 {
   int kind;
   struct reclaim_walk_s walk_state;
@@ -963,17 +974,21 @@ GC_start_reclaim(GC_bool report_if_found)
   GC_atomic_in_use = 0;
 
   /*
-   * Clear the reclaim lists.  Unless `report_if_found`, the free lists
-   * of every kind are empty (the caller emptied them, see
-   * `clear_free_lists()`); otherwise their objects are marked, and it is
-   * safe to leave them.
+   * Clear the reclaim lists.  Unless `report_if_found` or `skip_new`, the
+   * free lists of every kind are empty (the caller emptied them, see
+   * `clear_free_lists()`).  If `report_if_found`, their objects are
+   * marked, and it is safe to leave them.  If `skip_new`, they hold only
+   * objects put on them since the marking: marked ones (freed explicitly,
+   * or returned from a thread-local free list) and ones of the blocks set
+   * up since, which the walk skips, thus the sweep never puts any of them
+   * on a free list again.
    */
   for (kind = 0; kind < (int)GC_n_kinds; kind++) {
     struct obj_kind *ok = &GC_obj_kinds[kind];
     struct hblk **rlist = ok->ok_reclaim_list;
 
 #ifdef GC_ASSERTIONS
-    if (!report_if_found) {
+    if (!report_if_found && !skip_new) {
       size_t lg;
 
       for (lg = 1; lg <= MAXOBJGRANULES; lg++)
@@ -989,6 +1004,7 @@ GC_start_reclaim(GC_bool report_if_found)
    * the block for later processing.
    */
   walk_state.report_if_found = report_if_found;
+  walk_state.skip_new = skip_new;
   walk_state.run = NULL;
   walk_state.run_hdr = NULL;
   walk_state.run_bytes = 0;
