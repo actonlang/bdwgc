@@ -401,12 +401,12 @@ GC_initiate_gc(void)
     GC_check_dirty();
 #  elif !defined(NO_MANUAL_VDB)
     {
-      GC_bool minor = GC_mark_state == MS_NONE;
+      GC_bool marks_complete = GC_mark_state == MS_NONE;
 
-      /* The checker resolves its deferred candidates at every collection. */
-      GC_read_dirty(!minor && !(GC_wbar_verify && GC_manual_vdb));
+      /* The checker resolves its deferred candidates at every read. */
+      GC_read_dirty(!marks_complete && !(GC_wbar_verify && GC_manual_vdb));
       if (UNLIKELY(GC_wbar_verify))
-        GC_wbar_after_read_dirty(minor);
+        GC_wbar_after_read_dirty(marks_complete);
     }
 #  else
     GC_read_dirty(GC_mark_state == MS_INVALID);

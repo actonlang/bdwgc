@@ -856,7 +856,11 @@ GC_maybe_gc(void)
   if (GC_parallel)
     GC_wait_for_reclaim();
 #endif
-  if (GC_need_full_gc || GC_n_partial_gcs >= GC_full_freq) {
+  if (GC_need_full_gc || GC_n_partial_gcs >= GC_full_freq
+#ifndef NO_MANUAL_VDB
+      || GC_wbar_need_full
+#endif
+  ) {
     GC_COND_LOG_PRINTF(
         "***>Full mark for collection #%lu after %lu bytes allocated\n",
         (unsigned long)GC_gc_no + 1, (unsigned long)GC_bytes_allocd);
@@ -1454,15 +1458,15 @@ GC_stopped_mark(GC_stop_func stop_func)
     GC_clear_mark_deadline();
 #endif
 
+#ifndef NO_MANUAL_VDB
+  if (UNLIKELY(GC_wbar_verify))
+    GC_wbar_after_mark(0 == abandoned_at);
+#endif
   if (abandoned_at > 0) {
     /* Give the mutator a chance. */
     GC_mark_deficit = abandoned_at - 1;
     /* TODO: Notify `GC_EVENT_MARK_ABANDON`. */
   } else {
-#ifndef NO_MANUAL_VDB
-    if (UNLIKELY(GC_wbar_verify))
-      GC_wbar_after_mark();
-#endif
     GC_gc_no++;
 #if defined(GC_ASSERTIONS) && defined(THREAD_LOCAL_ALLOC) \
     && !defined(DBG_HDRS_ALL)

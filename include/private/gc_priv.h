@@ -4247,8 +4247,17 @@ GC_EXTERN word GC_wbar_always_kinds;
        && (IS_UNCOLLECTABLE((hhdr)->hb_obj_kind) \
            || ((GC_wbar_always_kinds >> (hhdr)->hb_obj_kind) & 1) != 0))
 
-/* `GC_WBAR_VERIFY`: run the write-barrier checker at minor collections. */
+/*
+ * `GC_WBAR_VERIFY`: run the write-barrier checker at the reads of the
+ * dirty bits that follow a complete mark.
+ */
 GC_EXTERN GC_bool GC_wbar_verify;
+
+/*
+ * Whether the write-barrier checker has reports waiting for a full
+ * collection, which `GC_maybe_gc()` then runs next.
+ */
+GC_EXTERN GC_bool GC_wbar_need_full;
 
 /*
  * Dirty the block of `p`, as `GC_dirty_inner()` does, unless it is dirty
@@ -4306,27 +4315,35 @@ GC_INNER void GC_wbar_dirty_object(const void *p);
 /* Parse the environment variable.  Called by `GC_init()`. */
 GC_INNER void GC_wbar_init(void);
 
-/* Called by `GC_initiate_gc()` right after `GC_read_dirty()`. */
-GC_INNER void GC_wbar_after_read_dirty(GC_bool minor);
+/*
+ * Called by `GC_initiate_gc()` right after `GC_read_dirty()`;
+ * `marks_complete` tells whether every marked object has been scanned,
+ * i.e. the dirty bits are read (not cleared for a full collection).
+ */
+GC_INNER void GC_wbar_after_read_dirty(GC_bool marks_complete);
 
 #    ifdef THREADS
 /* Called by the stack scan for each value it pushes. */
 GC_INNER void GC_wbar_note_stack_ref(ptr_t p);
 #    endif
 
-/* Called by `GC_stopped_mark()` when the marking is complete. */
-GC_INNER void GC_wbar_after_mark(void);
+/*
+ * Called by `GC_stopped_mark()` with the world stopped, after its mark
+ * completed or was abandoned.
+ */
+GC_INNER void GC_wbar_after_mark(GC_bool completed);
 
 /* Called by `GC_stopped_mark()` after restarting the world. */
 GC_INNER void GC_wbar_after_start_world(GC_bool completed);
 
 /*
- * The totals of the write-barrier checker, for the tests: the stores
- * reported as lost and as missed, the deferred candidates whose block was
- * dirty at the next collection, and the checked collections.
+ * The totals of the write-barrier checker, for the tests: the reports of
+ * lost and of missed stores that stand, the deferred candidates whose
+ * block was dirty at the next read, the checked reads, the stale reports,
+ * and the reports waiting for a full collection.
  */
 struct GC_wbar_totals_s {
-  word lost, missed, window, checks;
+  word lost, missed, window, checks, stale, pending;
 };
 GC_API_PRIV void GC_CALL GC_get_wbar_verify_totals(struct GC_wbar_totals_s *);
 #  endif
