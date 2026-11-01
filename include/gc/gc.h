@@ -2742,16 +2742,15 @@ GC_API void GC_CALL GC_debug_ptr_store_and_dirty(void * /* `p` */,
  * stored pointer in a register or on the stack until then.  A store into
  * an object which the client allocated and has held in a local variable
  * since needs no barrier, as long as the collector is built with thread
- * support and marks without a time limit and without a stop function.
- * That does not cover the result of `GC_realloc()`, nor an object of
- * a list returned by `GC_malloc_many()` (or refilled by the macros of
- * `gc_inline.h`) which was kept over a collection: the collection marks
- * the objects of the list.  The collector reads and clears the bits only
- * with the world stopped, and the table never moves.  The bits are
- * ignored unless the manual VDB mode is on; in the other incremental
- * modes they only make the next collection rescan more.  Returns `NULL`
- * (and leaves the sizes unset) if the collector is built without the
- * manual VDB mode.
+ * support.  That does not cover the result of `GC_realloc()`, nor an
+ * object of a list returned by `GC_malloc_many()` (or refilled by the
+ * macros of `gc_inline.h`) which was kept over a collection: the
+ * collection marks the objects of the list.  The collector reads and
+ * clears the bits only with the world stopped, and the table never moves.
+ * The bits are ignored unless the manual VDB mode is on; in the other
+ * incremental modes they only make the next collection rescan more.
+ * Returns `NULL` (and leaves the sizes unset) if the collector is built
+ * without the manual VDB mode.
  */
 GC_API volatile GC_word *GC_CALL GC_get_dirty_bits(
     unsigned * /* `log_block_size` */, unsigned * /* `log_entries` */);
