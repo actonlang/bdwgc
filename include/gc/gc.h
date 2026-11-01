@@ -1435,11 +1435,15 @@ GC_API void GC_CALL GC_set_kind_always_rescanned(int /* `kind` */,
 /**
  * The write-barrier checker of the manual VDB mode (enabled by
  * `GC_WBAR_VERIFY` environment variable) reports the pointer stores that
- * no barrier recorded, and the process exits with status 70 after
- * a collection that reports one.  The `describe` function, if set, is
- * called (with the allocator lock held, after the world is restarted) for
- * the object holding each reported pointer; it may return a static string
- * naming the type of the object, or `NULL`.
+ * no barrier recorded.  A report stands if the next full collection
+ * (which a report makes the next collection) finds the object holding the
+ * pointer reachable and its target was not on a free list when the report
+ * was found.  The process exits with status 70 after the collection that
+ * confirms a report; at exit, a full collection checks the reports still
+ * waiting.  The `describe` function, if set, is called (with the allocator
+ * lock held, after the world is restarted) for the object holding each
+ * reported pointer; it may return a static string naming the type of the
+ * object, or `NULL`.
  */
 GC_API void GC_CALL GC_set_wbar_verify_describe(const char *(
     GC_CALLBACK *)(const void * /* `obj` */, size_t /* `size` */));
