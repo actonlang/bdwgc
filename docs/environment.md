@@ -147,13 +147,16 @@ enabled.  If a collection requires appreciably more time than this, the client
 will be restarted, and the collector will need to do additional work to
 compensate.  The special value "999999" indicates that pause time is
 unlimited, and the incremental collector will behave completely like a simple
-generational collector.  With any other value, the parallel marker marks the
-world-stopped marks of a collection until the deadline set by the time limit:
-the markers stop then, returning their mark stacks to the global one, and the
-next world-stopped mark continues from there.  Between these marks, the marking
-runs on one thread with the world running.  If the parallel marker is
-supported, the value may have a fraction of a millisecond, e.g. "0.05" for 50
-microseconds.
+generational collector.  With any other value, the parallel marker marks
+a collection in world-stopped slices that end at the deadline set by the time
+limit: the markers stop then, returning their mark stacks to the global one,
+and the next slice continues from there.  Between the world-stopped marks that
+start and complete the marking, the slices are steps, each run when the
+allocation since the previous slice reaches a share of the allocation between
+collections (that divided by twice the slices of the previous collection, by
+8 at least), or when nothing has been allocated since the previous attempt,
+e.g. before the heap grows.  If the parallel marker is supported, the value may
+have a fraction of a millisecond, e.g. "0.05" for 50 microseconds.
 
 `GC_GEN_FULL_LIVE_PCT` - In the incremental mode, makes the next collection
 a full one when, after a minor collection, the bytes in use exceed the ones
