@@ -2039,11 +2039,12 @@ GC_check_fl_marks(void **pfreelist)
 #endif /* GC_ASSERTIONS && THREAD_LOCAL_ALLOC */
 
 /*
- * Clear all mark bits for the free list (specified by the first entry).
- * Return number of bytes on the free list.
+ * Clear all mark bits for the free list (specified by the first entry),
+ * and its links if `clear_links`.  Return number of bytes on the free
+ * list.
  */
 STATIC word
-GC_clear_fl_marks(ptr_t q)
+GC_clear_fl_marks(ptr_t q, GC_bool clear_links)
 {
   struct hblk *h = HBLKPTR(q);
   const struct hblk *last_h = h;
@@ -2076,7 +2077,14 @@ GC_clear_fl_marks(ptr_t q)
     }
     bytes += sz;
 
-    q = (ptr_t)obj_link(q);
+    if (clear_links) {
+      void **qp = &obj_link(q);
+
+      q = (ptr_t)(*qp);
+      *qp = NULL;
+    } else {
+      q = (ptr_t)obj_link(q);
+    }
     if (NULL == q)
       break;
 
@@ -2111,21 +2119,41 @@ set_all_fl_marks(void)
 }
 #endif
 
-/* Clear free-list mark bits.  Return number of bytes on the free lists. */
+/*
+ * Empty the free lists of the kinds in use, which the sweep rebuilds, in
+ * one pass over each list: clear the mark bit of each object and, for the
+ * kinds with a nonzero mark descriptor, its link.  The mark bits are
+ * cleared in case they got accidentally marked (or `GC_find_leak` is set
+ * and they were intentionally marked, or the objects are uncollectable
+ * ones, marked while on a free list).  Note that composite objects on
+ * free list are cleared, thus accidentally marking a free list is not
+ * a problem; but some objects on the list itself might be marked, and the
+ * sweep would not reclaim them.  The links are cleared since a dropped
+ * object which waits for the sweep, or is not swept, would keep other
+ * objects alive if a stale reference marked it.  The free lists of a kind
+ * not in use (with no reclaim list) are kept, with their mark bits
+ * cleared.  Return number of bytes on the free lists.
+ */
 static word
-clear_all_fl_marks(void)
+clear_free_lists(void)
 {
   unsigned kind;
   word bytes = 0;
 
   for (kind = 0; kind < GC_n_kinds; kind++) {
+    struct obj_kind *ok = &GC_obj_kinds[kind];
+    GC_bool drop = ok->ok_reclaim_list != NULL;
+    GC_bool clear_links = drop && ok->ok_descriptor != 0;
     size_t lg;
 
     for (lg = 1; lg <= MAXOBJGRANULES; lg++) {
-      ptr_t q = (ptr_t)GC_obj_kinds[kind].ok_freelist[lg];
+      ptr_t q = (ptr_t)ok->ok_freelist[lg];
 
-      if (q != NULL)
-        bytes += GC_clear_fl_marks(q);
+      if (q != NULL) {
+        if (drop)
+          ok->ok_freelist[lg] = NULL;
+        bytes += GC_clear_fl_marks(q, clear_links);
+      }
     }
   }
   return bytes;
@@ -2204,15 +2232,8 @@ GC_finish_collection(void)
   }
 #endif
 
-  /*
-   * Clear free-list mark bits, in case they got accidentally marked
-   * (or `GC_find_leak` is set and they were intentionally marked).
-   * Note that composite objects on free list are cleared, thus
-   * accidentally marking a free list is not a problem; but some objects
-   * on the list itself might be marked, and the given function call
-   * fixes it.  Also update the counter of bytes of memory reclaimed.
-   */
-  GC_bytes_found -= (GC_signed_word)clear_all_fl_marks();
+  /* Also update the counter of bytes of memory reclaimed. */
+  GC_bytes_found -= (GC_signed_word)clear_free_lists();
 
   GC_VERBOSE_LOG_PRINTF("Bytes recovered before sweep - f.l. count = %ld\n",
                         (long)GC_bytes_found);

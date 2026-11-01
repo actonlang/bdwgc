@@ -3816,12 +3816,13 @@ GC_INNER GC_bool GC_expand_hp_inner(word n);
 
 /*
  * Restore unmarked objects to free lists, or (if `abort_if_found` is `TRUE`)
- * report them.  (I.e. perform `GC_reclaim_block()` on the entire heap,
- * after first clearing small-object free lists if we are not just looking
- * for leaks.)  Sweeping of small object pages is largely deferred.
+ * report them.  (I.e. perform `GC_reclaim_block()` on the entire heap.)
+ * Unless `abort_if_found`, the small-object free lists are empty on
+ * entry.  Sweeping of small object pages is largely deferred.
  */
 GC_INNER void GC_start_reclaim(GC_bool abort_if_found);
 
+#ifdef THREAD_LOCAL_ALLOC
 /*
  * Clear all next-object pointers in the free list `fl` (which should not
  * be empty).  This must be done before dropping a list of free `gcj`-style
@@ -3829,6 +3830,7 @@ GC_INNER void GC_start_reclaim(GC_bool abort_if_found);
  * It may help for other pointer-containing objects.
  */
 GC_INNER void GC_clear_fl_links(void *fl);
+#endif
 
 /*
  * Sweep blocks of the indicated object size (in granules) and kind
