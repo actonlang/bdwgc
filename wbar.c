@@ -17,19 +17,32 @@
  * recorded.
  *
  * The checker runs inside `GC_stopped_mark()`, with the world stopped and
- * the allocator lock held, at every minor collection.  Right after the
- * dirty bits are read, it scans every marked object of every pointer
- * block that the collection will not rescan, and records each word which
- * points to an unmarked heap object (a candidate).  The stack scan flags
- * the candidates whose target a thread stack or register references.
- * When the marking is complete, a candidate whose target is still unmarked
+ * the allocator lock held, at every read of the dirty bits that follows
+ * a complete mark: the first world-stopped mark of a minor collection and
+ * the final world-stopped marks of every collection marked in slices.
+ * Every marked object has been scanned then.  Right after the dirty bits
+ * are read, it scans every marked object of every pointer block that the
+ * collection will not rescan, and records each word which points to an
+ * unmarked heap object (a candidate).  The root push of the same mark
+ * (which comes before the mark can be abandoned) flags the candidates
+ * whose target a thread stack or register references.  If the marking
+ * completes in the same mark, a candidate whose target is still unmarked
  * is LOST (the sweep would reclaim a referenced object), one whose target
  * is marked but no stack references is MISSED (no thread was between the
- * store and its barrier, so the barrier is missing).  The others are
- * deferred to the next collection: WINDOW if the block of the object is
- * dirty by then (a thread was stopped between its store and its barrier),
- * else MISSED.  The reports are printed after the world is restarted, and
- * then the process exits with status 70.
+ * store and its barrier, so the barrier is missing).  If the mark is
+ * abandoned, a candidate whose target no stack references is MISSED.  The
+ * others are deferred to the next read: WINDOW if the block of the word
+ * is dirty by then (a thread was stopped between its store and its
+ * barrier), else MISSED.  The target of a report is marked (thus kept
+ * alive) if it is not, so that the run goes on.
+ *
+ * A report stands only if the next full collection finds its object
+ * reachable, and its target was not on a free list: a minor collection
+ * keeps the marks of dead objects, a dead object may point to memory
+ * freed or reused since, and a live one may point to memory the client
+ * freed explicitly.  A report makes the next collection a full one.  The
+ * reports that stand and the stale ones are printed after the world is
+ * restarted, and then the process exits with status 70 if one stands.
  */
 
 #include "private/gc_pmark.h"
@@ -46,16 +59,24 @@
 
 GC_INNER GC_bool GC_wbar_verify = FALSE;
 GC_INNER word GC_wbar_always_kinds = 0;
+GC_INNER GC_bool GC_wbar_need_full = FALSE;
 
 static const char *(GC_CALLBACK *wbar_describe_fn)(const void *, size_t) = 0;
 
 static struct GC_wbar_totals_s tot;
 
 /*
- * The stores reported as lost and as missed by the collection in
- * progress, added to the totals when it completes.
+ * Whether a collection is open (its first world-stopped mark has read the
+ * dirty bits, and its marking is not complete yet), whether it is a minor
+ * one, and the reports of lost and of missed stores that stand, counted
+ * from its first world-stopped mark and added to the totals when it
+ * completes.
  */
+static GC_bool coll_open, coll_minor;
 static word coll_lost, coll_missed;
+
+/* The number of reports waiting for the next full collection. */
+static size_t n_pending;
 
 /*
  * Exit at once with status 70.  The allocator lock may be held, so
@@ -73,12 +94,15 @@ wbar_exit(void)
 
 #  ifndef DONT_USE_ATEXIT
 /*
- * Exit with status 70 if a report stands: the thread whose collection
+ * At exit, let a full collection confirm the reports still waiting, and
+ * exit with status 70 if a report stands: the thread whose collection
  * found it may still be printing when another thread calls `exit()`.
  */
 static void
 wbar_atexit(void)
 {
+  if (n_pending > 0)
+    GC_gcollect();
   /* Without the allocator lock, which the printing thread holds. */
   if (tot.lost + tot.missed != 0)
     wbar_exit();
@@ -190,6 +214,7 @@ GC_get_wbar_verify_totals(struct GC_wbar_totals_s *pt)
 {
   READER_LOCK();
   *pt = tot;
+  pt->pending = (word)n_pending;
   READER_UNLOCK();
 }
 
@@ -200,6 +225,7 @@ GC_get_wbar_verify_totals(struct GC_wbar_totals_s *pt)
 #  define WBAR_MAX_CAND 65536
 #  define WBAR_MAX_DEFERRED 4096
 #  define WBAR_MAX_REPORTS 64
+#  define WBAR_MAX_PENDING 4096
 #  define WBAR_HASH_SZ (2 * WBAR_MAX_CAND)
 
 /* The kinds of reports, which index `what_names`. */
@@ -229,7 +255,9 @@ struct wbar_cand {
 struct wbar_report {
   struct wbar_cand c;
   int what;
-  word gc_no; /*< the collection that found it */
+  GC_bool stale; /*< discarded by the collection that checked it */
+  word gc_no;    /*< the collection that found it */
+  word check_no; /*< the collection that confirmed or discarded it */
 };
 
 static struct wbar_cand *cands;
@@ -243,6 +271,7 @@ static struct wbar_cand *deferred;
 static size_t n_deferred;
 static struct wbar_report *reports;
 static size_t n_reports;
+static struct wbar_report *pending;
 static GC_bool verify_tables_failed = FALSE;
 
 static GC_bool
@@ -260,8 +289,10 @@ alloc_verify_tables(void)
                                                   * sizeof(struct wbar_cand));
   reports = (struct wbar_report *)GC_scratch_alloc(
       WBAR_MAX_REPORTS * sizeof(struct wbar_report));
+  pending = (struct wbar_report *)GC_scratch_alloc(
+      WBAR_MAX_PENDING * sizeof(struct wbar_report));
   if (NULL == cands || NULL == cand_hash || NULL == cand_stack_held
-      || NULL == deferred || NULL == reports) {
+      || NULL == deferred || NULL == reports || NULL == pending) {
     cands = NULL;
     verify_tables_failed = TRUE;
     return FALSE;
@@ -315,26 +346,112 @@ add_target(size_t cand_index)
   }
 }
 
-static void
-add_report(const struct wbar_cand *c, int what)
-{
-  if (WBAR_LOST == what) {
-    coll_lost++;
-  } else {
-    coll_missed++;
-  }
-  if (n_reports < WBAR_MAX_REPORTS) {
-    reports[n_reports].c = *c;
-    reports[n_reports].what = what;
-    reports[n_reports].gc_no = GC_gc_no + 1;
-    n_reports++;
-  }
-}
-
 static GC_bool
 obj_marked(word base)
 {
   return GC_is_marked((const void *)base) != 0;
+}
+
+/* Keep a report for the printing after the world is restarted. */
+static void
+print_later(const struct wbar_report *r)
+{
+  if (n_reports < WBAR_MAX_REPORTS)
+    reports[n_reports++] = *r;
+}
+
+static void
+report_stands(const struct wbar_report *r)
+{
+  if (WBAR_LOST == r->what) {
+    coll_lost++;
+  } else {
+    coll_missed++;
+  }
+  print_later(r);
+}
+
+static void
+report_stale(struct wbar_report *r)
+{
+  r->stale = TRUE;
+  tot.stale++;
+  print_later(r);
+}
+
+/*
+ * A report waits for the next full collection.  If too many wait, it
+ * stands at once, unless its target was on a free list (see
+ * `check_pending()`): then it is stale at once.
+ */
+static void
+add_report(const struct wbar_cand *c, int what)
+{
+  struct wbar_report r;
+
+  r.c = *c;
+  r.what = what;
+  r.stale = FALSE;
+  r.gc_no = GC_gc_no + 1;
+  r.check_no = GC_gc_no + 1;
+  if (n_pending < WBAR_MAX_PENDING) {
+    pending[n_pending++] = r;
+  } else if (c->target_free) {
+    report_stale(&r);
+  } else {
+    report_stands(&r);
+  }
+  GC_wbar_need_full = TRUE;
+}
+
+/*
+ * Mark the target of candidate `c` (if not marked) and push it, so that
+ * the run goes on until the report is confirmed.  Return whether it was
+ * pushed.
+ */
+static GC_bool
+keep_alive(const struct wbar_cand *c)
+{
+  hdr *thdr;
+
+  if (c->target_free || obj_marked(c->target))
+    return FALSE;
+  thdr = HDR((ptr_t)c->target);
+  if (NULL == thdr || IS_FORWARDING_ADDR_OR_NIL(thdr) || HBLK_IS_FREE(thdr))
+    return FALSE;
+  GC_mark_stack_top
+      = GC_ms_push_contents_hdr((ptr_t)c->target, thdr, GC_mark_stack_top,
+                                GC_mark_stack_limit, NULL, FALSE);
+  return TRUE;
+}
+
+/*
+ * Confirm or discard the pending reports at the end of the marking of a
+ * full collection: a report stands if its object is marked, i.e.
+ * reachable (and still allocated with the same size), and its target was
+ * not on a free list when it was found (a pointer to memory freed before
+ * the collection that found it is no missed store of that interval).
+ */
+static void
+check_pending(void)
+{
+  size_t i;
+
+  for (i = 0; i < n_pending; i++) {
+    struct wbar_report *r = &pending[i];
+    const hdr *hhdr = HDR((ptr_t)r->c.obj);
+
+    r->check_no = GC_gc_no + 1;
+    if (!r->c.target_free && hhdr != NULL && !IS_FORWARDING_ADDR_OR_NIL(hhdr)
+        && !HBLK_IS_FREE(hhdr) && hhdr->hb_sz == r->c.obj_sz
+        && obj_marked(r->c.obj)) {
+      report_stands(r);
+    } else {
+      report_stale(r);
+    }
+  }
+  n_pending = 0;
+  GC_wbar_need_full = FALSE;
 }
 
 #  if defined(GC_PTHREADS) && !defined(GC_WIN32_THREADS) \
@@ -577,16 +694,17 @@ resolve_deferred(void)
 }
 
 GC_INNER void
-GC_wbar_after_read_dirty(GC_bool minor)
+GC_wbar_after_read_dirty(GC_bool marks_complete)
 {
   GC_ASSERT(I_HOLD_LOCK());
   if (!GC_manual_vdb)
     return;
-  if (GC_time_limit != GC_TIME_UNLIMITED) {
-    /* Marking may continue with the world running. */
-    WARN("GC_WBAR_VERIFY needs GC_TIME_UNLIMITED, checker off\n", 0);
-    GC_wbar_verify = FALSE;
-    return;
+  if (!coll_open) {
+    /* The first world-stopped mark of a collection. */
+    coll_open = TRUE;
+    coll_minor = marks_complete;
+    coll_lost = 0;
+    coll_missed = 0;
   }
   if (!alloc_verify_tables()) {
     WARN("GC_WBAR_VERIFY: no memory for the tables, check skipped\n", 0);
@@ -596,7 +714,7 @@ GC_wbar_after_read_dirty(GC_bool minor)
   n_cands = 0;
   n_dropped = 0;
   BZERO(cand_hash, WBAR_HASH_SZ * sizeof(size_t));
-  if (minor) {
+  if (marks_complete) {
     GC_apply_to_all_hdrs(check_block, NULL);
     tot.checks++;
   }
@@ -621,9 +739,10 @@ GC_wbar_note_stack_ref(ptr_t p)
 #  endif
 
 GC_INNER void
-GC_wbar_after_mark(void)
+GC_wbar_after_mark(GC_bool completed)
 {
   size_t i;
+  GC_bool pushed = FALSE;
 
   GC_ASSERT(I_HOLD_LOCK());
   if (!GC_manual_vdb || NULL == cands)
@@ -632,7 +751,7 @@ GC_wbar_after_mark(void)
     const struct wbar_cand *c = &cands[i];
     GC_signed_word first = find_target(c->target);
 
-    if (!obj_marked(c->target)) {
+    if (completed && !obj_marked(c->target)) {
       add_report(c, WBAR_LOST);
     } else if (first >= 0 && cand_stack_held[first]) {
       if (n_deferred < WBAR_MAX_DEFERRED)
@@ -641,7 +760,28 @@ GC_wbar_after_mark(void)
       add_report(c, WBAR_MISSED);
     }
   }
+  /* Keep the targets of the reports alive, after classifying them all. */
+  for (i = 0; i < n_cands; i++) {
+    const struct wbar_cand *c = &cands[i];
+    GC_signed_word first = find_target(c->target);
+
+    if ((completed || !(first >= 0 && cand_stack_held[first]))
+        && keep_alive(c))
+      pushed = TRUE;
+  }
   n_cands = 0;
+  if (completed) {
+    if (pushed) {
+      /* Mark from the pushed targets before the sweep. */
+      GC_mark_state = MS_ROOTS_PUSHED;
+      while (!GC_mark_some(NULL)) {
+        /* Empty. */
+      }
+    }
+    /* Every marked object was marked by this full mark. */
+    if (!coll_minor)
+      check_pending();
+  }
 }
 
 GC_INNER void
@@ -662,11 +802,10 @@ GC_wbar_after_start_world(GC_bool completed)
   }
   if (!completed)
     return;
+  coll_open = FALSE;
   found = coll_lost + coll_missed;
   tot.lost += coll_lost;
   tot.missed += coll_missed;
-  coll_lost = 0;
-  coll_missed = 0;
   for (i = 0; i < n_reports; i++) {
     const struct wbar_report *r = &reports[i];
     const char *desc = NULL;
@@ -674,10 +813,11 @@ GC_wbar_after_start_world(GC_bool completed)
     if (wbar_describe_fn != 0)
       desc = wbar_describe_fn((const void *)r->c.obj, (size_t)r->c.obj_sz);
     GC_log_printf(
-        "WBVERIFY %s gc=%lu obj=%p sz=%lu kind=%d block=%p ofs=%lu"
-        " value=%p target=%p target_sz=%lu target_kind=%d"
+        "WBVERIFY %s%s gc=%lu checked_gc=%lu obj=%p sz=%lu kind=%d block=%p"
+        " ofs=%lu value=%p target=%p target_sz=%lu target_kind=%d"
         " target_free=%d class=%s head=%p,%p,%p,%p\n",
-        what_names[r->what], (unsigned long)r->gc_no, (void *)r->c.obj,
+        r->stale ? "STALE " : "", what_names[r->what], (unsigned long)r->gc_no,
+        (unsigned long)r->check_no, (void *)r->c.obj,
         (unsigned long)r->c.obj_sz, r->c.obj_kind, (void *)HBLKPTR(r->c.obj),
         (unsigned long)(r->c.slot - r->c.obj), (void *)r->c.value,
         (void *)r->c.target, (unsigned long)r->c.target_sz, r->c.target_kind,

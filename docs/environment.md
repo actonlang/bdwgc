@@ -167,13 +167,17 @@ after the latest full collection by more than this percentage (a minor
 collection keeps the dead old objects marked).  The default is 50.  A negative
 value disables this.
 
-`GC_WBAR_VERIFY` - In the manual VDB mode, checks at every minor collection
-that no marked object in a block the collection does not rescan points to an
-unmarked object, i.e. that the client's write barrier recorded every pointer
-store.  A store found unrecorded is logged as a `WBVERIFY` line after the
-collection, and the process then exits with status 70.  Needs the unlimited
-pause time (the checker turns itself off otherwise).  Costs a scan of the clean
-marked pointer data at every minor collection.
+`GC_WBAR_VERIFY` - In the manual VDB mode, checks at every read of the dirty
+bits that follows a complete mark (the first world-stopped mark of a minor
+collection and the final ones of a collection marked in slices) that no marked
+object in a block the collection does not rescan points to an unmarked object,
+i.e. that the client's write barrier recorded every pointer store.  A store
+found unrecorded makes the next collection a full one, which confirms the
+report if it finds the object holding the pointer reachable and its target was
+not on a free list when the report was found: the report is then logged as
+a `WBVERIFY` line, and the process exits with status 70.  Otherwise
+the report is logged as stale.  At exit, a full collection checks the reports
+still waiting.  Costs a scan of the clean marked pointer data at every check.
 
 `GC_FULL_FREQUENCY` - Sets the desired number of partial collections between
 full collections; 0 makes every collection a full one.  Matters only if

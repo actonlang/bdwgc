@@ -25,10 +25,11 @@
  * of a kind set always rescanned (`kind`).  With an argument, one case runs;
  * the cases `lost`, `missed`, `missed-next` and `kind-unflagged` store
  * without a barrier and must be reported (as lost, as missed, as missed at
- * the next collection and as lost), after which the checker makes the
- * process exit with status 70.  So must the case `lost-exit`, in which
- * `exit()` is called while the report is printed.  Skipped unless the
- * manual VDB mode is built, and if `NO_INCREMENTAL` is defined.
+ * the next collection and as lost), after which the full collection that
+ * confirms the report makes the process exit with status 70.  So must the
+ * case `lost-exit`, in which `exit()` is called while the report is printed.
+ * Skipped unless the manual VDB mode is built, and if `NO_INCREMENTAL` is
+ * defined.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -220,6 +221,27 @@ totals(struct GC_wbar_totals_s *t)
   t->missed -= base.missed;
   t->window -= base.window;
   t->checks -= base.checks;
+  t->stale -= base.stale;
+}
+
+/*
+ * Let the full collection that a report makes due confirm or discard the
+ * reports waiting for it.
+ */
+static void
+confirm(void)
+{
+  int i;
+
+  for (i = 0;; i++) {
+    struct GC_wbar_totals_s t;
+
+    GC_get_wbar_verify_totals(&t);
+    if (0 == t.pending)
+      return;
+    CHECK(i < 4);
+    collect();
+  }
 }
 
 static GC_word
@@ -245,10 +267,12 @@ report(const char *name)
 {
   struct GC_wbar_totals_s t;
 
+  confirm();
   totals(&t);
-  printf("%s: checks=%lu lost=%lu missed=%lu window=%lu\n", name,
+  printf("%s: checks=%lu lost=%lu missed=%lu window=%lu stale=%lu\n", name,
          (unsigned long)t.checks, (unsigned long)t.lost,
-         (unsigned long)t.missed, (unsigned long)t.window);
+         (unsigned long)t.missed, (unsigned long)t.window,
+         (unsigned long)t.stale);
 }
 
 /* Make an old object, marked by two minor collections. */
@@ -296,25 +320,27 @@ case_barrier(void)
 }
 
 /*
- * The cases that store without a barrier fail if they return: the
- * collection that reports the store makes the process exit with status
- * 70.  A stale word on a stack can make the target look held by a stack,
- * which defers it to the next collection, so a case tries up to
- * `N_ROUNDS` old objects.  A round that reported nothing must count
+ * The cases that store without a barrier fail if they return: the full
+ * collection that confirms the report of the store makes the process exit
+ * with status 70.  A stale word on a stack can make the target look held
+ * by a stack, which defers it to the next collection, so a case tries up
+ * to `N_ROUNDS` old objects.  A round that reported nothing must count
  * a window instead: deferred, a target finds the block of the old object
  * dirty at a later collection.
  */
 #  define N_ROUNDS 5
 
 /*
- * Exit with status 1 if a store was reported, since the collection that
- * reports one does not return, or unless a window was counted since the
- * count was `w`.  `_Exit()` skips the at-exit handler of the checker,
- * which exits with status 70 if a report stands.
+ * Let a full collection confirm the reports waiting, then exit with
+ * status 1 if a store was reported, since the collection that confirms
+ * one does not return, or unless a window was counted since the count was
+ * `w`.  `_Exit()` skips the at-exit handler of the checker, which exits
+ * with status 70 if a report stands.
  */
 static void
 expect_window(GC_word w)
 {
+  confirm();
   if (errors() != 0) {
     fprintf(stderr, "A store was reported without exiting\n");
     _Exit(1);
@@ -972,7 +998,7 @@ main(int argc, char **argv)
   CHECK(g_log_block_size == LOG_HBLKSIZE);
   CHECK(g_log_entries == LOG_PHT_ENTRIES);
   GC_set_full_freq(100000);
-  /* The checker turns itself off under a time limit. */
+  /* Without a time limit, every collection is one world-stopped mark. */
   GC_set_time_limit(GC_TIME_UNLIMITED);
   for (i = 0; i < N_CASES; i++) {
     if ((argc < 2 && cases[i].clean)
