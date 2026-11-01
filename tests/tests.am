@@ -327,6 +327,11 @@ check_PROGRAMS += fullsetuptest
 fullsetuptest_SOURCES = tests/fullsetup.c
 fullsetuptest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
+TESTS += collectwaittest$(EXEEXT)
+check_PROGRAMS += collectwaittest
+collectwaittest_SOURCES = tests/collectwait.c
+collectwaittest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+
 endif
 
 if CPLUSPLUS
@@ -426,6 +431,7 @@ check-without-test-driver: $(TESTS)
 	./unmaptest$(EXEEXT)
 	./untouchedtest$(EXEEXT)
 	test ! -f atomicopstest$(EXEEXT) || ./atomicopstest$(EXEEXT)
+	test ! -f collectwaittest$(EXEEXT) || ./collectwaittest$(EXEEXT)
 	test ! -f cpptest$(EXEEXT) || ./cpptest$(EXEEXT)
 	test ! -f disclaim_bench$(EXEEXT) || ./disclaim_bench$(EXEEXT)
 	test ! -f disclaimtest$(EXEEXT) || ./disclaimtest$(EXEEXT)

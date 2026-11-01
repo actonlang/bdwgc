@@ -1394,6 +1394,10 @@ if(BUILD_TESTING)
         target_link_libraries(fullsetuptest PRIVATE gc ${THREADDLLIBS_LIST})
         add_test(NAME fullsetuptest COMMAND fullsetuptest)
 
+        add_executable(collectwaittest tests/collectwait.c ${NODIST_SRC})
+        target_link_libraries(collectwaittest PRIVATE gc ${THREADDLLIBS_LIST})
+        add_test(NAME collectwaittest COMMAND collectwaittest)
+
         if(NOT WIN32)
             add_executable(forktest tests/fork.c ${NODIST_SRC})
             target_link_libraries(
