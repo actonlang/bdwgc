@@ -562,6 +562,16 @@ STATIC struct hblk *GC_push_next_marked_uncollectable(struct hblk *h);
 static void alloc_mark_stack(size_t);
 static size_t mark_stack_bytes(size_t);
 static void set_mark_stack(mse *, size_t, GC_bool);
+#ifdef PARALLEL_MARK_DEADLINE
+static void grow_mark_stack_keeping_entries(void);
+
+/*
+ * Whether a marker of the current parallel mark phase found no room for
+ * its local mark stack at the deadline (see `GC_return_mark_stack()`).
+ * Set holding the mark lock, read and cleared after the phase.
+ */
+static GC_bool GC_no_room_at_deadline = FALSE;
+#endif
 
 /*
  * The events of the mark stacks since the previous call of
@@ -794,14 +804,34 @@ GC_mark_some(ptr_t cold_gc_frame)
      * threads, without acquiring the allocator lock.
      * TODO: For now, parallel marker is disabled if there is a chance that
      * marking could be interrupted by a client-supplied time limit or custom
-     * stop function.
+     * stop function, unless the markers stop at a deadline (see
+     * `GC_set_mark_deadline()`).
      *
      * A mark phase whose estimated size gives it one marker only (see
      * `markers_for_phase()`) takes the serial path below as well.
      */
     if (GC_parallel && !GC_parallel_mark_disabled && GC_phase_markers > 1) {
+#  ifdef PARALLEL_MARK_DEADLINE
+      GC_bool no_room;
+#  endif
+
       GC_do_parallel_mark();
-      GC_mark_stack_top = GC_mark_stack - 1;
+#  ifdef PARALLEL_MARK_DEADLINE
+      no_room = GC_no_room_at_deadline;
+      GC_no_room_at_deadline = FALSE;
+      if (ADDR_GE((ptr_t)GC_mark_stack_top, (ptr_t)GC_mark_stack)) {
+        /*
+         * The phase stopped at the deadline.  The next step marks from the
+         * entries left at the bottom of the mark stack, which grows now
+         * only if a marker found no room at the deadline.
+         */
+        if (no_room)
+          grow_mark_stack_keeping_entries();
+        GC_ASSERT(GC_mark_state == MS_ROOTS_PUSHED
+                  || GC_mark_state == MS_INVALID);
+        break;
+      }
+#  endif
       if (GC_mark_stack_too_small) {
         alloc_mark_stack(2 * GC_mark_stack_size);
       }
@@ -1645,6 +1675,92 @@ GC_mark_from(mse *mark_stack_top, const mse *mark_stack, mse *mark_stack_limit)
 /* Note: this is protected by the mark lock. */
 STATIC GC_bool GC_help_wanted = FALSE;
 
+#  ifdef PARALLEL_MARK_DEADLINE
+/*
+ * The deadline of the parallel mark phases if `GC_mark_deadline_on`, in
+ * milliseconds and nanoseconds after `GC_mark_deadline_start`.  Written
+ * holding the allocator lock while no phase runs, read by the markers
+ * after joining a phase holding the mark lock.
+ */
+STATIC GC_bool GC_mark_deadline_on = FALSE;
+STATIC CLOCK_TYPE GC_mark_deadline_start = CLOCK_TYPE_INITIALIZER;
+STATIC unsigned long GC_mark_deadline_ms = 0;
+STATIC unsigned long GC_mark_deadline_ns = 0;
+
+/*
+ * Nonzero once a marker has seen the deadline pass: every marker then
+ * returns its local mark stack and leaves the phase.  Set holding the
+ * mark lock, cleared when a deadline is set or cleared.
+ */
+STATIC volatile AO_t GC_mark_stop = 0;
+
+GC_INNER void
+GC_set_mark_deadline(unsigned long ms, unsigned long ns)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  GC_ASSERT(0 == AO_load(&GC_helper_count));
+  GC_mark_deadline_start = GC_start_time;
+  GC_mark_deadline_ms = ms;
+  GC_mark_deadline_ns = ns;
+  AO_store(&GC_mark_stop, 0);
+  GC_mark_deadline_on = TRUE;
+}
+
+GC_INNER void
+GC_clear_mark_deadline(void)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  GC_ASSERT(0 == AO_load(&GC_helper_count));
+  GC_mark_deadline_on = FALSE;
+  AO_store(&GC_mark_stop, 0);
+}
+
+GC_INNER GC_bool
+GC_mark_deadline_reached(void)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  return GC_mark_deadline_on && AO_load(&GC_mark_stop) != 0;
+}
+
+/*
+ * Whether a marker should leave the parallel mark phase at the deadline.
+ * The first marker to see this sets `GC_mark_stop` under the mark lock,
+ * clears `GC_help_wanted` and wakes the waiting markers.  A marker waits
+ * only after checking `GC_mark_stop` under the mark lock, so none sleeps
+ * through the deadline.  Called without the mark lock.
+ */
+static GC_bool
+mark_should_stop(void)
+{
+  CLOCK_TYPE now;
+  unsigned long ms, ns;
+
+  if (LIKELY(!GC_mark_deadline_on))
+    return FALSE;
+  if (AO_load(&GC_mark_stop) != 0)
+    return TRUE;
+  GET_TIME(now);
+  ms = MS_TIME_DIFF(now, GC_mark_deadline_start);
+  ns = NS_FRAC_TIME_DIFF(now, GC_mark_deadline_start);
+  if (ms < GC_mark_deadline_ms
+      || (ms == GC_mark_deadline_ms && ns < GC_mark_deadline_ns))
+    return FALSE;
+  GC_acquire_mark_lock();
+  if (0 == AO_load(&GC_mark_stop)) {
+    AO_store(&GC_mark_stop, 1);
+    GC_help_wanted = FALSE;
+  }
+  GC_release_mark_lock();
+  GC_notify_all_marker();
+  return TRUE;
+}
+
+#    define MARK_STOPPED() (AO_load(&GC_mark_stop) != 0)
+#  else
+#    define mark_should_stop() FALSE
+#    define MARK_STOPPED() FALSE
+#  endif /* !PARALLEL_MARK_DEADLINE */
+
 #  ifdef ATOMIC_FL_BUILDER_COUNT
 GC_INNER void
 GC_fl_builder_enter(void)
@@ -2204,10 +2320,12 @@ GC_steal_mark_stack(mse *low, mse *high, mse *local, size_t n_to_get,
  * `GC_main_local_mark_stack`) grows it, a helper asks the collecting
  * thread for room and waits.  Otherwise there is room only above
  * `GC_mark_stack_top`.  Without room (or if the ring cannot grow), the
- * local mark stack is dropped and the mark state invalidated.
+ * local mark stack is dropped and the mark state invalidated, unless
+ * `keep_if_no_room`; then the local mark stack is kept, the global one is
+ * to grow after the phase, and `FALSE` is returned.
  */
-STATIC void
-GC_return_mark_stack(mse *low, mse *high)
+STATIC GC_bool
+GC_return_mark_stack(mse *low, mse *high, GC_bool keep_if_no_room)
 {
 #  ifdef STEAL_MARK_STACK_RANGES
   AO_t end, first;
@@ -2220,7 +2338,7 @@ GC_return_mark_stack(mse *low, mse *high)
   GC_bool has_room;
 
   if (ADDR_LT((ptr_t)high, (ptr_t)low))
-    return;
+    return TRUE;
   stack_size = high - low + 1;
   GC_acquire_mark_lock();
 #  ifdef STEAL_MARK_STACK_RANGES
@@ -2245,10 +2363,11 @@ GC_return_mark_stack(mse *low, mse *high)
       /*
        * This helper stays active (counted in `GC_active_count`), thus the
        * phase does not end while it waits.  The collecting thread serves
-       * the request at its next check of it (see `GC_mark_local` and
-       * `GC_do_local_mark`), or wakes up for it if it waits.  Serving
-       * clears the request, thus this helper makes it again if it still
-       * has no room when woken up.
+       * the request at its next check of it (see `GC_mark_local`,
+       * `GC_do_local_mark`, and `GC_do_parallel_mark` once it has left
+       * a phase stopped at the deadline), or wakes up for it if it waits.
+       * Serving clears the request, thus this helper makes it again if it
+       * still has no room when woken up.
        */
       if (AO_load(&GC_mark_ring_room_wanted) < (AO_t)stack_size) {
         AO_store(&GC_mark_ring_room_wanted, (AO_t)stack_size);
@@ -2272,6 +2391,14 @@ GC_return_mark_stack(mse *low, mse *high)
   has_room = (word)(my_start - GC_mark_stack + stack_size)
              <= (word)GC_mark_stack_size;
 #  endif
+  if (!has_room && keep_if_no_room) {
+#  ifdef PARALLEL_MARK_DEADLINE
+    GC_no_room_at_deadline = TRUE;
+#  endif
+    GC_mark_stack_too_small = TRUE;
+    GC_release_mark_lock();
+    return FALSE;
+  }
   if (!has_room) {
     GC_mark_stack_events.n_no_room++;
     reset_mark_scan();
@@ -2311,6 +2438,7 @@ GC_return_mark_stack(mse *low, mse *high)
   }
   GC_release_mark_lock();
   GC_notify_all_marker();
+  return TRUE;
 }
 
 #  ifndef N_LOCAL_ITERS
@@ -2374,12 +2502,21 @@ has_inactive_helpers(void)
 /*
  * Mark from the local mark stack.  On return, the local mark stack
  * is empty.  But this may be achieved by copying the local mark stack
- * back into the global one.  We do not hold the mark lock.
+ * back into the global one.  We do not hold the mark lock.  At the
+ * deadline of the phase, the whole local mark stack is copied back,
+ * unless the global one has no room for it; then the marking goes on
+ * until the local mark stack is empty or half full (as without
+ * a deadline).
  */
 STATIC void
 GC_do_local_mark(mse *local_mark_stack, mse *local_top)
 {
   unsigned n;
+#  ifdef PARALLEL_MARK_DEADLINE
+  GC_bool may_stop = GC_mark_deadline_on;
+#  else
+  GC_bool may_stop = FALSE;
+#  endif
 
   for (;;) {
     for (n = 0; n < N_LOCAL_ITERS; ++n) {
@@ -2387,8 +2524,13 @@ GC_do_local_mark(mse *local_mark_stack, mse *local_top)
                                local_mark_stack + LOCAL_MARK_STACK_SIZE);
       if (ADDR_LT((ptr_t)local_top, (ptr_t)local_mark_stack))
         return;
+      if (may_stop && mark_should_stop()) {
+        if (GC_return_mark_stack(local_mark_stack, local_top, TRUE))
+          return;
+        may_stop = FALSE;
+      }
       if ((word)(local_top - local_mark_stack) >= LOCAL_MARK_STACK_SIZE / 2) {
-        GC_return_mark_stack(local_mark_stack, local_top);
+        (void)GC_return_mark_stack(local_mark_stack, local_top, FALSE);
         return;
       }
     }
@@ -2409,7 +2551,7 @@ GC_do_local_mark(mse *local_mark_stack, mse *local_top)
 
       GC_ASSERT(ADDR_LT((ptr_t)local_mark_stack, (ptr_t)new_bottom)
                 && ADDR_LT((ptr_t)new_bottom, (ptr_t)local_top));
-      GC_return_mark_stack(local_mark_stack, new_bottom - 1);
+      (void)GC_return_mark_stack(local_mark_stack, new_bottom - 1, FALSE);
       memmove(local_mark_stack, new_bottom,
               (local_top - new_bottom + 1) * sizeof(mse));
       local_top -= new_bottom - local_mark_stack;
@@ -2433,18 +2575,43 @@ GC_do_local_mark(mse *local_mark_stack, mse *local_top)
 #    endif
 #  endif
 
+#  ifdef PARALLEL_MARK_DEADLINE
+/*
+ * Leave a parallel mark phase stopped at the deadline, inactive and with
+ * an empty local mark stack.  Called holding the mark lock.
+ */
+static void
+leave_stopped_phase(int id)
+{
+  GC_ASSERT(MARK_STOPPED());
+  GC_ASSERT(GC_helper_count > 0);
+  AO_store(&GC_helper_count, GC_helper_count - 1);
+  GC_VERBOSE_LOG_PRINTF("Stopped mark helper %d at the deadline\n", id);
+  if (0 == GC_helper_count)
+    GC_notify_all_marker();
+}
+#  endif
+
 /*
  * Mark using the local mark stack until the global mark stack is empty and
- * there are no active workers.  Update `GC_first_unclaimed` (or
- * `GC_first_nonempty`) to reflect the progress.  Caller holds the mark
- * lock.  Caller has already incremented `GC_helper_count`; we decrement it,
- * and maintain `GC_active_count`.
+ * there are no active workers, or until the deadline of the phase.  Update
+ * `GC_first_unclaimed` (or `GC_first_nonempty`) to reflect the progress.
+ * Caller holds the mark lock (and we return holding it).  Caller has
+ * already incremented `GC_helper_count`; we decrement it, and maintain
+ * `GC_active_count`.
  */
 STATIC void
 GC_mark_local(mse *local_mark_stack, int id)
 {
 #  ifndef STEAL_MARK_STACK_RANGES
   mse *my_first_nonempty;
+#  endif
+#  ifdef PARALLEL_MARK_DEADLINE
+  /*
+   * Whether the phase has a deadline and this marker has marked from
+   * a range of entries.
+   */
+  GC_bool may_stop = FALSE;
 #  endif
 
   AO_store(&GC_active_count, GC_active_count + 1);
@@ -2467,10 +2634,26 @@ GC_mark_local(mse *local_mark_stack, int id)
 #  ifdef STEAL_MARK_STACK_RANGES
     AO_t first, end;
     size_t n_stolen;
+#  else
+    mse *my_top;
+    mse *global_first_nonempty;
+#  endif
 
+#  ifdef STEAL_MARK_STACK_RANGES
     /* The collecting thread grows the ring for the waiting helpers. */
     if (0 == id)
       serve_mark_ring_room_wanted();
+#  endif
+#  ifdef PARALLEL_MARK_DEADLINE
+    /* Mark one range at least, so that every phase makes progress. */
+    if (may_stop && mark_should_stop()) {
+      GC_acquire_mark_lock();
+      AO_store(&GC_active_count, GC_active_count - 1);
+      leave_stopped_phase(id);
+      return;
+    }
+#  endif
+#  ifdef STEAL_MARK_STACK_RANGES
     /*
      * `GC_first_unclaimed` is exact: all the entries numbered below it are
      * claimed, all the entries starting at it are not.  Note: it might be
@@ -2484,9 +2667,7 @@ GC_mark_local(mse *local_mark_stack, int id)
     end = AO_load_acquire(&GC_n_published);
     looks_empty = (GC_signed_word)(end - first) <= 0;
 #  else
-    mse *my_top;
-    mse *global_first_nonempty = (mse *)GC_cptr_load(&GC_first_nonempty);
-
+    global_first_nonempty = (mse *)GC_cptr_load(&GC_first_nonempty);
     GC_ASSERT(ADDR_GE((ptr_t)my_first_nonempty, (ptr_t)GC_mark_stack)
               && ADDR_GE(GC_cptr_load((volatile ptr_t *)&GC_mark_stack_top)
                              + sizeof(mse),
@@ -2542,12 +2723,13 @@ GC_mark_local(mse *local_mark_stack, int id)
 #  ifdef GROW_MARK_RING
                && (id != 0 || 0 == AO_load(&GC_mark_ring_room_wanted))
 #  endif
-        ) {
+               && !MARK_STOPPED()) {
           /*
            * We will be notified if either `GC_active_count` reaches zero,
            * or if more objects are pushed on the global mark stack, or
            * (the collecting thread) if a helper waits for room on the
-           * ring (it is active, thus the loop below continues).
+           * ring (it is active, thus the loop below continues), or at the
+           * deadline.
            */
           GC_wait_marker();
         }
@@ -2577,6 +2759,12 @@ GC_mark_local(mse *local_mark_stack, int id)
             GC_notify_all_marker();
           return;
         }
+#  ifdef PARALLEL_MARK_DEADLINE
+        if (MARK_STOPPED()) {
+          leave_stopped_phase(id);
+          return;
+        }
+#  endif
         /*
          * Else there is something on the stack again, or another helper
          * may push something.
@@ -2631,12 +2819,110 @@ GC_mark_local(mse *local_mark_stack, int id)
                          (ptr_t)my_first_nonempty));
 #  endif
     GC_do_local_mark(local_mark_stack, local_top);
+#  ifdef PARALLEL_MARK_DEADLINE
+    may_stop = GC_mark_deadline_on;
+#  endif
   }
 }
 
+#  ifdef PARALLEL_MARK_DEADLINE
+#    if defined(STEAL_MARK_STACK_RANGES) && defined(CHECK_MARK_RING)
+/* A sum of `n` entries of the ring from slot `first_slot`, for checking. */
+static word
+ring_entries_sum(size_t first_slot, size_t n)
+{
+  word sum = 0;
+  size_t i;
+
+  for (i = 0; i < n; i++) {
+    const mse *e = &GC_mark_stack[(first_slot + i) & (GC_mark_stack_size - 1)];
+
+    sum += ADDR(e->mse_start) * 3 + e->mse_descr;
+  }
+  return sum;
+}
+#    endif
+
+/*
+ * Move the entries left on the global mark stack by a parallel mark phase
+ * stopped at the deadline to its bottom, and set `GC_mark_stack_top`.
+ * No marker is in the phase (and none may join it), thus the global mark
+ * stack does not change.  Called holding the allocator and mark locks.
+ */
+static void
+compact_stopped_phase(void)
+{
+  size_t n;
+#    ifdef STEAL_MARK_STACK_RANGES
+  AO_t first = AO_load(&GC_first_unclaimed);
+  size_t f = MARK_RING_INDEX(first);
+  size_t size = GC_mark_stack_size;
+  size_t holes, sources, count;
+#      ifdef CHECK_MARK_RING
+  word sum;
+#      endif
+
+  /*
+   * The unclaimed entries are numbered from `GC_first_unclaimed` to
+   * `GC_n_published` (exclusive), in slots `f` to `f + n` (exclusive)
+   * modulo `size`; they are to take slots 0 to `n`, in any order.  Only
+   * the entries outside these slots are moved, into the slots which hold
+   * no entry, and both are single ranges: without a wrap, the entries in
+   * slots `max(f, n)` to `f + n` go to slots 0 to `min(f, n)`.  With
+   * a wrap, the entries in slots 0 to `n - (size - f)` stay, and those
+   * in slots `max(f, n)` to `size` go to the slots from
+   * `n - (size - f)` up to `min(f, n)`.
+   */
+  n = (size_t)(AO_load(&GC_n_published) - first);
+  GC_ASSERT(n <= size);
+#      ifdef CHECK_MARK_RING
+  GC_ASSERT(AO_load(&GC_n_claimed) == first);
+  sum = ring_entries_sum(f, n);
+#      endif
+  sources = f > n ? f : n;
+  if (f + n <= size) {
+    holes = 0;
+    count = f + n - sources;
+  } else {
+    holes = n - (size - f);
+    count = size - sources;
+  }
+  GC_ASSERT(holes + count <= sources || 0 == count);
+  if (count > 0) {
+    BCOPY(GC_mark_stack + sources, GC_mark_stack + holes, count * sizeof(mse));
+  }
+#      ifdef CHECK_MARK_RING
+  GC_ASSERT(ring_entries_sum(0, n) == sum);
+#      endif
+#    else
+  /*
+   * The entries from `GC_first_nonempty` up to `GC_mark_stack_top` that
+   * no marker has taken, i.e. those with a nonzero descriptor.
+   */
+  mse *p = (mse *)GC_cptr_load(&GC_first_nonempty);
+  mse *q = GC_mark_stack;
+
+  for (; ADDR_GE((ptr_t)GC_mark_stack_top, (ptr_t)p); p++) {
+    word descr = AO_load(&p->mse_descr);
+
+    if (descr != 0) {
+      q->mse_start = p->mse_start;
+      q->mse_descr = descr;
+      q++;
+    }
+  }
+  n = (size_t)(q - GC_mark_stack);
+#    endif
+  GC_mark_stack_top = GC_mark_stack + n - 1;
+}
+#  endif
+
 /*
  * Perform parallel mark.  We hold the allocator lock, but not the mark lock.
- * Currently runs until the mark stack is empty.
+ * Runs until the mark stack is empty, or until the deadline if one is set
+ * (see `GC_set_mark_deadline()`).  Sets `GC_mark_stack_top`: below
+ * `GC_mark_stack` unless the phase stopped at the deadline with entries
+ * left.
  */
 STATIC void
 GC_do_parallel_mark(void)
@@ -2692,24 +2978,47 @@ GC_do_parallel_mark(void)
   GC_notify_idle_markers(GC_phase_markers - 1);
   GC_mark_local(GC_main_local_mark_stack, 0);
 #  ifndef GC_NO_IDLE_MARKER_CV
-  /* Cleared by the first marker which found the marking complete. */
+  /*
+   * Cleared by the first marker which found the marking complete, or which
+   * saw the deadline pass.
+   */
   GC_ASSERT(!GC_help_wanted);
 #  endif
   GC_help_wanted = FALSE;
   /* Done; clean up. */
   while (GC_helper_count > 0) {
+#  if defined(GROW_MARK_RING) && defined(PARALLEL_MARK_DEADLINE)
+    /*
+     * After this thread has left a phase stopped at the deadline, a helper
+     * still marking may wait for room on the ring.
+     */
+    if (AO_load(&GC_mark_ring_room_wanted) != 0) {
+      GC_release_mark_lock();
+      serve_mark_ring_room_wanted();
+      GC_acquire_mark_lock();
+      continue;
+    }
+#  endif
     GC_wait_marker();
   }
   /* `GC_helper_count` cannot be incremented while not `GC_help_wanted`. */
+#  ifdef PARALLEL_MARK_DEADLINE
+  if (MARK_STOPPED()) {
+    compact_stopped_phase();
+  } else
+#  endif
+  /* else */ {
 #  ifdef STEAL_MARK_STACK_RANGES
-  /* Every entry put on the global mark stack has been claimed once. */
-  GC_ASSERT(AO_load(&GC_first_unclaimed) == AO_load(&GC_n_published));
+    /* Every entry put on the global mark stack has been claimed once. */
+    GC_ASSERT(AO_load(&GC_first_unclaimed) == AO_load(&GC_n_published));
 #    ifdef CHECK_MARK_RING
-  GC_ASSERT(AO_load(&GC_n_claimed) == AO_load(&GC_n_published));
+    GC_ASSERT(AO_load(&GC_n_claimed) == AO_load(&GC_n_published));
 #    endif
 #  else
-  GC_ASSERT(ADDR_LT((ptr_t)GC_mark_stack_top, GC_first_nonempty));
+    GC_ASSERT(ADDR_LT((ptr_t)GC_mark_stack_top, GC_first_nonempty));
 #  endif
+    GC_mark_stack_top = GC_mark_stack - 1;
+  }
   GC_VERBOSE_LOG_PRINTF("Finished marking for mark phase number %lu\n",
                         (unsigned long)GC_mark_no);
 #  ifdef GROW_MARK_RING
@@ -2895,6 +3204,34 @@ alloc_mark_stack(size_t n)
   }
   GC_mark_stack_top = GC_mark_stack - 1;
 }
+
+#ifdef PARALLEL_MARK_DEADLINE
+/*
+ * Double the global mark stack, keeping its entries for the next step.
+ * A failure leaves the size, and is logged by `GC_after_marking()`.
+ */
+static void
+grow_mark_stack_keeping_entries(void)
+{
+  size_t n = (size_t)(GC_mark_stack_top + 1 - GC_mark_stack);
+  size_t new_size = 2 * GC_mark_stack_size;
+  mse *new_stack = NULL;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  GC_ASSERT(NULL == GC_next_mark_stack);
+  GC_ASSERT(n <= GC_mark_stack_size);
+  GC_mark_stack_too_small = FALSE;
+  if (LIKELY(GC_mark_stack_size <= GC_SIZE_MAX / MARK_STACK_ENTRY_BYTES / 2))
+    new_stack = (mse *)GC_scratch_alloc(mark_stack_bytes(new_size));
+  if (UNLIKELY(NULL == new_stack)) {
+    GC_mark_stack_events.failed_size = new_size;
+    return;
+  }
+  BCOPY(GC_mark_stack, new_stack, n * sizeof(mse));
+  set_mark_stack(new_stack, new_size, FALSE);
+  GC_mark_stack_top = new_stack + n - 1;
+}
+#endif
 
 GC_INNER void
 GC_switch_to_next_mark_stack(void)

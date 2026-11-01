@@ -1152,6 +1152,23 @@ if(BUILD_TESTING)
     add_test(NAME mallocmanytest COMMAND mallocmanytest)
 
     # Likewise, the test includes the collector source.
+    add_executable(markdeadlinetest tests/markdeadline.c ${NODIST_SRC})
+    if(MSVC)
+        target_sources(markdeadlinetest PRIVATE extra/msvc_dbg.c)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+        target_sources(markdeadlinetest PRIVATE sparc_mach_dep.S)
+    endif()
+    target_link_libraries(
+        markdeadlinetest
+        PRIVATE ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+    )
+    if(enable_cplusplus AND NOT (BORLAND OR MSVC OR WATCOM))
+        set_target_properties(markdeadlinetest PROPERTIES LINKER_LANGUAGE CXX)
+    endif()
+    add_test(NAME markdeadlinetest COMMAND markdeadlinetest)
+
+    # Likewise, the test includes the collector source.
     add_executable(markstackgrowthtest tests/markstackgrowth.c ${NODIST_SRC})
     if(MSVC)
         target_sources(markstackgrowthtest PRIVATE extra/msvc_dbg.c)

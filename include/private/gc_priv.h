@@ -5149,6 +5149,22 @@ GC_EXTERN GC_bool GC_forked_with_markers;
  */
 GC_EXTERN size_t GC_bytes_per_marker;
 
+#  if !defined(GC_DISABLE_INCREMENTAL) && !defined(NO_CLOCK)
+#    define PARALLEL_MARK_DEADLINE
+
+/*
+ * Let the parallel mark phases stop `ms` milliseconds and `ns` nanoseconds
+ * after `GC_start_time`.  Called holding the allocator lock between phases.
+ */
+GC_INNER void GC_set_mark_deadline(unsigned long ms, unsigned long ns);
+
+/* Let the parallel mark phases run until the mark stack is empty. */
+GC_INNER void GC_clear_mark_deadline(void);
+
+/* Whether a parallel mark phase has stopped at the deadline. */
+GC_INNER GC_bool GC_mark_deadline_reached(void);
+#  endif
+
 /*
  * The routines to deal with the mark lock and condition variables.
  * If the allocator lock is also acquired, it must be done first.
