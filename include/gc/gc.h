@@ -727,7 +727,9 @@ GC_API int GC_CALL GC_get_rate(void);
 
 /**
  * Set/get the maximum number of prior attempts at the world-stop marking.
- * Not synchronized.
+ * With a time limit, a final world-stopped mark of an incremental
+ * collection runs without the limit after 3 abandoned final marks of the
+ * collection instead.  Not synchronized.
  */
 GC_API void GC_CALL GC_set_max_prior_attempts(int);
 GC_API int GC_CALL GC_get_max_prior_attempts(void);

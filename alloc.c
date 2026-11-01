@@ -1062,6 +1062,8 @@ GC_get_rate(void)
  * The maximum number of prior attempts at world stop marking.
  * A value of 1 means that we finish the second time, no matter how long
  * it takes.  Does not count the initial root scan for a full collection.
+ * With a time limit, the final marks of an incremental collection follow
+ * `MAX_ABANDONED_FINALS` instead.
  */
 static int max_prior_attempts = MAX_PRIOR_ATTEMPTS;
 
@@ -1077,6 +1079,22 @@ GC_get_max_prior_attempts(void)
 {
   return max_prior_attempts;
 }
+
+#if !defined(NO_CLOCK) && !defined(GC_DISABLE_INCREMENTAL)
+/*
+ * The final world-stopped marks of a collection that are abandoned before
+ * one runs without the time limit, whatever `max_prior_attempts` is.
+ */
+#  ifndef MAX_ABANDONED_FINALS
+#    define MAX_ABANDONED_FINALS 3
+#  endif
+
+/*
+ * The final marks of the collection in progress that were abandoned.
+ * Protected by the allocator lock.
+ */
+static unsigned n_final_abandoned = 0;
+#endif
 
 /*
  * Disable the thread cancellation around the collection work in
@@ -1152,6 +1170,8 @@ GC_collect_a_little_inner(size_t n_blocks)
     GC_after_marking();
 
     if (stack_empty && !GC_dont_gc) {
+      GC_stop_func stop_func;
+
       GC_ASSERT(!GC_collection_in_progress());
       /* Need to follow up with a full collection. */
       SAVE_CALLERS_TO_LAST_STACK();
@@ -1159,19 +1179,35 @@ GC_collect_a_little_inner(size_t n_blocks)
       if (GC_parallel)
         GC_wait_for_reclaim();
 #endif
+      stop_func = GC_n_attempts >= max_prior_attempts
+                          || (GC_time_limit == GC_TIME_UNLIMITED
+                              && GC_default_stop_func == GC_never_stop_func)
+                      ? GC_never_stop_func
+                      : GC_timeout_stop_func;
+#if !defined(NO_CLOCK) && !defined(GC_DISABLE_INCREMENTAL)
+      if (GC_time_limit != GC_TIME_UNLIMITED) {
+        /*
+         * The final mark keeps the time limit: one that does not complete
+         * in time is abandoned, and the marking continues.  After
+         * `MAX_ABANDONED_FINALS` abandoned final marks, the next one runs
+         * without it, so that the collection completes.
+         */
+        stop_func = n_final_abandoned < MAX_ABANDONED_FINALS
+                        ? GC_timeout_stop_func
+                        : GC_never_stop_func;
+      }
+#endif
 #ifndef NO_CLOCK
       if (GC_time_limit != GC_TIME_UNLIMITED
-          && GC_n_attempts < max_prior_attempts)
+          && stop_func == GC_timeout_stop_func)
         GET_TIME(GC_start_time);
 #endif
-      if (GC_stopped_mark(
-              GC_n_attempts >= max_prior_attempts
-                      || (GC_time_limit == GC_TIME_UNLIMITED
-                          && GC_default_stop_func == GC_never_stop_func)
-                  ? GC_never_stop_func
-                  : GC_timeout_stop_func)) {
+      if (GC_stopped_mark(stop_func)) {
         GC_finish_collection();
       } else {
+#if !defined(NO_CLOCK) && !defined(GC_DISABLE_INCREMENTAL)
+        n_final_abandoned++;
+#endif
         GC_n_attempts++;
       }
     }
@@ -1979,6 +2015,9 @@ GC_finish_collection(void)
 
   /* Reset or increment counters for next cycle. */
   GC_n_attempts = 0;
+#if !defined(NO_CLOCK) && !defined(GC_DISABLE_INCREMENTAL)
+  n_final_abandoned = 0;
+#endif
   GC_is_full_gc = FALSE;
   GC_bytes_allocd_before_gc += GC_bytes_allocd;
   GC_non_gc_bytes_at_gc = GC_non_gc_bytes;
