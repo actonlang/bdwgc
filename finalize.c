@@ -151,6 +151,17 @@ GC_grow_table(struct hash_chain_entry ***table_ptr, unsigned *log_size_ptr,
     }
   }
   *log_size_ptr = log_new_size;
+#  ifndef NO_MANUAL_VDB
+  if (GC_WBAR_SWEEPS_ALL() && old_size > 0) {
+    /*
+     * The old table is garbage now, but in the incremental mode it stays
+     * marked until the next full collection, and the entries it points to
+     * may be freed and reused before.  The write-barrier checker would
+     * take those pointers for stores without a barrier.
+     */
+    BZERO(*table_ptr, old_size * sizeof(struct hash_chain_entry *));
+  }
+#  endif
   *table_ptr = new_table;
   GC_dirty(new_table); /*< entire object */
 }
