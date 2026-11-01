@@ -5111,6 +5111,12 @@ GC_EXTERN size_t GC_bytes_per_marker;
 #    define PARALLEL_MARK_DEADLINE
 
 /*
+ * Whether the markings with a time limit mark in parallel world-stopped
+ * slices (see `parallel_slices_on()`): set once the incremental mode is on.
+ */
+GC_EXTERN GC_bool GC_parallel_slices;
+
+/*
  * Let the parallel mark phases stop `ms` milliseconds and `ns` nanoseconds
  * after `GC_start_time`.  Called holding the allocator lock between phases.
  */

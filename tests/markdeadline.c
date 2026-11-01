@@ -43,6 +43,15 @@
  * a stopped phase only as a ring.  A deadline 0.9 ms away must not count as
  * passed right after it is set, and a marking with deadlines 60 seconds away
  * must stop no phase.  Then a collection must keep the trees.
+ *
+ * At last, with the parallel marker, the test turns the incremental mode
+ * on (`GC_enable_incremental()`), with every collection full.  With a time
+ * limit of 50 ms, a world-stopped mark of a collection must run a parallel
+ * mark phase (`GC_mark_no` advances).  With a time limit of 0.1 ms, the
+ * world-stopped mark that starts a collection is abandoned, and it must
+ * leave no deadline set.  The checks with the time limit of 0.1 ms are
+ * skipped if the clock of the collector does not resolve it (on Windows
+ * it counts milliseconds).  The trees must stay intact.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -248,7 +257,8 @@ check_near_deadline(void)
  * one of a few tries must see it advance by less than 0.1 ms (a try fails
  * if the thread is preempted meanwhile).  On Windows it counts
  * milliseconds: a phase stops at a deadline less than 1 ms after its start
- * only when the clock advances.
+ * only when the clock advances, and a world-stopped mark with a time limit
+ * of 0.1 ms runs until then, often to the end of its marking.
  */
 static GC_bool
 fine_clock(void)
@@ -460,6 +470,90 @@ mark_with_deadlines(unsigned long far_ms)
   UNLOCK();
 }
 
+/* The calls of `GC_collect_a_little()` which a collection takes at most. */
+#  define MAX_COLLECT_CALLS 100000L
+
+/*
+ * The world-stopped marks (from `GC_EVENT_MARK_START` until the world is
+ * restarted), and those of them which ran a parallel mark phase.  Updated
+ * by `on_collection_event()`, which the collector calls holding the
+ * allocator lock.
+ */
+static GC_bool in_stopped_mark;
+static word mark_no_at_mark_start;
+static unsigned long n_stopped_marks;
+static unsigned long n_parallel_stopped_marks;
+
+static void GC_CALLBACK
+on_collection_event(GC_EventType e)
+{
+  switch (e) {
+  case GC_EVENT_MARK_START:
+    in_stopped_mark = TRUE;
+    mark_no_at_mark_start = GC_mark_no;
+    break;
+  case GC_EVENT_PRE_START_WORLD:
+    if (in_stopped_mark) {
+      in_stopped_mark = FALSE;
+      n_stopped_marks++;
+      if (GC_mark_no != mark_no_at_mark_start)
+        n_parallel_stopped_marks++;
+    }
+    break;
+  default:
+    break;
+  }
+}
+
+static void
+set_time_limit(unsigned long ms, unsigned long ns)
+{
+  struct GC_timeval_s tv;
+
+  tv.tv_ms = ms;
+  tv.tv_nsec = ns;
+  GC_set_time_limit_tv(tv);
+}
+
+/* Complete the collection in progress, if any. */
+static void
+complete_collection(void)
+{
+  long n;
+
+  for (n = 0; GC_collect_a_little(); n++)
+    CHECK(n < MAX_COLLECT_CALLS);
+}
+
+/* Check that the world-stopped marks with the time limit mark in parallel. */
+static void
+check_stopped_marks(void)
+{
+  set_time_limit(50, 0);
+  GC_start_incremental_collection();
+  complete_collection();
+  printf("Collection with a time limit of 50 ms: %lu world-stopped marks,"
+         " %lu with a parallel mark phase\n",
+         n_stopped_marks, n_parallel_stopped_marks);
+  CHECK(n_parallel_stopped_marks > 0);
+}
+
+/*
+ * Check that with a time limit of 0.1 ms the world-stopped mark that starts
+ * a collection is abandoned, and leaves no deadline set.
+ */
+static void
+check_abandoned_mark(void)
+{
+  set_time_limit(0, 100000);
+  GC_start_incremental_collection();
+  LOCK();
+  CHECK(GC_collection_in_progress());
+  CHECK(!GC_mark_deadline_on);
+  UNLOCK();
+  complete_collection();
+}
+
 int
 main(void)
 {
@@ -522,6 +616,35 @@ main(void)
   GC_gcollect();
   for (t = 0; t < N_TREES; t++)
     CHECK(check_tree(trees[t], (GC_word)t + 1, 0, 0) == nodes_per_tree);
+
+  if (GC_get_parallel()) {
+    /*
+     * The markings above leave a mark stack smaller than the initial one,
+     * while the collector only grows it (with such a mark stack, the push
+     * of the dirty blocks would never start).
+     */
+    LOCK();
+    alloc_mark_stack(INITIAL_MARK_STACK_SIZE);
+    GC_after_marking();
+    UNLOCK();
+    GC_enable_incremental();
+    if (GC_is_incremental_mode()) {
+      /* Every collection marks all the trees. */
+      GC_set_full_freq(0);
+      GC_set_on_collection_event(on_collection_event);
+      check_stopped_marks();
+      if (fine) {
+        check_abandoned_mark();
+      } else {
+        printf("The clock does not resolve 0.1 ms, the checks with that"
+               " time limit skipped\n");
+      }
+      for (t = 0; t < N_TREES; t++)
+        CHECK(check_tree(trees[t], (GC_word)t + 1, 0, 0) == nodes_per_tree);
+    } else {
+      printf("The incremental mode is off, its checks skipped\n");
+    }
+  }
   printf("SUCCEEDED\n");
   return 0;
 }

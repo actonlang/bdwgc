@@ -298,6 +298,30 @@ GC_get_stop_func(void)
   return stop_func;
 }
 
+#ifdef PARALLEL_MARK_DEADLINE
+GC_INNER GC_bool GC_parallel_slices = FALSE;
+
+/*
+ * Whether a marking with the time limit marks in parallel world-stopped
+ * slices until the deadline.  A client stop function is then called
+ * between the parallel mark phases, at least once per time limit.
+ */
+static GC_bool
+parallel_slices_on(void)
+{
+  return GC_parallel_slices && GC_parallel
+         && GC_time_limit != GC_TIME_UNLIMITED;
+}
+
+/*
+ * The slices (world-stopped marks) of the collection in progress, and their
+ * longest and total time in microseconds.  Protected by the allocator lock.
+ */
+static unsigned n_slices = 0;
+static unsigned long longest_slice_us = 0;
+static unsigned long total_slice_us = 0;
+#endif
+
 #if defined(GC_DISABLE_INCREMENTAL) || defined(NO_CLOCK)
 #  define GC_timeout_stop_func GC_default_stop_func
 #else
@@ -336,6 +360,10 @@ GC_timeout_stop_func(void)
   GC_ASSERT(I_HOLD_LOCK());
   if (GC_default_stop_func())
     return TRUE;
+#  ifdef PARALLEL_MARK_DEADLINE
+  if (GC_mark_deadline_reached())
+    return TRUE;
+#  endif
 
   if (GC_time_limit == GC_TIME_UNLIMITED || (count++ & 3) != 0)
     return FALSE;
@@ -1166,6 +1194,42 @@ GC_INNER unsigned GC_unmap_threshold = MUNMAP_THRESHOLD;
 #  define COMMA_IF_USE_MUNMAP(x)
 #endif /* !USE_MUNMAP */
 
+#ifdef PARALLEL_MARK_DEADLINE
+/*
+ * Count a slice of the collection in progress: the world was stopped
+ * from `start` until now.  If `done`, the marking is complete; then log
+ * the slices of the collection and reset the counts.
+ */
+static void
+end_slice(CLOCK_TYPE start, GC_bool done)
+{
+  CLOCK_TYPE now;
+  unsigned long us;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  GET_TIME(now);
+  us = MS_TIME_DIFF(now, start) * 1000UL
+       + NS_FRAC_TIME_DIFF(now, start) / 1000UL;
+  n_slices++;
+  if (us > longest_slice_us)
+    longest_slice_us = us;
+  total_slice_us += us;
+  GC_COND_LOG_PRINTF("Slice %u of collection #%lu: world stopped for %lu us,"
+                     " marking %s\n",
+                     n_slices, (unsigned long)GC_gc_no + (done ? 0 : 1), us,
+                     done ? "complete" : "continues");
+  if (done) {
+    GC_COND_LOG_PRINTF("Marked collection #%lu in %u slices: longest %lu us,"
+                       " total %lu us\n",
+                       (unsigned long)GC_gc_no, n_slices, longest_slice_us,
+                       total_slice_us);
+    n_slices = 0;
+    longest_slice_us = 0;
+    total_slice_us = 0;
+  }
+}
+#endif
+
 /*
  * We stop the world and mark from all roots.  If `stop_func()` ever
  * returns `TRUE`, we may fail and return `FALSE`.  Increment `GC_gc_no`
@@ -1186,6 +1250,10 @@ GC_stopped_mark(GC_stop_func stop_func)
 #ifndef NO_CLOCK
   CLOCK_TYPE start_time = CLOCK_TYPE_INITIALIZER;
   GC_bool start_time_valid = FALSE;
+#endif
+#ifdef PARALLEL_MARK_DEADLINE
+  CLOCK_TYPE slice_start = CLOCK_TYPE_INITIALIZER;
+  GC_bool count_slice = GC_parallel_slices;
 #endif
 
   GC_ASSERT(I_HOLD_LOCK());
@@ -1211,6 +1279,10 @@ GC_stopped_mark(GC_stop_func stop_func)
     GET_TIME(start_time);
     start_time_valid = TRUE;
   }
+#endif
+#ifdef PARALLEL_MARK_DEADLINE
+  if (count_slice)
+    GET_TIME(slice_start);
 #endif
 #ifdef THREADS
   if (GC_on_collection_event)
@@ -1244,8 +1316,17 @@ GC_stopped_mark(GC_stop_func stop_func)
 
   GC_initiate_gc();
 #ifdef PARALLEL_MARK
-  if (stop_func != GC_never_stop_func)
-    GC_parallel_mark_disabled = TRUE;
+  if (stop_func != GC_never_stop_func) {
+#  ifdef PARALLEL_MARK_DEADLINE
+    /* Mark in parallel until the time limit. */
+    if (stop_func == GC_timeout_stop_func && parallel_slices_on()) {
+      GC_set_mark_deadline(GC_time_limit, GC_time_lim_nsec);
+    } else
+#  endif
+    /* else */ {
+      GC_parallel_mark_disabled = TRUE;
+    }
+  }
 #endif
   for (abandoned_at = 1; !(*stop_func)(); abandoned_at++) {
     if (GC_mark_some(cold_gc_frame)) {
@@ -1259,6 +1340,10 @@ GC_stopped_mark(GC_stop_func stop_func)
   }
 #ifdef PARALLEL_MARK
   GC_parallel_mark_disabled = FALSE;
+#endif
+#ifdef PARALLEL_MARK_DEADLINE
+  if (stop_func == GC_timeout_stop_func)
+    GC_clear_mark_deadline();
 #endif
 
   if (abandoned_at > 0) {
@@ -1300,6 +1385,10 @@ GC_stopped_mark(GC_stop_func stop_func)
 #endif
 #if !defined(GC_DISABLE_INCREMENTAL) && !defined(NO_CLOCK)
   log_timeout_stop();
+#endif
+#ifdef PARALLEL_MARK_DEADLINE
+  if (count_slice)
+    end_slice(slice_start, 0 == abandoned_at);
 #endif
 #ifdef PARALLEL_MARK
   if (serial_done_at != 0) {
