@@ -9,13 +9,16 @@
  * `GC_PAUSE_TIME_TARGET` environment variables).  With the parallel
  * marker, the test checks that the time limit was parsed, that some
  * collections were marked in several world-stopped marks, and that the
- * world was stopped for marking steps between them too.  At last, it
- * starts a collection and waits for it (`GC_gcollect()`), which marks in
- * steps without allocation.  Then, with a stop function which always
- * returns true, every world-stopped mark with the time limit is abandoned
- * before it marks anything, and a collection must still complete, marked
- * only by steps, each of which calls `GC_mark_some()` once, and by the final
- * mark without the time limit.
+ * world was stopped for marking steps between them too.  It checks the
+ * same in the manual VDB mode with one marker (`GC_MARKERS=1`), whose
+ * steps run on one thread, in the builds that parse the fraction of the
+ * time limit (those with the parallel marker).  At last, it starts
+ * a collection and waits for it (`GC_gcollect()`), which marks in steps
+ * without allocation.  Then, with a stop function which always returns
+ * true, every world-stopped mark with the time limit is abandoned before it
+ * marks anything, and a collection must still complete, marked only by
+ * steps, each of which calls `GC_mark_some()` once, and by the final mark
+ * without the time limit.
  *
  * If `NO_CLOCK` is defined, the collector has no time limit, and the test
  * checks only the forests.
@@ -270,6 +273,8 @@ main(void)
   int i;
 #ifndef NO_CLOCK
   unsigned long n_marks_run;
+  struct GC_timeval_s tv;
+  int parsed;
 #endif
 #ifdef GC_PTHREADS
   pthread_t th[N_THREADS];
@@ -333,10 +338,12 @@ main(void)
   GC_start_incremental_collection();
   GC_gcollect();
 #ifndef NO_CLOCK
-  if (GC_is_incremental_mode() && GC_get_parallel()) {
-    struct GC_timeval_s tv = GC_get_time_limit_tv();
-
-    if (tv.tv_ms != 0 || tv.tv_nsec != 100000UL) {
+  tv = GC_get_time_limit_tv();
+  parsed = 0 == tv.tv_ms && 100000UL == tv.tv_nsec;
+  if (GC_is_incremental_mode()
+      && (GC_get_parallel()
+          || (parsed && GC_get_actual_vdb() == GC_VDB_MANUAL))) {
+    if (!parsed) {
       fprintf(stderr, "Wrong time limit: %lu ms %lu ns\n", tv.tv_ms,
               tv.tv_nsec);
       exit(1);

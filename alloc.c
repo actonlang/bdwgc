@@ -314,6 +314,20 @@ parallel_slices_on(void)
 }
 
 /*
+ * Whether the marking between the world-stopped marks of a collection
+ * runs in world-stopped steps (`GC_parallel_mark_step()`): with the
+ * parallel slices, and always in the manual VDB mode, which marks only
+ * with the world stopped (a client write barrier has no fence, and
+ * a client fills a new object without a barrier), on one thread if the
+ * parallel marker is off.
+ */
+static GC_bool
+steps_on(void)
+{
+  return GC_manual_vdb || parallel_slices_on();
+}
+
+/*
  * The slices (world-stopped marks and steps) of the collection in progress,
  * and their longest and total time in microseconds.  Protected by the
  * allocator lock, as the following.
@@ -1098,7 +1112,7 @@ GC_collect_a_little_inner(size_t n_blocks)
     DISABLE_CANCEL_FOR_WORK(cancel_state);
     ENTER_GC();
 #ifdef PARALLEL_MARK_DEADLINE
-    if (parallel_slices_on()) {
+    if (steps_on()) {
       /*
        * Mark only in world-stopped steps, one per `slice_bytes` allocated,
        * or when nothing was allocated since the previous call (the caller
@@ -1114,6 +1128,8 @@ GC_collect_a_little_inner(size_t n_blocks)
     } else
 #endif
     /* else */ {
+      /* The manual VDB mode marks only with the world stopped. */
+      GC_ASSERT(!GC_manual_vdb);
 #ifdef PARALLEL_MARK
       if (GC_time_limit != GC_TIME_UNLIMITED)
         GC_parallel_mark_disabled = TRUE;
@@ -1319,6 +1335,15 @@ GC_stopped_mark(GC_stop_func stop_func)
 
   GC_ASSERT(I_HOLD_LOCK());
   GC_ASSERT(GC_is_initialized);
+#if !defined(PARALLEL_MARK_DEADLINE) && !defined(NO_MANUAL_VDB)
+  /*
+   * Without the steps, the marking of an abandoned world-stopped mark
+   * would continue with the world running, which the manual VDB mode
+   * does not allow.
+   */
+  if (GC_manual_vdb)
+    stop_func = GC_never_stop_func;
+#endif
   ENTER_GC();
 #if !defined(REDIRECT_MALLOC) && defined(USE_WINALLOC)
   GC_add_current_malloc_heap();
@@ -1519,10 +1544,11 @@ GC_stopped_mark(GC_stop_func stop_func)
 
 #ifdef PARALLEL_MARK_DEADLINE
 /*
- * Run a step of the collection in progress: stop the world, mark (in
- * parallel) until the mark stack is empty or the time limit passes, and
- * restart the world.  Unlike `GC_stopped_mark()`, this reads no dirty
- * bits.  Return whether the mark stack is empty (a final mark follows).
+ * Run a step of the collection in progress (see `steps_on()`): stop the
+ * world, mark (in parallel if possible) until the mark stack is empty or
+ * the time limit passes, and restart the world.  Unlike `GC_stopped_mark()`,
+ * this reads no dirty bits.  Return whether the mark stack is empty (a final
+ * mark follows).
  */
 STATIC GC_bool
 GC_parallel_mark_step(void)
@@ -1533,9 +1559,10 @@ GC_parallel_mark_step(void)
 
   GC_ASSERT(I_HOLD_LOCK());
   GC_ASSERT(GC_collection_in_progress());
-  GC_ASSERT(parallel_slices_on());
+  GC_ASSERT(steps_on());
   /* Builders of free lists read the mark bits outside the lock. */
-  GC_wait_for_reclaim();
+  if (GC_parallel)
+    GC_wait_for_reclaim();
   GET_TIME(GC_start_time);
   slice_start = GC_start_time;
 #  ifdef THREADS

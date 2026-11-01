@@ -889,14 +889,17 @@ pub fn build(b: *std.Build) void {
         }
         addTest(b, gc, test_step, flags, "initfromthreadtest", "tests/initfromthread.c");
         addTest(b, gc, test_step, flags, "markercounttest", "tests/markercount.c");
-        // Every run of `markslicestest` gets `GC_ENABLE_INCREMENTAL` and
-        // `GC_PAUSE_TIME_TARGET` from the environment, which the test sets
-        // itself too (see `wbarverifytest` below).
+        // `markslicestest` runs once more with one marker, with which the
+        // manual VDB mode marks in steps on one thread.  Every run gets
+        // `GC_ENABLE_INCREMENTAL` and `GC_PAUSE_TIME_TARGET` from the
+        // environment, which the test sets itself too (see `wbarverifytest`
+        // below).
         addTestExt(b, gc, test_step, flags, "markslicestest", "tests/markslices.c", .{
             .env = &.{
                 .{ .name = "GC_ENABLE_INCREMENTAL", .value = "1" },
                 .{ .name = "GC_PAUSE_TIME_TARGET", .value = "0.1" },
             },
+            .env_runs = &.{.{ .name = "GC_MARKERS", .value = "1" }},
         });
         // The cases of `wbarverifytest` named here store without a barrier;
         // the checker must report each store with its label and exit with
