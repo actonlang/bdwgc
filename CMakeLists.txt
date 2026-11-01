@@ -1386,6 +1386,10 @@ if(BUILD_TESTING)
         target_link_libraries(wbarverifytest PRIVATE gc ${THREADDLLIBS_LIST})
         add_test(NAME wbarverifytest COMMAND wbarverifytest)
 
+        add_executable(finalstoptest tests/finalstop.c ${NODIST_SRC})
+        target_link_libraries(finalstoptest PRIVATE gc ${THREADDLLIBS_LIST})
+        add_test(NAME finalstoptest COMMAND finalstoptest)
+
         if(NOT WIN32)
             add_executable(forktest tests/fork.c ${NODIST_SRC})
             target_link_libraries(
