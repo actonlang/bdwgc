@@ -1760,6 +1760,164 @@ case_threads(void)
 }
 #  endif
 
+/*
+ * A dead object revived by a conservative reference (`revived`).  An
+ * object dies in a block whose other objects live, so that the sweep
+ * leaves the block alone (it is nearly full), with pointers to two objects
+ * that are freed afterwards, and handed out again.  Then a reference to
+ * the dead object appears where the collector looks for roots (here
+ * a static word, as a stale word in a stack frame would).  A minor
+ * collection finds its old pointers in a clean block, pointing to new
+ * objects nobody stored into it.  No barrier is missing, so the checker
+ * must not report them: while it runs, every collection sweeps every block
+ * with unmarked objects at once, and the dead object holds no pointer.
+ * The objects are freed explicitly once the dead object holds the last
+ * pointers to them, so that they are on a free list (and stay unmarked)
+ * while the collection that revives the dead object scans it.  They come
+ * from a size class that no other case uses, from one block with an object
+ * that stays alive, and are handed out again from that block.  The second
+ * pointer takes the stale words that the checker leaves on its stack, as
+ * in `store_young()`.  A round in which a stale word kept the dead object
+ * alive is tried again.
+ */
+#  define REVIVED_FILL 768
+
+/* A size class that no other case uses (96 bytes with the extra byte). */
+struct filler {
+  void *p;
+  void *pad[10];
+};
+
+/* Likewise (144 bytes); the objects freed and handed out again. */
+struct medium {
+  struct medium *next;
+  void *pad[16];
+};
+
+static struct filler *volatile g_fill[REVIVED_FILL];
+static struct medium *volatile g_medium;
+static volatile GC_hidden_pointer g_victim;
+static volatile GC_hidden_pointer g_freed[2];
+static void *volatile g_revived;
+
+static GC_ATTR_NOINLINE struct medium *
+new_medium(void)
+{
+  struct medium *m
+      = (struct medium *)GC_generic_malloc(sizeof(struct medium), NORMAL);
+
+  CHECK(m != NULL);
+  m->next = g_medium;
+  g_medium = m;
+  return m;
+}
+
+/*
+ * Make the victim, which points to two objects of the medium size from
+ * one block with a third one, which stays alive, in a block of objects
+ * which stay alive.
+ */
+static GC_ATTR_NOINLINE void
+make_victim(void)
+{
+  struct medium *a, *b;
+  size_t i;
+
+  do {
+    g_medium = NULL;
+    a = new_medium();
+    b = new_medium();
+  } while (HBLKPTR(a) != HBLKPTR(b) || HBLKPTR(b) != HBLKPTR(new_medium()));
+  for (i = 0; i < REVIVED_FILL; i++) {
+    struct filler *s
+        = (struct filler *)GC_generic_malloc(sizeof(struct filler), NORMAL);
+
+    CHECK(s != NULL);
+    g_fill[i] = s;
+  }
+  g_fill[REVIVED_FILL / 2]->p = a;
+  g_fill[REVIVED_FILL / 2]->pad[9] = b;
+  g_victim = GC_HIDE_POINTER(g_fill[REVIVED_FILL / 2]);
+  g_fill[REVIVED_FILL / 2] = NULL;
+  g_freed[0] = GC_HIDE_POINTER(a);
+  g_freed[1] = GC_HIDE_POINTER(b);
+}
+
+/* Free the two objects, the third one stays on `g_medium`. */
+static GC_ATTR_NOINLINE void
+free_targets(void)
+{
+  const struct medium *m = g_medium;
+
+  /* `g_medium` lists the third, the second and the first one. */
+  g_medium->next = NULL;
+  GC_free(GC_REVEAL_POINTER(g_freed[1]));
+  GC_free(GC_REVEAL_POINTER(g_freed[0]));
+  GC_reachable_here(m);
+}
+
+/*
+ * Allocate objects of the medium size until both freed objects are handed
+ * out again; return whether they are.  The objects are kept on
+ * `g_medium`.
+ */
+static GC_ATTR_NOINLINE int
+reuse_targets(void)
+{
+  const void *a = GC_REVEAL_POINTER(g_freed[0]);
+  const void *b = GC_REVEAL_POINTER(g_freed[1]);
+  int seen = 0;
+  size_t i;
+
+  for (i = 0; i < 4 * HBLKSIZE / sizeof(struct medium) && seen != 3; i++) {
+    const void *m = new_medium();
+
+    if (m == a)
+      seen |= 1;
+    if (m == b)
+      seen |= 2;
+  }
+  return 3 == seen;
+}
+
+static int
+case_revived(void)
+{
+  int round;
+  int exercised = 0;
+
+  for (round = 0; round < N_ROUNDS && !exercised; round++) {
+    make_victim();
+    clear_stack();
+    /*
+     * The victim dies, unless a stale word keeps it.  A full collection,
+     * since a minor one keeps it if a collection marked it while it was
+     * held.
+     */
+    GC_gcollect();
+    if (GC_is_marked(GC_REVEAL_POINTER(g_victim)))
+      continue;
+    free_targets();
+    /* A conservative reference to the victim appears. */
+    g_revived = GC_REVEAL_POINTER(g_victim);
+    clear_stack();
+    GC_gcollect();
+    CHECK(reuse_targets());
+    clean_block(g_revived);
+    clear_stack();
+    collect_minor();
+    collect_minor();
+    exercised = 1;
+  }
+  report("revived");
+  if (!exercised)
+    printf("revived: a stale word kept the victim, case not exercised\n");
+  g_revived = NULL;
+  g_medium = NULL;
+  memset((void *)g_fill, 0, sizeof(g_fill));
+  return exercised && errors() == 0;
+}
+
 struct test_case {
   const char *name;
   int (*fn)(void);
@@ -1783,6 +1941,7 @@ static const struct test_case cases[] = {
   { "large-stack", case_large_stack, 1 },
   { "large-uncoll", case_large_uncoll, 1 },
   { "stale", case_stale, 1 },
+  { "revived", case_revived, 0 },
   { "kind-unflagged", case_kind_unflagged, 0 },
   { "lost", case_lost, 0 },
   { "missed", case_missed, 0 },
