@@ -50,10 +50,9 @@
  *
  * Last, at high pressure: the memory limit is set to 2.5 times the bytes
  * in use, which puts the heap cap near the live data, and the time limit to
- * 10 microseconds.  The client allocates as fast until 12 more collections
- * completed, and the test reports the most bytes the heap had in use (the
- * mapped heap minus its free blocks).  These two parts are skipped if the
- * memory limit is unknown.
+ * 10 microseconds; the heap in use (the mapped heap minus its free blocks)
+ * must stay under the heap ceiling while the client allocates as fast.
+ * These two parts are skipped if the memory limit is unknown.
  *
  * Without the manual VDB mode, the parallel marker (only with it the
  * marking runs in steps) or the clock, if `NO_INCREMENTAL` is defined, or
@@ -376,6 +375,7 @@ test_high_pressure(void)
          " in use %lu MiB\n",
          (unsigned long)(limit / MiB), (unsigned long)(ceiling / MiB),
          (unsigned long)(max_in_use / MiB));
+  CHECK(max_in_use <= ceiling);
 }
 
 int

@@ -89,13 +89,19 @@
  * abandoned final mark counts any more.  With a known memory limit,
  * a final mark that the stop function abandons while the event callback
  * keeps the world stopped for 2 ms must count that long, more than its
- * time limit.  The set-up of a full collection then runs in chunks with
- * a time limit of 1 ns (see `continue_full_setup()`): a chunk must stop
- * before the set-up is complete (except on Windows, where the clock of the
- * collector counts milliseconds, and with `BSD_TIME`, where it reads the user
- * time of the process), the first world-stopped mark must be due after the
- * chunk that completes it, and no block but those of uncollectable objects
- * may keep a mark bit then.  The next chunk must be due once `slice_bytes`
+ * time limit.  With the bytes in use above the heap cap, one call of
+ * `GC_collect_a_little_inner()` must complete the marking in a step and
+ * a final mark, and the finish but its unmapping, and keep what the next
+ * final mark needs, but run nothing while the collections are disabled;
+ * and a minor collection after which the bytes in use exceed the heap cap
+ * must make the next collection a full one.  The set-up of a full
+ * collection then runs in chunks with a time limit of 1 ns (see
+ * `continue_full_setup()`): a chunk must stop before the set-up is
+ * complete (except on Windows, where the clock of the collector counts
+ * milliseconds, and with `BSD_TIME`, where it reads the user time of the
+ * process), the first world-stopped mark must be due after the chunk
+ * that completes it, and no block but those of uncollectable objects may
+ * keep a mark bit then.  The next chunk must be due once `slice_bytes`
  * were allocated since the latest one, and not earlier, or once the time
  * limit has passed since its end, and none may run while the collections
  * are disabled.  With a time limit of 10 s, the due first world-stopped
@@ -1151,6 +1157,106 @@ check_abandoned_final(void)
     printf("Length of an abandoned final mark checked\n");
 }
 
+/*
+ * Check the one stop: with the bytes in use above the heap cap (a memory
+ * limit of 4 KiB puts the heap ceiling far below the live data, and the
+ * live data after the latest full collection is set to half of the bytes
+ * in use), a call of `GC_collect_a_little_inner()` completes the marking
+ * of the collection in progress, and its finish but the unmapping, and the
+ * final mark does not count as what the next final mark needs.  While the
+ * collections are disabled, such a call runs nothing.
+ */
+static void
+check_one_stop(void)
+{
+  unsigned long stops;
+  IF_CANCEL(int cancel_state;)
+
+  /*
+   * The stop function stops the first world-stopped mark of the collection
+   * at once, also where the clock of the collector counts milliseconds.
+   */
+  GC_set_stop_func(stop_now);
+  start_collection();
+  GC_set_stop_func(GC_never_stop_func);
+  LOCK();
+  DISABLE_CANCEL(cancel_state);
+  CHECK(GC_collection_in_progress() && !GC_final_mark_due);
+  GC_set_memory_limit(4096);
+  GC_in_use_after_full = (GC_composite_in_use + GC_atomic_in_use) / 2;
+  prev_final_us = 1234;
+  stops = n_stops;
+  /*
+   * Not while the collections are disabled: then nothing runs with less
+   * than `slice_bytes` allocated since the latest slice, and some since the
+   * previous call.
+   */
+  CHECK(slice_bytes > 0);
+  GC_dont_gc++;
+  allocd_at_slice = allocd_now();
+  allocd_at_call = allocd_now() - 1;
+  GC_collect_a_little_inner(1);
+  CHECK(GC_collection_in_progress() && n_stops == stops);
+  GC_dont_gc--;
+  GC_collect_a_little_inner(1);
+  CHECK(!GC_collection_in_progress() && n_stops == stops + 2);
+#  if defined(USE_MUNMAP) && !defined(_WIN32)
+  /*
+   * The unmapping is pending, and no chunk of it has run: the first chunk
+   * of the finish did not run, as the step started more than half of the
+   * time limit before (the clock of the collector counts milliseconds on
+   * Windows).
+   */
+  CHECK(0 == GC_unmap_threshold
+            ? !FINISH_PENDING()
+            : FINISH_UNMAP == finish_phase && !unmap_chunk_ran);
+#  else
+  CHECK(!FINISH_PENDING() || FINISH_UNMAP == finish_phase);
+#  endif
+  CHECK(1234 == prev_final_us);
+  GC_set_memory_limit(0);
+  RESTORE_CANCEL(cancel_state);
+  UNLOCK();
+  complete_collection();
+  printf("One stop checked\n");
+}
+
+/*
+ * Check that a minor collection after which the bytes in use exceed the
+ * heap cap makes the next collection a full one: `finish_rest()` with the
+ * heap grown by nothing since the latest full collection, the bytes in use
+ * then at 80% of the current ones (not enough for the trigger of
+ * `GC_gen_full_live_pct`), and a memory limit of 4 KiB, which puts the
+ * heap cap at 110% of those bytes and the roots; and with no memory limit
+ * set, the next collection may still be a minor one.
+ */
+static void
+check_heap_cap_trigger(void)
+{
+  word in_use_after_full, used_after_full;
+  IF_CANCEL(int cancel_state;)
+
+  complete_collection();
+  LOCK();
+  DISABLE_CANCEL(cancel_state);
+  in_use_after_full = GC_in_use_after_full;
+  used_after_full = GC_used_heap_size_after_full;
+  GC_used_heap_size_after_full = GC_heapsize;
+  GC_in_use_after_full = (GC_composite_in_use + GC_atomic_in_use) / 5 * 4;
+  finish_rest(FALSE);
+  CHECK(!GC_need_full_gc);
+  GC_set_memory_limit(4096);
+  finish_rest(FALSE);
+  CHECK(GC_need_full_gc);
+  GC_set_memory_limit(0);
+  GC_need_full_gc = FALSE;
+  GC_in_use_after_full = in_use_after_full;
+  GC_used_heap_size_after_full = used_after_full;
+  RESTORE_CANCEL(cancel_state);
+  UNLOCK();
+  printf("Full collection after a minor one above the heap cap checked\n");
+}
+
 /* Count the blocks with marked objects, except uncollectable ones. */
 static void
 count_marked_block(hdr *hhdr, void *client_data)
@@ -1436,7 +1542,7 @@ check_unmap_chunks(void)
   while (FINISH_PENDING()
          && !(FINISH_UNMAP == finish_phase && unmap_chunk_ran)) {
     GET_TIME(GC_start_time);
-    run_finish_chunk(FALSE);
+    run_finish_chunk(FALSE, TRUE);
   }
   /* A chunk unmaps a few of the blocks at most. */
   CHECK(FINISH_UNMAP == finish_phase);
@@ -1444,7 +1550,7 @@ check_unmap_chunks(void)
   unmapped = GC_unmapped_bytes;
   GET_TIME(GC_start_time);
   wait_us_since(GC_start_time, 6);
-  run_finish_chunk(FALSE);
+  run_finish_chunk(FALSE, TRUE);
   CHECK(FINISH_UNMAP == finish_phase && GC_unmapped_bytes == unmapped);
 
   /*
@@ -1600,6 +1706,8 @@ main(void)
       }
       check_final_trigger();
       check_abandoned_final();
+      check_one_stop();
+      check_heap_cap_trigger();
       check_setup_chunks();
 #  ifdef GC_PTHREADS
       check_setup_builders();

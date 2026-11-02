@@ -171,14 +171,18 @@ live after the latest full collection plus the allocation volume of the heap
 sizing (see `GC_HEAP_CEILING_PERCENT`), with half of the distance to the
 ceiling, but at least 10% of that data, as the volume if there is no allocation
 budget.  Nearer to the cap, the steps wait less, and their time limit rises up
-to 4 times this value.  The final world-stopped mark of a collection, which
-completes its marking, keeps a time limit.  With the heap cap, in builds with
-the parallel marker, that is the one of a step, or 1.25 times what the final
-mark of the previous collection took if that is more, doubled with each final
-mark of the collection abandoned, and none once that exceeds 4 times this value.
-Without the heap cap, or in builds without the parallel marker, the final mark
-keeps this value until 3 final marks of the collection were abandoned, and the
-next one runs without a limit.
+to 4 times this value.  Once the world would have to be stopped for 90% of the
+time, the rest of the marking (at most a step and the final mark, each stopping
+the world) and the finish of the collection, except for the unmapping, run
+without a limit in one hold of the allocator lock.  A minor collection after
+which the bytes in use exceed the heap cap is followed by a full one.  The final
+world-stopped mark of a collection, which completes its marking, keeps a time
+limit.  With the heap cap, in builds with the parallel marker, that is the one
+of a step, or 1.25 times what the final mark of the previous collection took if
+that is more, doubled with each final mark of the collection abandoned, and none
+once that exceeds 4 times this value.  Without the heap cap, or in builds
+without the parallel marker, the final mark keeps this value until 3 final marks
+of the collection were abandoned, and the next one runs without a limit.
 
 `GC_GEN_FULL_LIVE_PCT` - In the incremental mode, makes the next collection
 a full one when, after a minor collection, the bytes in use exceed the ones
