@@ -364,9 +364,10 @@ static unsigned prev_n_slices = 0;
  * collection whose marking completed; the length of the final mark that
  * completed the latest collection whose marking did not complete in one stop
  * (0 if its first mark completed it); and the bytes allocated and the time
- * the client ran from the first slice of the latest collection whose marking
- * completed until that marking completed.  Protected by the allocator lock, as
- * the following.
+ * the client ran from the start of the window of the allocation rate (see
+ * `rate_start_time`), or from the first slice of the latest collection whose
+ * marking completed if the finish before it read no clock, until that
+ * marking completed.  Protected by the allocator lock, as the following.
  */
 static CLOCK_TYPE mark_start_time;
 static word allocd_at_mark_start = 0;
@@ -376,6 +377,26 @@ static unsigned long prev_mark_us[2] = { 0, 0 };
 static unsigned long prev_final_us = 0;
 static word prev_allocd = 0;
 static unsigned long prev_client_us = 0;
+
+/*
+ * The start of the window of the allocation rate (see `end_slice()`) and
+ * the bytes allocated then, and the latest sample of the clock and the
+ * bytes allocated then, if `finish_timed`: the clock is read at the finish
+ * of a collection only with the steps (see `steps_on()`).  Both are the
+ * latest finish, where the bytes allocated restart from 0, until the first
+ * sample.  A sample is taken between collections once the client allocated
+ * `rate_sample_bytes` (an eighth of the allocation volume) since the previous
+ * one, and the window then starts at the previous one.  Thus the window
+ * starts one to two eighths of the volume before the collection if the
+ * client allocated that much since the finish, and the time the client was
+ * idle before that does not count as its time.
+ */
+static CLOCK_TYPE rate_start_time;
+static word allocd_at_rate_start = 0;
+static CLOCK_TYPE rate_sample_time;
+static word allocd_at_rate_sample = 0;
+static word rate_sample_bytes = 0;
+static GC_bool finish_timed = FALSE;
 
 /*
  * The longest final mark of the collection in progress that was
@@ -904,6 +925,10 @@ GC_should_collect(void)
   GC_ASSERT(I_HOLD_LOCK());
   if (last_gc_no != GC_gc_no) {
     last_min_bytes_allocd = min_bytes_allocd();
+#ifdef PARALLEL_MARK_DEADLINE
+    /* The spacing of the samples of the clock (see `rate_start_time`). */
+    rate_sample_bytes = last_min_bytes_allocd / 8;
+#endif
     last_gc_no = GC_gc_no;
   }
 #ifndef GC_DISABLE_INCREMENTAL
@@ -1008,6 +1033,8 @@ unmap_old_blocks(size_t *pindex, GC_stop_func stop_func)
 #endif
 
 #ifdef PARALLEL_MARK_DEADLINE
+static word steps_room(void);
+
 /*
  * Set the allocation volume after which the next step, or the next chunk
  * of the set-up of a full collection, is due: the allocation budget
@@ -1016,7 +1043,8 @@ unmap_old_blocks(size_t *pindex, GC_stop_func stop_func)
  * unless the spacing of the slices (see `slice_gap_passed()`) holds the
  * steps back: where the client allocates the volume in less time than the
  * spacing, the spacing decides when the steps run, and the client allocates
- * more than half the budget during such a marking.  Neither the volume nor
+ * more than half the budget during such a marking.  After a slice, at most
+ * the headroom of one step (see `steps_room()`).  Neither the volume nor
  * the spacing holds a step back while a caller holds the allocator lock
  * until the marking completes (see `GC_complete_marking()`), or, from
  * `ONE_STOP_SHARE` on, in one stop.
@@ -1027,6 +1055,12 @@ pace_next_slice(void)
   allocd_at_slice = allocd_now();
   slice_bytes
       = min_bytes_allocd() / (prev_n_slices > 4 ? 2 * (word)prev_n_slices : 8);
+  if (n_slices > 0) {
+    word room = steps_room();
+
+    if (room < slice_bytes)
+      slice_bytes = room;
+  }
 }
 
 /*
@@ -1082,14 +1116,15 @@ time_limit_us(void)
 }
 
 /*
- * The length of the latest slice for the spacing of the slices (see
- * `slice_gap_passed()`), in microseconds.  A slice measured as 0 us ended
- * before the clock of the collector advanced by a microsecond: where the
- * clock counts milliseconds (with `GetTickCount64()` on Windows) or reads the
- * user time of the process (with `BSD_TIME`), a slice that ends before the
- * next tick reads so, however long it ran.  It counts as long as the time
- * limit, the length of a step that ends at it, instead of leaving no gap
- * before the next slice.  Without a time limit, it counts as 0.
+ * The length of the latest slice for the pacing of the slices (see
+ * `steps_room()` and `slice_gap_passed()`), in microseconds.  A slice
+ * measured as 0 us ended before the clock of the collector advanced by
+ * a microsecond: where the clock counts milliseconds (with `GetTickCount64()`
+ * on Windows) or reads the user time of the process (with `BSD_TIME`),
+ * a slice that ends before the next tick reads so, however long it ran.  It
+ * counts as long as the time limit, the length of a step that ends at it,
+ * instead of leaving no room and no gap before the next slice.  Without
+ * a time limit, it counts as 0.
  */
 static unsigned long
 paced_slice_us(void)
@@ -1164,29 +1199,71 @@ scale_word(word a, word b, word c)
 }
 
 /*
+ * Return the world-stopped time, in microseconds, that the marking of
+ * a collection of the kind `kind` (minor 0, full 1) takes after
+ * `stopped_us` microseconds of it: what the latest collection of that kind
+ * took minus that, but at least the time limit and the final mark that
+ * completed the previous collection.
+ */
+static unsigned long
+marking_left_us(int kind, unsigned long stopped_us)
+{
+  unsigned long left
+      = prev_mark_us[kind] > stopped_us ? prev_mark_us[kind] - stopped_us : 0;
+
+  if (left < prev_final_us)
+    left = prev_final_us;
+  if (left < time_limit_us())
+    left = time_limit_us();
+  return left;
+}
+
+/*
+ * Return the bytes the client allocates in `us` microseconds of its time,
+ * at its allocation rate: the bytes allocated per microsecond the client
+ * ran since the first slice of the collection in progress, or in the window
+ * of the allocation rate of the previous collection whose marking completed
+ * (see `prev_allocd`) if the client ran for less than the time limit since.
+ * Return 0 if the rate is unknown.
+ */
+static word
+client_allocd_in(unsigned long us)
+{
+  word allocd = 0;
+  unsigned long client_us = 0;
+
+  if (n_slices > 0) {
+    unsigned long wall_us = us_since(mark_start_time);
+
+    if (allocd_now() > allocd_at_mark_start)
+      allocd = allocd_now() - allocd_at_mark_start;
+    client_us = wall_us > total_slice_us ? wall_us - total_slice_us : 0;
+  }
+  if (client_us < time_limit_us()) {
+    allocd = prev_allocd;
+    client_us = prev_client_us;
+  }
+  if (0 == client_us)
+    return 0;
+  return scale_word(allocd, us, client_us);
+}
+
+/*
  * Return the share of the time for which the world must be stopped from
  * now on so that the marking of the collection in progress completes
  * before the bytes in use reach the heap cap: need / (need + headroom).
  * The headroom is the heap cap minus the bytes in use (the data in use
  * after the latest collection plus the bytes allocated since).  `need` is
- * what the client allocates, at its allocation rate, in its share of the
- * time while the marking left stops the world: the world-stopped time of
- * the latest collection of the same kind (minor or full) minus that of
- * the collection in progress so far, but at least the time limit and the
- * final mark that completed the previous collection.  The rate is the
- * bytes allocated per microsecond the client ran since the first slice of
- * the collection in progress, or during the previous collection if the
- * client ran for less than the time limit since.  The share is 0 if the
- * heap cap is 0 (see `heap_cap()`) or the rate is unknown, and 1000 if the
- * bytes in use reach the heap cap.
+ * what the client allocates (see `client_allocd_in()`) in its share of the
+ * time while the marking left (see `marking_left_us()`) stops the world.
+ * The share is 0 if the heap cap is 0 (see `heap_cap()`) or the rate is
+ * unknown, and 1000 if the bytes in use reach the heap cap.
  */
 static unsigned
 collector_share(void)
 {
   word cap = heap_cap();
-  word in_use, headroom, allocd, need;
-  unsigned long left, client_us;
-  int kind = GC_is_full_gc ? 1 : 0;
+  word in_use, headroom, need;
 
   GC_ASSERT(I_HOLD_LOCK());
   if (0 == cap)
@@ -1195,30 +1272,44 @@ collector_share(void)
   if (in_use >= cap)
     return 1000;
   headroom = cap - in_use;
-  left = prev_mark_us[kind] > total_slice_us
-             ? prev_mark_us[kind] - total_slice_us
-             : 0;
-  if (left < prev_final_us)
-    left = prev_final_us;
-  if (left < time_limit_us())
-    left = time_limit_us();
-  allocd = 0;
-  client_us = 0;
-  if (n_slices > 0) {
-    unsigned long us = us_since(mark_start_time);
-
-    if (allocd_now() > allocd_at_mark_start)
-      allocd = allocd_now() - allocd_at_mark_start;
-    client_us = us > total_slice_us ? us - total_slice_us : 0;
-  }
-  if (client_us < time_limit_us()) {
-    allocd = prev_allocd;
-    client_us = prev_client_us;
-  }
-  if (0 == client_us || 0 == allocd)
+  need = client_allocd_in(
+      marking_left_us(GC_is_full_gc ? 1 : 0, total_slice_us));
+  if (0 == need)
     return 0;
-  need = scale_word(allocd, left, client_us);
   return (unsigned)scale_word(need, 1000, SIZET_SAT_ADD(need, headroom));
+}
+
+/*
+ * Return the bytes the client may allocate between two slices of the
+ * collection in progress: the headroom beyond the need of the marking
+ * left (see `collector_share()`) divided by the slices left, i.e. by the
+ * marking left divided by the length of the latest slice (see
+ * `paced_slice_us()`, at most the time limit, if a microsecond or more,
+ * after a final mark, as the slices left are steps), so that the marking
+ * completes with the need as the headroom.  From a share of half on this is
+ * 0, and only the spacing by the share delays a step.  Return `GC_WORD_MAX`
+ * if the heap cap is 0, the time is unlimited, or no marking is left by that
+ * estimate (with a time limit under a microsecond).
+ */
+static word
+steps_room(void)
+{
+  word cap = heap_cap();
+  word reserve;
+  unsigned long left, slice_us = paced_slice_us();
+
+  if (0 == cap || GC_TIME_UNLIMITED == GC_time_limit)
+    return GC_WORD_MAX;
+  left = marking_left_us(GC_is_full_gc ? 1 : 0, total_slice_us);
+  if (0 == left)
+    return GC_WORD_MAX;
+  reserve = SIZET_SAT_ADD(SIZET_SAT_ADD(live_bytes(), allocd_now()),
+                          client_allocd_in(left));
+  if (reserve >= cap)
+    return 0;
+  if (final_mark_no != 0 && slice_us > time_limit_us() && time_limit_us() > 0)
+    slice_us = time_limit_us();
+  return scale_word(cap - reserve, slice_us, left);
 }
 
 /*
@@ -2268,6 +2359,15 @@ GC_collect_a_little_inner(size_t n_blocks)
     DISABLE_CANCEL_FOR_WORK(cancel_state);
     GC_maybe_gc();
     RESTORE_CANCEL_FOR_WORK(cancel_state);
+#ifdef PARALLEL_MARK_DEADLINE
+  } else if (finish_timed && !GC_dont_gc
+             && allocd_now() - allocd_at_rate_sample >= rate_sample_bytes) {
+    /* The window of the allocation rate moves (see `rate_start_time`). */
+    rate_start_time = rate_sample_time;
+    allocd_at_rate_start = allocd_at_rate_sample;
+    GET_TIME(rate_sample_time);
+    allocd_at_rate_sample = allocd_now();
+#endif
   }
 #ifdef GC_NO_CANCEL_STATE_SKIP
   RESTORE_CANCEL(cancel_state);
@@ -2422,10 +2522,25 @@ end_slice(CLOCK_TYPE start, int outcome)
     /* A collection completed in one stop keeps the need of the previous. */
     if (!in_one_stop)
       prev_final_us = final_mark_no != 0 ? us : 0;
-    prev_allocd = allocd_now() > allocd_at_mark_start
-                      ? allocd_now() - allocd_at_mark_start
-                      : 0;
-    prev_client_us = wall_us > total_slice_us ? wall_us - total_slice_us : 0;
+    /*
+     * The allocation rate from the start of its window, before the
+     * collection, so that it is known even if the marking completed in its
+     * first mark.
+     */
+    if (finish_timed) {
+      unsigned long window_us = us_since(rate_start_time);
+
+      prev_allocd = allocd_now() > allocd_at_rate_start
+                        ? allocd_now() - allocd_at_rate_start
+                        : 0;
+      prev_client_us
+          = window_us > total_slice_us ? window_us - total_slice_us : 0;
+    } else {
+      prev_allocd = allocd_now() > allocd_at_mark_start
+                        ? allocd_now() - allocd_at_mark_start
+                        : 0;
+      prev_client_us = wall_us > total_slice_us ? wall_us - total_slice_us : 0;
+    }
     abandoned_final_us = 0;
     prev_n_slices = n_slices;
     n_slices = 0;
@@ -3100,6 +3215,13 @@ GC_finish_collection(void)
   GC_finalizer_bytes_freed = 0;
 
 #ifdef PARALLEL_MARK_DEADLINE
+  finish_timed = steps_on();
+  if (finish_timed) {
+    GET_TIME(rate_sample_time);
+    rate_start_time = rate_sample_time;
+    allocd_at_rate_sample = 0;
+    allocd_at_rate_start = 0;
+  }
   if (finish_in_chunks() && detach_free_lists()) {
     start_finish_chunks(full);
     /*

@@ -57,19 +57,24 @@
  * world-stopped mark that starts a collection is abandoned, and it must
  * leave no deadline set.  With a time limit of 1 ms, a step must keep it
  * up to a share of half of the time for which the world must be stopped,
- * then up to 4 times it at a share of 0.9; a final mark must keep the
- * limit of a step, or 1.25 times the final mark of the previous
- * collection or twice the longest final mark abandoned if that is more,
- * but run without a limit once it needs more than 4 times it; a slice must
- * wait until the world has run for as long as the latest slice stopped it (as
- * long as the time limit if that measured 0 us, not at all without a time
- * limit), for less above a share of half, not at all at 1000.  The scaling of
- * the pacing must be exact and saturated also where the product overflows
- * a word.  With a known memory limit, the share must follow the world-stopped
- * time of the latest collection of the same kind and the allocation rate of
- * the previous collection: a third, 5/6 and 2/3 at given values.  Then a step
- * must be due once `slice_bytes` were allocated since the latest slice,
- * and not earlier (with something allocated since the previous call of
+ * then up to 4 times it at a share of 0.9; a final mark must keep the limit
+ * of a step, or 1.25 times the final mark of the previous collection or twice
+ * the longest final mark abandoned if that is more, but run without a limit
+ * once it needs more than 4 times it; a slice must wait until the world has
+ * run for as long as the latest slice stopped it (as long as the time limit
+ * if that measured 0 us, not at all without a time limit), for less above
+ * a share of half, not at all at 1000.  The scaling of the pacing must be
+ * exact and saturated also where the product overflows a word.  With a known
+ * memory limit, the share must follow the world-stopped time of the latest
+ * collection of the same kind and the allocation rate of the previous
+ * collection: a third, 5/6 and 2/3 at given values.  At such values, the room
+ * of a step must shrink by the growth of what the client allocates while the
+ * marking left stops the world and grow in proportion to the length of the
+ * latest slice (the time limit if it measured 0 us, at most the time limit
+ * after a final mark), and it must not be bounded without a time limit, nor
+ * with no marking left (with a time limit under 1 us).
+ * Then a step must be due once `slice_bytes` were allocated since the latest
+ * slice, and not earlier (with something allocated since the previous call of
  * `GC_collect_a_little_inner()`), nor before the world has run for as long
  * as the latest slice stopped it, and leave no deadline set.  With a known
  * memory limit, the share must then follow the allocation since the first
@@ -85,23 +90,23 @@
  * memory limit, a final mark that needs more than 4 times the time limit
  * must complete the marking, and its length is then what the next final
  * mark needs.  The world-stopped time of that marking and the bytes
- * allocated since its first slice are then recorded for the share, and no
- * abandoned final mark counts any more.  With a known memory limit,
+ * allocated from before the collection are then recorded for the share, and
+ * no abandoned final mark counts any more.  With a known memory limit,
  * a final mark that the stop function abandons while the event callback
  * keeps the world stopped for 2 ms must count that long, more than its
- * time limit.  With the bytes in use above the heap cap, one call of
- * `GC_collect_a_little_inner()` must complete the marking in a step and
- * a final mark, and the finish but its unmapping, and keep what the next
- * final mark needs, but run nothing while the collections are disabled;
- * and a minor collection after which the bytes in use exceed the heap cap
- * must make the next collection a full one.  The set-up of a full
- * collection then runs in chunks with a time limit of 1 ns (see
- * `continue_full_setup()`): a chunk must stop before the set-up is
+ * time limit.  With the bytes in use above the heap cap, a slice must leave
+ * no room for a step, and one call of `GC_collect_a_little_inner()` must
+ * complete the marking in a step and a final mark, and the finish but its
+ * unmapping, and keep what the next final mark needs, but run nothing while
+ * the collections are disabled; and a minor collection after which the bytes
+ * in use exceed the heap cap must make the next collection a full one.  The
+ * set-up of a full collection then runs in chunks with a time limit of 1 ns
+ * (see `continue_full_setup()`): a chunk must stop before the set-up is
  * complete (except on Windows, where the clock of the collector counts
  * milliseconds, and with `BSD_TIME`, where it reads the user time of the
- * process), the first world-stopped mark must be due after the chunk
- * that completes it, and no block but those of uncollectable objects may
- * keep a mark bit then.  The next chunk must be due once `slice_bytes`
+ * process), the first world-stopped mark must be due after the chunk that
+ * completes it, and no block but those of uncollectable objects may keep
+ * a mark bit then.  The next chunk must be due once `slice_bytes`
  * were allocated since the latest one, and not earlier, or once the time
  * limit has passed since its end, and none may run while the collections
  * are disabled.  With a time limit of 10 s, the due first world-stopped
@@ -770,6 +775,59 @@ check_abandoned_mark(void)
 }
 
 /*
+ * Check the bytes that may be allocated between two steps (see
+ * `steps_room()`), at a world-stopped time of the latest minor collection of
+ * 2 ms and given allocation rates of the client, with `room` bytes left
+ * under the heap cap, a time limit of 1 ms and no slice of the collection
+ * in progress.  Each pair of values is computed in the same frame, where the
+ * bytes in use count the same stack.
+ */
+static void
+check_steps_room(word room)
+{
+  word a = room / 16, r1, r2;
+  unsigned long slice_us = last_slice_us;
+
+  /* The marking left of a minor collection needs the bytes of 2 ms. */
+  prev_client_us = 2000;
+  prev_allocd = a;
+  last_slice_us = 1000;
+  r1 = steps_room();
+  /* A slice measured as 0 us counts as one of the time limit. */
+  last_slice_us = 0;
+  CHECK(steps_room() == r1);
+  last_slice_us = 2000;
+  r2 = steps_room();
+  CHECK(r2 > 0 && r2 - 2 * r1 <= 1);
+  /*
+   * After a final mark, a slice counts as one of at most the time limit,
+   * as the slices left are steps.
+   */
+  final_mark_no = 1;
+  CHECK(steps_room() == r1);
+  final_mark_no = 0;
+  CHECK(steps_room() == r2);
+  prev_allocd = 2 * a;
+  r1 = steps_room();
+  CHECK(r2 - r1 == a);
+  /*
+   * With a need of twice the room left, none is left for the steps: the
+   * bytes in use behind `room` count the stack where the caller computed
+   * them, which may be deeper than where `steps_room()` counts it.
+   */
+  prev_allocd = 2 * room;
+  CHECK(0 == steps_room());
+  set_time_limit(GC_TIME_UNLIMITED, 0);
+  CHECK(GC_WORD_MAX == steps_room());
+  set_time_limit(0, 500);
+  prev_mark_us[0] = 0;
+  CHECK(GC_WORD_MAX == steps_room());
+  set_time_limit(1, 0);
+  prev_mark_us[0] = 2000;
+  last_slice_us = slice_us;
+}
+
+/*
  * Check the time limits of a step and of a final mark, and the spacing of
  * the slices, at given shares of the time for which the world must be
  * stopped (see `collector_share()`), with a time limit of 1 ms.
@@ -860,6 +918,7 @@ check_pacing_limits(void)
     prev_mark_us[0] = 2000;
     prev_allocd = room;
     CHECK(666 == collector_share());
+    check_steps_room(room);
     prev_mark_us[0] = mark_us[0];
     prev_mark_us[1] = mark_us[1];
     prev_allocd = allocd;
@@ -996,6 +1055,18 @@ check_step_trigger(void)
   complete_collection();
 }
 
+/*
+ * Give the steps some room where the pacing left none after a slice (see
+ * `steps_room()`), e.g. above the heap cap.  The checks of when a step or
+ * a due final mark runs need some.
+ */
+static void
+give_slice_bytes(void)
+{
+  if (0 == slice_bytes)
+    slice_bytes = ALLOC_CHUNK_BYTES;
+}
+
 /* A stop function that always stops. */
 static int GC_CALLBACK
 stop_now(void)
@@ -1032,6 +1103,7 @@ check_final_trigger(void)
     allocd_at_call = allocd_now();
     GC_collect_a_little_inner(1);
   }
+  give_slice_bytes();
   RESTORE_CANCEL(cancel_state);
   UNLOCK();
 
@@ -1100,8 +1172,8 @@ check_final_trigger(void)
     CHECK(prev_final_us == last_slice_us);
     /*
      * The marking is recorded for the share: its world-stopped time and the
-     * bytes allocated since its first slice.  No abandoned final mark counts
-     * any more.
+     * bytes allocated from before the collection.  No abandoned final mark
+     * counts any more.
      */
     CHECK(prev_mark_us[1] >= last_slice_us && prev_allocd > 0);
     CHECK(0 == abandoned_final_us);
@@ -1184,6 +1256,9 @@ check_one_stop(void)
   CHECK(GC_collection_in_progress() && !GC_final_mark_due);
   GC_set_memory_limit(4096);
   GC_in_use_after_full = (GC_composite_in_use + GC_atomic_in_use) / 2;
+  /* Above the heap cap, a slice leaves no room for the steps. */
+  pace_next_slice();
+  CHECK(0 == slice_bytes);
   prev_final_us = 1234;
   stops = n_stops;
   /*
@@ -1191,7 +1266,7 @@ check_one_stop(void)
    * than `slice_bytes` allocated since the latest slice, and some since the
    * previous call.
    */
-  CHECK(slice_bytes > 0);
+  give_slice_bytes();
   GC_dont_gc++;
   allocd_at_slice = allocd_now();
   allocd_at_call = allocd_now() - 1;
