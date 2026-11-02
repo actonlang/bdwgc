@@ -25,8 +25,8 @@ jobs:
         os:
           - macos-26-intel
           - macos-latest
-          - ubuntu-26.04-arm
-          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - ubuntu-24.04
           - windows-11-arm
           - windows-latest
         c_compiler: [cl, clang, gcc]
@@ -49,9 +49,9 @@ jobs:
             c_compiler: cl
           - os: macos-latest
             c_compiler: gcc
-          - os: ubuntu-26.04-arm
+          - os: ubuntu-24.04-arm
             c_compiler: cl
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             c_compiler: cl
           - threads: "off"
             rwlock: "on"
@@ -71,9 +71,9 @@ jobs:
             cplusplus: "off"
           - os: macos-latest
             cplusplus: "off"
-          - os: ubuntu-26.04-arm
+          - os: ubuntu-24.04-arm
             cplusplus: "off"
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             cplusplus: "off"
           - os: windows-latest
             c_compiler: cl
