@@ -181,10 +181,18 @@ exceed the heap cap is followed by a full one.  The final world-stopped mark of
 a collection, which completes its marking, keeps a time limit.  With the heap
 cap, in builds with the parallel marker, that is the one of a step, or 1.25
 times what the final mark of the previous collection took if that is more,
-doubled with each final mark of the collection abandoned, and none once that
-exceeds 4 times this value.  Without the heap cap, or in builds without the
-parallel marker, the final mark keeps this value until 3 final marks of the
-collection were abandoned, and the next one runs without a limit.
+doubled with each final mark of the collection abandoned, but at most 4 times
+this value (the bound), where the stop function of the client does not stop it.
+With the steps, a final mark abandoned at the bound is tried again at it after
+more steps, until 4 final marks of the collection were abandoned there.  After
+that, without the steps (with one marker, outside the manual VDB mode), while a
+caller holds the allocator lock until the marking completes (e.g. in
+`GC_gcollect`), and once nothing was allocated since the latest final mark
+abandoned at the bound (e.g. in a loop of `GC_collect_a_little` calls), a final
+mark that needs more than the bound runs without a limit.  Without the heap cap,
+or in builds without the parallel marker, the final mark keeps this value until
+3 final marks of the collection were abandoned, and the next one runs without a
+limit.
 
 `GC_GEN_FULL_LIVE_PCT` - In the incremental mode, makes the next collection
 a full one when, after a minor collection, the bytes in use exceed the ones

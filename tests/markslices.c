@@ -23,10 +23,14 @@
  * time limit (those with the parallel marker).  At last, it starts
  * a collection and waits for it (`GC_gcollect()`), which marks in steps
  * without allocation.  Then, with a stop function which always returns
- * true, every world-stopped mark with the time limit is abandoned before it
- * marks anything (in the manual VDB mode, once it pushed the roots), and
- * a collection must still complete, marked only by steps, each of which
- * calls `GC_mark_some()` once, and by the final mark without the time limit.
+ * true, every world-stopped mark that the stop function may stop is
+ * abandoned before it marks anything (in the manual VDB mode, once it pushed
+ * the roots), and a collection must still complete, marked only by steps,
+ * each of which calls `GC_mark_some()` once, and by the final marks that the
+ * stop function does not stop: with the heap cap, in builds with the parallel
+ * marker, one at 4 times the time limit and, if that one is abandoned, one
+ * without the time limit, as nothing is allocated meanwhile; otherwise, the
+ * final mark without the time limit.
  *
  * If `NO_CLOCK` is defined, the collector has no time limit, and the test
  * checks only the forests.
@@ -331,10 +335,11 @@ always_stop(void)
 
 /*
  * Start a collection and complete it with the stop function always
- * returning true: it is marked only by steps and by the final mark without
- * the time limit.  The test waits for it for at most a minute: nothing is
- * allocated, so the steps are spaced by the pacing, and the calls of
- * `GC_collect_a_little()` in between do nothing.
+ * returning true: it is marked only by steps and by the final marks that the
+ * stop function does not stop (see the top of this file).  The test waits
+ * for it for at most a minute: nothing is allocated, so the steps are spaced
+ * by the pacing, and the calls of `GC_collect_a_little()` in between do
+ * nothing.
  */
 static void
 check_step_progress(void)
