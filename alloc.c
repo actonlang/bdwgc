@@ -361,9 +361,11 @@ static unsigned prev_n_slices = 0;
  * the start of the first slice of the collection in progress and the bytes
  * allocated at its end, the end and the length of its latest slice; the time
  * the world was stopped for the latest minor (index 0) and full (index 1)
- * collection whose marking completed, the length of the slice that completed
- * it if that was a final mark, and the bytes allocated and the time the client
- * ran from its first slice until then.  Protected by the allocator lock, as
+ * collection whose marking completed; the length of the final mark that
+ * completed the latest collection whose marking did not complete in one stop
+ * (0 if its first mark completed it); and the bytes allocated and the time
+ * the client ran from the first slice of the latest collection whose marking
+ * completed until that marking completed.  Protected by the allocator lock, as
  * the following.
  */
 static CLOCK_TYPE mark_start_time;
@@ -383,6 +385,12 @@ static unsigned long abandoned_final_us = 0;
 
 /* The number of the final mark in progress, 0 if none. */
 static unsigned final_mark_no = 0;
+
+/*
+ * Whether the slice in progress completes the marking of the collection in
+ * one stop (see `ONE_STOP_SHARE`).
+ */
+static GC_bool in_one_stop = FALSE;
 
 /*
  * Whether the caller holds the allocator lock until the marking of the
@@ -775,7 +783,6 @@ heap_target(void)
   return SIZET_SAT_ADD(live_bytes(), min_bytes_allocd());
 }
 
-#ifdef PARALLEL_MARK_DEADLINE
 /*
  * Return the heap cap: the data live after the latest full collection
  * (including the roots) plus the larger one of `BUDGET_FLOOR_PERCENT` of it
@@ -811,7 +818,6 @@ heap_cap(void)
   }
   return SIZET_SAT_ADD(live, room);
 }
-#endif
 
 /*
  * Return the number of bytes allocated, adjusted for explicit storage
@@ -952,7 +958,7 @@ GC_notify_full_gc(void)
 
 STATIC GC_bool GC_stopped_mark(GC_stop_func stop_func);
 #ifdef PARALLEL_MARK_DEADLINE
-STATIC GC_bool GC_parallel_mark_step(void);
+STATIC GC_bool GC_parallel_mark_step(GC_bool unlimited);
 #endif
 STATIC void GC_finish_collection(void);
 static void finish_rest(GC_bool full);
@@ -1012,7 +1018,8 @@ unmap_old_blocks(size_t *pindex, GC_stop_func stop_func)
  * spacing, the spacing decides when the steps run, and the client allocates
  * more than half the budget during such a marking.  Neither the volume nor
  * the spacing holds a step back while a caller holds the allocator lock
- * until the marking completes (see `GC_complete_marking()`).
+ * until the marking completes (see `GC_complete_marking()`), or, from
+ * `ONE_STOP_SHARE` on, in one stop.
  */
 static void
 pace_next_slice(void)
@@ -1099,7 +1106,10 @@ paced_slice_us(void)
  * stopped meanwhile (see `collector_share()`), in per mille, sets the
  * spacing of the slices (see `slice_gap_passed()`) and the time limits of
  * the steps and of the final marks (see `step_limit_us()` and
- * `final_limit_us()`).
+ * `final_limit_us()`).  From `ONE_STOP_SHARE` on, the marking completes in
+ * one stop: in one hold of the allocator lock, at most a step and the final
+ * mark run without a time limit, each stopping the world, and the finish
+ * but its unmapping follows.
  */
 #  define HALF_SHARE 500
 #  define ONE_STOP_SHARE 900
@@ -1627,10 +1637,11 @@ run_unmap_chunk(GC_bool unlimited)
 
 /*
  * Run a chunk of the pending finish until the time limit since
- * `GC_start_time` (or to the end if `unlimited`).
+ * `GC_start_time` (or to the end if `unlimited`), and without its
+ * unmapping unless `unmap`.
  */
 static void
-run_finish_chunk(GC_bool unlimited)
+run_finish_chunk(GC_bool unlimited, GC_bool unmap)
 {
   GC_stop_func stop_func = unlimited ? GC_never_stop_func : setup_stop_func;
 
@@ -1671,9 +1682,11 @@ run_finish_chunk(GC_bool unlimited)
 #  endif
   }
 #  ifdef USE_MUNMAP
-  if (FINISH_UNMAP == finish_phase && half_limit_left(unlimited)
+  if (FINISH_UNMAP == finish_phase && unmap && half_limit_left(unlimited)
       && run_unmap_chunk(unlimited))
     finish_phase = FINISH_NONE;
+#  else
+  UNUSED_ARG(unmap);
 #  endif
   if (FINISH_PENDING()) {
     GET_TIME(setup_chunk_end);
@@ -1716,7 +1729,7 @@ GC_complete_finish(void)
   GC_ASSERT(I_HOLD_LOCK());
   if (FINISH_PENDING()) {
     GET_TIME(GC_start_time);
-    run_finish_chunk(TRUE);
+    run_finish_chunk(TRUE, TRUE);
   }
   GC_ASSERT(!FINISH_PENDING());
 }
@@ -2047,6 +2060,12 @@ GC_collect_a_little_inner(size_t n_blocks)
 #ifdef PARALLEL_MARK_DEADLINE
     unsigned share
         = GC_time_limit != GC_TIME_UNLIMITED ? collector_share() : 0;
+    /*
+     * Near the heap cap, the marking completes in one stop, which also
+     * completes the finish except for the unmapping, so that the memory
+     * found free is reused at once instead of the heap growing.
+     */
+    GC_bool one_stop = steps_on() && !GC_dont_gc && share >= ONE_STOP_SHARE;
 #endif
 
     DISABLE_CANCEL_FOR_WORK(cancel_state);
@@ -2064,7 +2083,7 @@ GC_collect_a_little_inner(size_t n_blocks)
        */
       word allocd = allocd_now();
       GC_bool due
-          = marking_awaited
+          = one_stop || marking_awaited
             || ((allocd - allocd_at_slice >= slice_bytes
                  || allocd < allocd_at_slice || allocd == allocd_at_call)
                 && slice_gap_passed(share));
@@ -2084,11 +2103,15 @@ GC_collect_a_little_inner(size_t n_blocks)
         unsigned long limit = step_limit_us(share);
         GC_bool stack_emptied;
 
-        if (limit > time_limit_us())
+        if (limit > time_limit_us() && !one_stop)
           slice_limit_us = limit;
-        stack_emptied = GC_parallel_mark_step();
+        stack_emptied = GC_parallel_mark_step(one_stop);
         slice_limit_us = 0;
-        if (stack_emptied) {
+        if (one_stop) {
+          /* The final mark follows at once, in the same lock hold. */
+          GC_ASSERT(stack_emptied);
+          stack_empty = TRUE;
+        } else if (stack_emptied) {
           /* The final mark runs in a hold of the allocator lock of its own. */
           GC_final_mark_due = TRUE;
           GET_TIME(final_due_since);
@@ -2165,6 +2188,11 @@ GC_collect_a_little_inner(size_t n_blocks)
       }
 #endif
 #ifdef PARALLEL_MARK_DEADLINE
+      if (one_stop) {
+        stop_func = GC_never_stop_func;
+        slice_limit_us = 0;
+        in_one_stop = TRUE;
+      }
       final_mark_no = n_final_abandoned + 1;
 #endif
 #ifndef NO_CLOCK
@@ -2185,9 +2213,17 @@ GC_collect_a_little_inner(size_t n_blocks)
       }
       slice_limit_us = 0;
       final_mark_no = 0;
+      in_one_stop = FALSE;
 #endif
       if (done) {
         GC_finish_collection();
+#ifdef PARALLEL_MARK_DEADLINE
+        /* The unmapping of the finish stays in chunks. */
+        if (one_stop && FINISH_PENDING() && finish_phase != FINISH_UNMAP) {
+          GET_TIME(GC_start_time);
+          run_finish_chunk(TRUE, FALSE);
+        }
+#endif
       } else {
 #if !defined(NO_CLOCK) && !defined(GC_DISABLE_INCREMENTAL)
         n_final_abandoned++;
@@ -2218,7 +2254,7 @@ GC_collect_a_little_inner(size_t n_blocks)
     if (finish_chunk_due()) {
       DISABLE_CANCEL_FOR_WORK(cancel_state);
       GET_TIME(GC_start_time);
-      run_finish_chunk(FALSE);
+      run_finish_chunk(FALSE, TRUE);
       RESTORE_CANCEL_FOR_WORK(cancel_state);
     }
   } else if (SETUP_PENDING()) {
@@ -2383,7 +2419,9 @@ end_slice(CLOCK_TYPE start, int outcome)
                        (unsigned long)GC_gc_no, n_slices, longest_slice_us,
                        total_slice_us);
     prev_mark_us[GC_is_full_gc ? 1 : 0] = total_slice_us;
-    prev_final_us = final_mark_no != 0 ? us : 0;
+    /* A collection completed in one stop keeps the need of the previous. */
+    if (!in_one_stop)
+      prev_final_us = final_mark_no != 0 ? us : 0;
     prev_allocd = allocd_now() > allocd_at_mark_start
                       ? allocd_now() - allocd_at_mark_start
                       : 0;
@@ -2663,13 +2701,13 @@ GC_stopped_mark(GC_stop_func stop_func)
 #ifdef PARALLEL_MARK_DEADLINE
 /*
  * Run a step of the collection in progress (see `steps_on()`): stop the
- * world, mark (in parallel if possible) until the mark stack is empty or
- * the time limit passes, and restart the world.  Unlike `GC_stopped_mark()`,
- * this reads no dirty bits.  Return whether the mark stack is empty (a final
- * mark follows).
+ * world, mark (in parallel if possible) until the mark stack is empty or,
+ * unless `unlimited`, the time limit passes, and restart the world.  Unlike
+ * `GC_stopped_mark()`, this reads no dirty bits.  Return whether the mark
+ * stack is empty (a final mark follows).
  */
 STATIC GC_bool
-GC_parallel_mark_step(void)
+GC_parallel_mark_step(GC_bool unlimited)
 {
   ptr_t cold_gc_frame = GC_approx_sp();
   CLOCK_TYPE slice_start;
@@ -2696,15 +2734,17 @@ GC_parallel_mark_step(void)
   GC_world_stopped = TRUE;
 #    endif
 #  endif
-  current_time_limit(&limit_ms, &limit_ns);
-  GC_set_mark_deadline(limit_ms, limit_ns);
+  if (!unlimited) {
+    current_time_limit(&limit_ms, &limit_ns);
+    GC_set_mark_deadline(limit_ms, limit_ns);
+  }
   /* Make progress even if stopping the world took the whole time limit. */
   do {
     if (GC_mark_some(cold_gc_frame)) {
       stack_empty = TRUE;
       break;
     }
-  } while (!GC_timeout_stop_func());
+  } while (unlimited || !GC_timeout_stop_func());
   GC_clear_mark_deadline();
 #  ifdef THREADS
   if (GC_on_collection_event)
@@ -3069,7 +3109,7 @@ GC_finish_collection(void)
      * rest of it.
      */
     if (half_limit_left(FALSE))
-      run_finish_chunk(FALSE);
+      run_finish_chunk(FALSE, TRUE);
     return;
   }
 #endif
@@ -3144,6 +3184,17 @@ finish_rest(GC_bool full)
 
     GC_need_full_gc = GC_heapsize - GC_used_heap_size_after_full
                       > SIZET_SAT_ADD(min_allocd, GC_large_free_bytes);
+    if (!GC_need_full_gc && GC_incremental) {
+      /*
+       * The marks of the old objects that died since the latest full
+       * collection are cleared by a full one only: one is due once the
+       * data in use after this collection, counted with the roots as in the
+       * heap cap (see `live_bytes()`), exceed the heap cap.
+       */
+      word cap = heap_cap();
+
+      GC_need_full_gc = cap != 0 && live_bytes() > cap;
+    }
     if (!GC_need_full_gc && GC_gen_full_live_pct >= 0 && GC_incremental
         && GC_in_use_after_full != 0) {
       /*
