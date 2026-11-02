@@ -15,11 +15,11 @@
  * Test the pacing of the world-stopped steps of a marking: the incremental
  * mode with the manual VDB, a live tree of 2^20 nodes of 4 words each
  * (32 MiB on 64-bit targets), a client that allocates without pause, and
- * every collection full.  The test times each world stop by the collection
- * events, by the clock of the collector: the elapsed time, or the processor
- * time where the collector counts its time limit in it (see
- * `PROCESSOR_TIME_LIMIT`), which does not advance while the threads of the
- * process wait for a processor.
+ * every collection full but in the last part.  The test times each world
+ * stop by the collection events, by the clock of the collector: the elapsed
+ * time, or the processor time where the collector counts its time limit in
+ * it (see `PROCESSOR_TIME_LIMIT`), which does not advance while the threads
+ * of the process wait for a processor.
  *
  * First, with a time limit of 1 ms, the test allocates until a world stop
  * leaves the marking of a collection incomplete, then calls `GC_gcollect()`,
@@ -46,8 +46,14 @@
  * time.  It allocates until 12 more collections completed, at least 12 of
  * the world stops must leave the marking of a collection incomplete, and
  * after each of them the world must run about as long as it was stopped
- * before the next stop.  This part is skipped if the memory limit is
- * unknown.
+ * before the next stop.
+ *
+ * Last, at high pressure: the memory limit is set to 2.5 times the bytes
+ * in use, which puts the heap cap near the live data, and the time limit to
+ * 10 microseconds.  The client allocates as fast until 12 more collections
+ * completed, and the test reports the most bytes the heap had in use (the
+ * mapped heap minus its free blocks).  These two parts are skipped if the
+ * memory limit is unknown.
  *
  * Without the manual VDB mode, the parallel marker (only with it the
  * marking runs in steps) or the clock, if `NO_INCREMENTAL` is defined, or
@@ -80,13 +86,15 @@
     }                                                                       \
   } while (0)
 
+#define MiB ((size_t)1 << 20)
+
 /* The nodes of the live tree. */
 #define N_NODES (1 << 20)
 
-/* The time limit, in milliseconds. */
+/* The time limit of the first two parts, in milliseconds. */
 #define TIME_LIMIT_MS 1
 
-/* The world stops timed at most, and the collections of the paced part. */
+/* The world stops timed at most, and the collections of a paced part. */
 #define MAX_STOPS 100000
 #define N_COLLECTIONS 12
 
@@ -343,9 +351,38 @@ test_low_pressure(void)
   CHECK(0 == n_short);
 }
 
+/*
+ * The memory limit puts the heap ceiling (75% of it, by default) at 1.875
+ * times the bytes in use and the heap cap halfway between them.
+ */
+static void
+test_high_pressure(void)
+{
+  struct GC_timeval_s tv;
+  size_t max_in_use, limit, ceiling;
+
+  GC_gcollect_and_unmap();
+  limit = 5 * (GC_get_heap_size() - GC_get_free_bytes()) / 2;
+  printf("Heap %lu MiB mapped, %lu MiB free\n",
+         (unsigned long)(GC_get_heap_size() / MiB),
+         (unsigned long)(GC_get_free_bytes() / MiB));
+  GC_set_memory_limit(limit);
+  ceiling = limit / 100 * GC_get_heap_ceiling_percent();
+  tv.tv_ms = 0;
+  tv.tv_nsec = 10 * 1000;
+  GC_set_time_limit_tv(tv);
+  max_in_use = churn(N_COLLECTIONS);
+  printf("High pressure: memory limit %lu MiB, heap ceiling %lu MiB, most"
+         " in use %lu MiB\n",
+         (unsigned long)(limit / MiB), (unsigned long)(ceiling / MiB),
+         (unsigned long)(max_in_use / MiB));
+}
+
 int
 main(void)
 {
+  int full_freq;
+
   GC_set_manual_vdb_allowed(1);
   GC_INIT();
   GC_enable_incremental();
@@ -355,6 +392,7 @@ main(void)
     return 0;
   }
   GC_set_time_limit(TIME_LIMIT_MS);
+  full_freq = GC_get_full_freq();
   GC_set_full_freq(0);
   root = build(0, N_NODES);
   GC_gcollect();
@@ -363,6 +401,8 @@ main(void)
     printf("The memory limit is unknown, the pacing is not tested\n");
   } else {
     test_low_pressure();
+    GC_set_full_freq(full_freq);
+    test_high_pressure();
   }
   printf("SUCCEEDED\n");
   return 0;
