@@ -1406,12 +1406,19 @@ if(BUILD_TESTING)
         )
         add_test(NAME wbarverifytest COMMAND wbarverifytest)
 
-        add_executable(finalstoptest tests/finalstop.c ${NODIST_SRC})
+        # The test includes the collector source instead of linking `gc`.
+        add_executable(finalboundtest tests/finalbound.c ${NODIST_SRC})
+        if(MSVC)
+            target_sources(finalboundtest PRIVATE extra/msvc_dbg.c)
+        endif()
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+            target_sources(finalboundtest PRIVATE sparc_mach_dep.S)
+        endif()
         target_link_libraries(
-            finalstoptest
-            PRIVATE gc gc_build_flags ${THREADDLLIBS_LIST}
+            finalboundtest
+            PRIVATE gc_build_flags ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
         )
-        add_test(NAME finalstoptest COMMAND finalstoptest)
+        add_test(NAME finalboundtest COMMAND finalboundtest)
 
         add_executable(finishtest tests/finish.c ${NODIST_SRC})
         target_link_libraries(

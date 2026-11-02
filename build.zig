@@ -935,7 +935,12 @@ pub fn build(b: *std.Build) void {
             .failing_runs = wbar_failing_runs[0..n_wbar_failing_runs],
         });
         addTest(b, gc, test_step, flags, "unmapmarktest", "tests/unmapmark.c");
-        addTest(b, gc, test_step, flags, "finalstoptest", "tests/finalstop.c");
+        // Likewise, `finalboundtest` includes the collector source.
+        addTestExt(b, gc, test_step, flags, "finalboundtest", "tests/finalbound.c", .{
+            .link_gc = false,
+            .filename2 = if (t.abi == .msvc) "extra/msvc_dbg.c" else null,
+            .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
+        });
         // `finishtest` runs once more with the write-barrier checker, under
         // which the finish of a collection must run at once.
         addTestExt(b, gc, test_step, flags, "finishtest", "tests/finish.c", .{
