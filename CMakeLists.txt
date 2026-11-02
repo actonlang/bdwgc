@@ -1427,6 +1427,20 @@ if(BUILD_TESTING)
         )
         add_test(NAME pacingtest COMMAND pacingtest)
 
+        # The test includes the collector source instead of linking `gc`.
+        add_executable(idleratetest tests/idlerate.c ${NODIST_SRC})
+        if(MSVC)
+            target_sources(idleratetest PRIVATE extra/msvc_dbg.c)
+        endif()
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+            target_sources(idleratetest PRIVATE sparc_mach_dep.S)
+        endif()
+        target_link_libraries(
+            idleratetest
+            PRIVATE gc_build_flags ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+        )
+        add_test(NAME idleratetest COMMAND idleratetest)
+
         add_executable(unmapchunkstest tests/unmapchunks.c ${NODIST_SRC})
         target_link_libraries(
             unmapchunkstest

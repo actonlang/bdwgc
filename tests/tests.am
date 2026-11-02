@@ -337,6 +337,13 @@ check_PROGRAMS += pacingtest
 pacingtest_SOURCES = tests/pacing.c
 pacingtest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
+# The test includes the collector source instead of linking `libgc`.
+TESTS += idleratetest$(EXEEXT)
+check_PROGRAMS += idleratetest
+idleratetest_SOURCES = tests/idlerate.c
+idleratetest_LDADD = $(nodist_libgc_la_OBJECTS) $(EXTRA_TEST_LIBS) \
+                     @addobjs@ $(THREADDLLIBS) $(UNWINDLIBS) $(ATOMIC_OPS_LIBS)
+
 TESTS += unmapchunkstest$(EXEEXT)
 check_PROGRAMS += unmapchunkstest
 unmapchunkstest_SOURCES = tests/unmapchunks.c
@@ -454,6 +461,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f finishtest$(EXEEXT) || ./finishtest$(EXEEXT)
 	test ! -f forktest$(EXEEXT) || ./forktest$(EXEEXT)
 	test ! -f heapsectstest$(EXEEXT) || ./heapsectstest$(EXEEXT)
+	test ! -f idleratetest$(EXEEXT) || ./idleratetest$(EXEEXT)
 	test ! -f initfromthreadtest$(EXEEXT) || ./initfromthreadtest$(EXEEXT)
 	test ! -f liftlimittest$(EXEEXT) || ./liftlimittest$(EXEEXT)
 	test ! -f markercounttest$(EXEEXT) || ./markercounttest$(EXEEXT)
