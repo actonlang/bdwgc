@@ -3853,7 +3853,10 @@ GC_INNER void GC_collect_a_little_inner(size_t n_blocks);
  * Complete the marking of the collection in progress (in the incremental
  * mode), with its final mark unless the collections are disabled, by
  * `GC_collect_a_little_inner(n_blocks)` calls with the allocator lock
- * held throughout.  Return false if `stop_func` returned true first.
+ * held throughout.  Return false if `stop_func` returned true first.  No
+ * client takes memory from the allocator meanwhile, beyond the objects
+ * already on its thread-local free lists, thus the steps of the marking run
+ * without the spacing of the pacing by the memory headroom.
  */
 GC_INNER GC_bool GC_complete_marking(GC_stop_func stop_func, size_t n_blocks);
 

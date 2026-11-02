@@ -44,6 +44,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #define CHECK(e)                                                            \
   do {                                                                      \
@@ -85,31 +86,29 @@
 #define MAX_BLOCK (64 * 1024)
 
 /*
- * The calls of `GC_collect_a_little()` at most to start the marking.  The
- * set-up of the collection runs in chunks, and the loop allocates nothing:
- * once a chunk does not complete the set-up, or ends after half of the time
- * limit, the next chunk or the first world-stopped mark is due only when
- * the time limit has passed since the end of that chunk.  The clock of the
+ * The time `run_cycle()` waits at most, in seconds, in each of its loops:
+ * for the marking to start, for the scanned object to be marked and for
+ * the steps after it.  The loops allocate nothing: once a chunk of the
+ * set-up of the collection does not complete the set-up, or ends after
+ * half of the time limit, the next chunk or the first world-stopped mark
+ * is due only when the time limit has passed since the end of that chunk,
+ * and a step is due only once the world has run for as long as the latest
+ * slice stopped it (for less above a share of half).  The calls of
+ * `GC_collect_a_little()` in between do nothing, so a bound on their
+ * number would not bound the time, and a slice that stops the world for
+ * long (e.g. on a loaded machine) would exhaust it.  The clock of the
  * collector counts milliseconds on Windows (`GetTickCount64()`), so there
- * the wait lasts until its next tick, up to 15.6 ms or several hundred
- * thousand calls.
+ * a wait lasts until a later tick of it.
  */
-#ifdef _WIN32
-#  define MAX_START_CALLS 100000000
-#else
-#  define MAX_START_CALLS 100000
-#endif
-
-/*
- * The calls of `GC_collect_a_little()` at most to mark the scanned object.
- * They run steps, as nothing is allocated.
- */
-#define MAX_MARK_CALLS 100000
+#define MAX_WAIT_S 60
 
 static GC_word *volatile scanned;
 
-/* The marks started and ended.  Updated holding the allocator lock. */
-static volatile unsigned long n_mark_starts, n_mark_ends;
+/*
+ * The marks started and ended, and the world stops of the world-stopped
+ * marks and steps.  Updated holding the allocator lock.
+ */
+static volatile unsigned long n_mark_starts, n_mark_ends, n_stops;
 
 static void *GC_CALLBACK
 is_marked(void *p)
@@ -142,6 +141,8 @@ on_event(GC_EventType e)
     n_mark_starts++;
   else if (GC_EVENT_MARK_END == e)
     n_mark_ends++;
+  else if (GC_EVENT_POST_STOP_WORLD == e)
+    n_stops++;
 }
 
 /*
@@ -160,8 +161,9 @@ static int
 run_cycle(int steps)
 {
   GC_word *after;
-  unsigned long starts, ends;
-  int i, reached;
+  unsigned long starts, ends, stops;
+  time_t start;
+  int reached;
 
   scanned = (GC_word *)GC_MALLOC(SCANNED_BYTES);
   after = (GC_word *)GC_MALLOC_ATOMIC(UNMAPPED_BYTES);
@@ -182,22 +184,27 @@ run_cycle(int steps)
 
   starts = n_mark_starts;
   ends = n_mark_ends;
+  start = time(NULL);
   GC_start_incremental_collection();
-  for (i = 0; n_mark_starts == starts; i++) {
-    CHECK(i < MAX_START_CALLS);
+  while (n_mark_starts == starts) {
+    CHECK(difftime(time(NULL), start) < MAX_WAIT_S);
     (void)GC_collect_a_little();
   }
   if (n_mark_ends == ends)
     n_spanned++;
-  for (i = 0; n_mark_starts == starts + 1 && n_mark_ends == ends
-              && NULL == GC_call_with_alloc_lock(is_marked, scanned);
-       i++) {
-    CHECK(i < MAX_MARK_CALLS);
+  start = time(NULL);
+  while (n_mark_starts == starts + 1 && n_mark_ends == ends
+         && NULL == GC_call_with_alloc_lock(is_marked, scanned)) {
+    CHECK(difftime(time(NULL), start) < MAX_WAIT_S);
     (void)GC_collect_a_little();
   }
-  for (i = 0; i < steps && n_mark_starts == starts + 1 && n_mark_ends == ends;
-       i++)
+  stops = n_stops;
+  start = time(NULL);
+  while (n_stops - stops < (unsigned long)steps && n_mark_starts == starts + 1
+         && n_mark_ends == ends) {
+    CHECK(difftime(time(NULL), start) < MAX_WAIT_S);
     (void)GC_collect_a_little();
+  }
   reached = n_mark_starts == starts + 1 && n_mark_ends == ends
             && NULL
                    == GC_call_with_alloc_lock(is_marked,
@@ -227,8 +234,18 @@ run_cycle(int steps)
     }
     GC_FREE(big);
   }
-  while (GC_collect_a_little()) {
-    /* Empty. */
+  {
+    struct GC_timeval_s tv = GC_get_time_limit_tv();
+
+    /*
+     * Complete the collection without the time limit, which its steps and
+     * its final marks keep otherwise.
+     */
+    GC_set_time_limit(GC_TIME_UNLIMITED);
+    while (GC_collect_a_little()) {
+      /* Empty. */
+    }
+    GC_set_time_limit_tv(tv);
   }
   return reached;
 }
