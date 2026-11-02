@@ -942,6 +942,12 @@ pub fn build(b: *std.Build) void {
             .env_runs = &.{.{ .name = "GC_WBAR_VERIFY", .value = "1" }},
         });
         addTest(b, gc, test_step, flags, "pacingtest", "tests/pacing.c");
+        // Likewise, `idleratetest` includes the collector source.
+        addTestExt(b, gc, test_step, flags, "idleratetest", "tests/idlerate.c", .{
+            .link_gc = false,
+            .filename2 = if (t.abi == .msvc) "extra/msvc_dbg.c" else null,
+            .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
+        });
         addTest(b, gc, test_step, flags, "unmapchunkstest", "tests/unmapchunks.c");
         addTest(b, gc, test_step, flags, "liftlimittest", "tests/liftlimit.c");
         addTest(b, gc, test_step, flags, "subthreadcreatetest", "tests/subthreadcreate.c");
