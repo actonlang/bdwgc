@@ -941,7 +941,7 @@ pub fn build(b: *std.Build) void {
         addTestExt(b, gc, test_step, flags, "finishtest", "tests/finish.c", .{
             .env_runs = &.{.{ .name = "GC_WBAR_VERIFY", .value = "1" }},
         });
-        addTest(b, gc, test_step, flags, "collectwaittest", "tests/collectwait.c");
+        addTest(b, gc, test_step, flags, "pacingtest", "tests/pacing.c");
         addTest(b, gc, test_step, flags, "unmapchunkstest", "tests/unmapchunks.c");
         addTest(b, gc, test_step, flags, "liftlimittest", "tests/liftlimit.c");
         addTest(b, gc, test_step, flags, "subthreadcreatetest", "tests/subthreadcreate.c");
