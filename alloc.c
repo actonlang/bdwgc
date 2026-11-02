@@ -984,15 +984,18 @@ setup_stop_func(void)
 }
 
 #  ifdef USE_MUNMAP
+/* The start of the unmapping in progress, for `unmap_stop_func()`. */
+static CLOCK_TYPE unmap_start_time;
+
 /*
- * The stop function of the chunks of the unmapping: true once the time
- * limit has passed since `GC_start_time`.  It is called after each call
- * of `GC_unmap()`, which costs much more than reading the clock.
+ * The stop function of a bounded unmapping: true once the time limit has
+ * passed since `unmap_start_time`.  It is called after each call of
+ * `GC_unmap()`, which costs much more than reading the clock.
  */
 static int GC_CALLBACK
 unmap_stop_func(void)
 {
-  return us_since(GC_start_time) >= time_limit_us();
+  return us_since(unmap_start_time) >= time_limit_us();
 }
 #  endif
 
@@ -1306,6 +1309,8 @@ run_unmap_chunk(GC_bool unlimited)
 {
   GC_ASSERT(FINISH_UNMAP == finish_phase);
   unmap_chunk_ran = TRUE;
+  /* The chunk may have started with other phases. */
+  unmap_start_time = GC_start_time;
   /* Unmapping may have been turned off meanwhile. */
   return 0 == GC_unmap_threshold
          || unmap_old_blocks(&unmap_list,
@@ -3381,6 +3386,28 @@ exceeds_heap_target(word target, word needed_blocks)
   return GC_adj_bytes_allocd() >= (wait > min_wait ? wait : min_wait);
 }
 
+#ifdef USE_MUNMAP
+/*
+ * Unmap every free block before the heap grows.  If the finish of a
+ * collection runs in chunks, then the unmapping stops after the time
+ * limit, as a chunk of the finish does, and the blocks left stay mapped.
+ */
+static void
+unmap_before_growth(void)
+{
+  GC_stop_func stop_func = GC_never_stop_func;
+  size_t index = 0;
+
+#  ifdef PARALLEL_MARK_DEADLINE
+  if (finish_in_chunks()) {
+    GET_TIME(unmap_start_time);
+    stop_func = unmap_stop_func;
+  }
+#  endif
+  (void)GC_unmap_old(0, &index, stop_func);
+}
+#endif
+
 /*
  * Maximum number of subsequent `GC_collect_or_expand` attempts that make
  * no progress (i.e. no collection is completed, the heap is not expanded
@@ -3504,11 +3531,8 @@ GC_collect_or_expand(word needed_blocks, unsigned flags,
    * on no range lying in any free block (`GC_free` drops those that start
    * in a large object which it frees, e.g. the old object of a `GC_realloc`).
    */
-  if (GC_unmap_threshold > 1 && !GC_collection_in_progress()) {
-    size_t index = 0;
-
-    (void)GC_unmap_old(0, &index, GC_never_stop_func);
-  }
+  if (GC_unmap_threshold > 1 && !GC_collection_in_progress())
+    unmap_before_growth();
 #endif
   p_retry->total_cnt++;
   if (!GC_expand_hp_inner(blocks_to_get)
