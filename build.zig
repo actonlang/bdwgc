@@ -890,8 +890,13 @@ pub fn build(b: *std.Build) void {
         // matched).  The manual VDB mode is not built with the malloc
         // redirection or the back pointers of `enable_gc_debug`, and on
         // Windows the checker aborts instead and the collector logs to
-        // a file.
+        // a file.  Every run gets `GC_WBAR_VERIFY` from the environment:
+        // the test sets it itself, but with msvc and dynamic linkage the
+        // program links its own static copy of the C library (see
+        // `cordtest` above), whose environment the collector DLL does not
+        // read.
         addTestExt(b, gc, test_step, flags, "wbarverifytest", "tests/wbarverify.c", .{
+            .env = &.{.{ .name = "GC_WBAR_VERIFY", .value = "1" }},
             .failing_runs = if (t.os.tag == .windows or enable_redirect_malloc or enable_gc_debug) &.{} else &.{
                 .{ .arg = "lost", .exit_code = 70, .stderr_match = "WBVERIFY LOST " },
                 .{ .arg = "missed", .exit_code = 70, .stderr_match = "WBVERIFY MISSED " },
@@ -951,7 +956,8 @@ const FailingRun = struct {
     stderr_match: []const u8,
 };
 
-// A run of a test with an environment variable set.
+// An environment variable set: in a run of its own (`env_runs`), or in
+// every run of the test (`env`).
 const EnvRun = struct {
     name: []const u8,
     value: []const u8,
@@ -966,6 +972,7 @@ fn addTestExt(b: *std.Build, gc: *std.Build.Step.Compile, test_step: *std.Build.
     sysLibName2: ?[]const u8 = null,
     failing_runs: []const FailingRun = &.{},
     env_runs: []const EnvRun = &.{},
+    env: []const EnvRun = &.{},
 }) void {
     const test_exe = b.addExecutable(.{
         .name = testname,
@@ -1004,12 +1011,12 @@ fn addTestExt(b: *std.Build, gc: *std.Build.Step.Compile, test_step: *std.Build.
         test_exe.root_module.linkSystemLibrary(ext_args.sysLibName2.?, .{});
     }
     const run_test_exe = b.addRunArtifact(test_exe);
-    run_test_exe.setEnvironmentVariable("GC_PROMPT_DISABLED", "1");
+    setTestEnv(run_test_exe, ext_args.env);
     test_step.dependOn(&run_test_exe.step);
     for (ext_args.failing_runs) |f| {
         const run_failing = b.addRunArtifact(test_exe);
         run_failing.addArg(f.arg);
-        run_failing.setEnvironmentVariable("GC_PROMPT_DISABLED", "1");
+        setTestEnv(run_failing, ext_args.env);
         run_failing.expectExitCode(f.exit_code);
         run_failing.expectStdErrMatch(f.stderr_match);
         // Run it every time, like the other tests.
@@ -1018,9 +1025,17 @@ fn addTestExt(b: *std.Build, gc: *std.Build.Step.Compile, test_step: *std.Build.
     }
     for (ext_args.env_runs) |e| {
         const run_env = b.addRunArtifact(test_exe);
-        run_env.setEnvironmentVariable("GC_PROMPT_DISABLED", "1");
+        setTestEnv(run_env, ext_args.env);
         run_env.setEnvironmentVariable(e.name, e.value);
         test_step.dependOn(&run_env.step);
+    }
+}
+
+// Set the environment variables of every run of a test.
+fn setTestEnv(run: *std.Build.Step.Run, env: []const EnvRun) void {
+    run.setEnvironmentVariable("GC_PROMPT_DISABLED", "1");
+    for (env) |e| {
+        run.setEnvironmentVariable(e.name, e.value);
     }
 }
 
