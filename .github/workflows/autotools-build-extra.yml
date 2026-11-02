@@ -136,12 +136,12 @@ jobs:
           - os: ubuntu-latest
             conf_options: --disable-parallel-mark --enable-gc-assertions
             cflags_extra: -D TEST_MANUAL_VDB -D _FORTIFY_SOURCE=2
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             conf_options: --disable-shared
             cflags_extra: >-
               -fno-omit-frame-pointer -fsanitize=memory -std=gnu11
             extra_sanitizer_checks: true
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             conf_options: --disable-shared
             cflags_extra: >-
               -fsanitize=memory,undefined -fno-omit-frame-pointer
