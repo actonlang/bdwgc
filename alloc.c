@@ -404,6 +404,14 @@ static GC_bool finish_timed = FALSE;
  */
 static unsigned long abandoned_final_us = 0;
 
+/*
+ * The final marks of the collection in progress that were abandoned at
+ * the bound of their time limit (see `final_limit_us()`), and the bytes
+ * allocated (see `allocd_now()`) when the latest of them was abandoned.
+ */
+static unsigned n_final_abandoned_at_bound = 0;
+static word allocd_at_bound_abandon = 0;
+
 /* The number of the final mark in progress, 0 if none. */
 static unsigned final_mark_no = 0;
 
@@ -459,9 +467,17 @@ us_since(CLOCK_TYPE start)
  * lock.
  */
 static unsigned long slice_limit_us = 0;
+
+/*
+ * Whether the final mark in progress runs at the bound of its time limit
+ * (see `final_limit_us()`), where the stop function of the client does not
+ * abandon it.  Protected by the allocator lock.
+ */
+static GC_bool final_mark_bounded = FALSE;
 #  else
-/* Without the steps, nothing raises the time limit. */
+/* Without the steps, nothing raises the time limit or bounds it. */
 #    define slice_limit_us 0UL
+#    define final_mark_bounded FALSE
 #  endif
 
 /* The time limit of the world-stopped mark or step in progress. */
@@ -510,7 +526,7 @@ GC_timeout_stop_func(void)
   unsigned long time_diff, nsec_diff, limit_ms, limit_ns;
 
   GC_ASSERT(I_HOLD_LOCK());
-  if (GC_default_stop_func())
+  if (!final_mark_bounded && GC_default_stop_func())
     return TRUE;
 #  ifdef PARALLEL_MARK_DEADLINE
   if (GC_mark_deadline_reached())
@@ -1154,6 +1170,14 @@ paced_slice_us(void)
 #  define MAX_SLICE_LIMITS 4
 
 /*
+ * The final marks of a collection abandoned at the bound of their time
+ * limit before one runs without it (see `final_limit_us()`).
+ */
+#  ifndef MAX_ABANDONED_AT_BOUND
+#    define MAX_ABANDONED_AT_BOUND 4
+#  endif
+
+/*
  * Return `a * b / c`, rounded down and saturated.  If `a * b` overflows,
  * this is `q * b` plus `r * b / c`, where `q` and `r` are the quotient and
  * the remainder of `a / c`.  The latter is less than `b` and is computed
@@ -1205,8 +1229,9 @@ scale_word(word a, word b, word c)
  * Return the world-stopped time, in microseconds, that the marking of
  * a collection of the kind `kind` (minor 0, full 1) takes after
  * `stopped_us` microseconds of it: what the latest collection of that kind
- * took minus that, but at least the time limit and the final mark that
- * completed the previous collection.
+ * took minus that, but at least the time limit, the final mark that
+ * completed the previous collection, and the longest final mark of the
+ * collection in progress that was abandoned.
  */
 static unsigned long
 marking_left_us(int kind, unsigned long stopped_us)
@@ -1216,6 +1241,8 @@ marking_left_us(int kind, unsigned long stopped_us)
 
   if (left < prev_final_us)
     left = prev_final_us;
+  if (left < abandoned_final_us)
+    left = abandoned_final_us;
   if (left < time_limit_us())
     left = time_limit_us();
   return left;
@@ -1343,21 +1370,69 @@ step_limit_us(unsigned share)
  * collection took, and twice the longest final mark of the collection in
  * progress that was abandoned (or its time limit, if longer, so that the
  * need doubles whatever stopped it, e.g. the stop function of the
- * client); the limit is the larger one of that need and the limit of
- * a step, unless the need exceeds `MAX_SLICE_LIMITS` times the time
- * limit.
+ * client).  The limit is the larger one of that need and the limit of
+ * a step, but at most `MAX_SLICE_LIMITS` times the time limit (the bound),
+ * where the stop function of the client does not stop the final mark.
+ * One abandoned at the bound is tried again at it after more steps, until
+ * `MAX_ABANDONED_AT_BOUND` final marks of the collection were abandoned
+ * there, after which a final mark that needs more than the bound runs
+ * without a time limit.  So does one without the steps.  So does one while
+ * a caller waits for the marking with the allocator lock held, and one
+ * with nothing allocated since the latest final mark abandoned at the
+ * bound (e.g. in a loop of `GC_collect_a_little()` calls): the bytes in
+ * use do not grow then, thus the share does not rise and a retry has no
+ * more room than the one before.
  */
 static unsigned long
 final_limit_us(unsigned share)
 {
   unsigned long limit = step_limit_us(share);
   unsigned long need = prev_final_us + prev_final_us / 4;
+  unsigned long bound = MAX_SLICE_LIMITS * time_limit_us();
 
-  if (need < 2 * abandoned_final_us)
+  /*
+   * The need saturates at `~0UL`.  Where `unsigned long` has 32 bits,
+   * twice a final mark abandoned after more than 2^31 microseconds (e.g.
+   * at the bound of a time limit over 537 seconds) would wrap otherwise,
+   * possibly below the bound, and the final marks would then not stop at
+   * `MAX_ABANDONED_AT_BOUND` abandoned there.  1.25 times a final mark of
+   * more than 3436 seconds would wrap too, and a final mark that needs
+   * more than the bound could then run below it.  So for every time limit
+   * below `GC_TIME_UNLIMITED`, a collection takes at most two final marks
+   * abandoned below the bound, as each at least doubles the need from the
+   * time limit on, then at most `MAX_ABANDONED_AT_BOUND` at the bound and
+   * one without a time limit, seven with the default
+   * `MAX_ABANDONED_AT_BOUND`.
+   */
+  if (need < prev_final_us || abandoned_final_us > ~0UL / 2)
+    need = ~0UL;
+  else if (need < 2 * abandoned_final_us)
     need = 2 * abandoned_final_us;
   if (need <= limit)
     return limit;
-  return need <= MAX_SLICE_LIMITS * time_limit_us() ? need : 0;
+  if (need <= bound)
+    return need;
+  if (!steps_on() || marking_awaited
+      || n_final_abandoned_at_bound >= MAX_ABANDONED_AT_BOUND
+      || (n_final_abandoned_at_bound > 0
+          && allocd_now() == allocd_at_bound_abandon))
+    return 0;
+  return bound;
+}
+
+/*
+ * Count the final mark in progress, which was abandoned after `us`
+ * microseconds, in `abandoned_final_us`: its time limit if that is longer.
+ */
+static void
+raise_abandoned_final(unsigned long us)
+{
+  unsigned long limit = slice_limit_us != 0 ? slice_limit_us : time_limit_us();
+
+  if (limit < us)
+    limit = us;
+  if (limit > abandoned_final_us)
+    abandoned_final_us = limit;
 }
 
 /*
@@ -2259,20 +2334,32 @@ GC_collect_a_little_inner(size_t n_blocks)
          * The final mark keeps a time limit: one that does not complete in
          * time is abandoned, and the marking continues.  With the pacing by
          * the memory headroom, the limit is the one of `final_limit_us()`,
-         * which the need of each abandoned final mark raises until the next
-         * one runs without a time limit.  Otherwise, after
-         * `MAX_ABANDONED_FINALS` abandoned final marks, the next one runs
-         * without it.  Either way, the collection completes.
+         * which the need of each abandoned final mark raises up to the
+         * bound; after at most `MAX_ABANDONED_AT_BOUND` final marks
+         * abandoned at the bound, the next one runs without it.
+         * Otherwise, after `MAX_ABANDONED_FINALS` abandoned final marks,
+         * the next one runs without it.  Either way, the collection
+         * completes.
          */
         stop_func = GC_timeout_stop_func;
 #  ifdef PARALLEL_MARK_DEADLINE
         if (heap_cap() != 0) {
           unsigned long limit = final_limit_us(share);
 
-          if (0 == limit)
+          if (0 == limit) {
             stop_func = GC_never_stop_func;
-          else if (limit > time_limit_us())
+            if (n_final_abandoned_at_bound > 0 && !one_stop) {
+              GC_COND_LOG_PRINTF("Final mark %u of collection #%lu without"
+                                 " a time limit, after %u abandoned at the"
+                                 " bound\n",
+                                 n_final_abandoned + 1,
+                                 (unsigned long)GC_gc_no + 1,
+                                 n_final_abandoned_at_bound);
+            }
+          } else if (limit > time_limit_us()) {
             slice_limit_us = limit;
+            final_mark_bounded = limit >= MAX_SLICE_LIMITS * time_limit_us();
+          }
         } else
 #  endif
         /* else */ {
@@ -2285,6 +2372,7 @@ GC_collect_a_little_inner(size_t n_blocks)
       if (one_stop) {
         stop_func = GC_never_stop_func;
         slice_limit_us = 0;
+        final_mark_bounded = FALSE;
         in_one_stop = TRUE;
       }
       final_mark_no = n_final_abandoned + 1;
@@ -2299,15 +2387,19 @@ GC_collect_a_little_inner(size_t n_blocks)
       done = GC_stopped_mark(stop_func);
 #ifdef PARALLEL_MARK_DEADLINE
       if (!done) {
-        unsigned long us
-            = slice_limit_us != 0 ? slice_limit_us : time_limit_us();
-
-        if (us < last_slice_us)
-          us = last_slice_us;
-        if (us > abandoned_final_us)
-          abandoned_final_us = us;
+        /* Also where `GC_stopped_mark()` counted no slice. */
+        raise_abandoned_final(last_slice_us);
+        if (final_mark_bounded) {
+          n_final_abandoned_at_bound++;
+          allocd_at_bound_abandon = allocd_now();
+          GC_COND_LOG_PRINTF("Final mark %u of collection #%lu abandoned at"
+                             " the bound, %u of the collection\n",
+                             final_mark_no, (unsigned long)GC_gc_no + 1,
+                             n_final_abandoned_at_bound);
+        }
       }
       slice_limit_us = 0;
+      final_mark_bounded = FALSE;
       final_mark_no = 0;
       in_one_stop = FALSE;
 #endif
@@ -2552,6 +2644,9 @@ end_slice(CLOCK_TYPE start, int outcome)
     longest_slice_us = 0;
     total_slice_us = 0;
   } else {
+    /* The pacing of the next step counts an abandoned final mark. */
+    if (final_mark_no != 0)
+      raise_abandoned_final(us);
     pace_next_slice();
   }
 }
@@ -3210,6 +3305,9 @@ GC_finish_collection(void)
   GC_n_attempts = 0;
 #if !defined(NO_CLOCK) && !defined(GC_DISABLE_INCREMENTAL)
   n_final_abandoned = 0;
+#endif
+#ifdef PARALLEL_MARK_DEADLINE
+  n_final_abandoned_at_bound = 0;
 #endif
   GC_is_full_gc = FALSE;
   GC_bytes_allocd_before_gc += GC_bytes_allocd;

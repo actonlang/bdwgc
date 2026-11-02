@@ -729,7 +729,13 @@ GC_API int GC_CALL GC_get_rate(void);
  * Set/get the maximum number of prior attempts at the world-stop marking.
  * With a time limit, a final world-stopped mark of an incremental
  * collection runs without the limit after 3 abandoned final marks of the
- * collection instead.  Not synchronized.
+ * collection instead.  With the heap cap (a known memory limit and
+ * a nonzero heap ceiling percentage, with or without an allocation budget)
+ * in builds with the parallel marker, it runs without the limit after at
+ * most 4 abandoned at 4 times the time limit, or, without the steps (if the
+ * parallel marker is not used, outside the manual VDB mode), once it needs
+ * more than 4 times the time limit (see `GC_PAUSE_TIME_TARGET` in
+ * docs/environment.md).  Not synchronized.
  */
 GC_API void GC_CALL GC_set_max_prior_attempts(int);
 GC_API int GC_CALL GC_get_max_prior_attempts(void);
