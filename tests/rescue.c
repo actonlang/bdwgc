@@ -494,14 +494,18 @@ check_proc(struct hblk *h)
   hdr *hhdr = HDR(h);
   size_t n = HBLK_OBJS(hhdr->hb_sz);
   GC_bool by_length = hhdr->hb_descr == (hhdr->hb_sz | GC_DS_LENGTH);
+#  ifdef USE_MARK_BYTES
+  char saved[HB_MARKS_SZ];
+#  else
   word saved[HB_MARKS_SZ];
+#  endif
   size_t i, next, n_marked, n_runs;
   int k;
 
   n_calls = 0;
   CHECK(n <= sizeof(marked));
   for (i = 0; i < HB_MARKS_SZ; i++)
-    saved[i] = (word)hhdr->hb_marks[i];
+    saved[i] = hhdr->hb_marks[i];
   for (k = 0; k < N_PATTERNS; k++) {
     set_pattern((enum pattern)k, n);
     apply_marks(hhdr, n);
