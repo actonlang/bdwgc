@@ -1420,12 +1420,12 @@ if(BUILD_TESTING)
         )
         add_test(NAME finishtest COMMAND finishtest)
 
-        add_executable(collectwaittest tests/collectwait.c ${NODIST_SRC})
+        add_executable(pacingtest tests/pacing.c ${NODIST_SRC})
         target_link_libraries(
-            collectwaittest
+            pacingtest
             PRIVATE gc gc_build_flags ${THREADDLLIBS_LIST}
         )
-        add_test(NAME collectwaittest COMMAND collectwaittest)
+        add_test(NAME pacingtest COMMAND pacingtest)
 
         add_executable(unmapchunkstest tests/unmapchunks.c ${NODIST_SRC})
         target_link_libraries(

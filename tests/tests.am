@@ -332,10 +332,10 @@ check_PROGRAMS += finishtest
 finishtest_SOURCES = tests/finish.c
 finishtest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
-TESTS += collectwaittest$(EXEEXT)
-check_PROGRAMS += collectwaittest
-collectwaittest_SOURCES = tests/collectwait.c
-collectwaittest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+TESTS += pacingtest$(EXEEXT)
+check_PROGRAMS += pacingtest
+pacingtest_SOURCES = tests/pacing.c
+pacingtest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
 TESTS += unmapchunkstest$(EXEEXT)
 check_PROGRAMS += unmapchunkstest
@@ -446,7 +446,6 @@ check-without-test-driver: $(TESTS)
 	./unmaptest$(EXEEXT)
 	./untouchedtest$(EXEEXT)
 	test ! -f atomicopstest$(EXEEXT) || ./atomicopstest$(EXEEXT)
-	test ! -f collectwaittest$(EXEEXT) || ./collectwaittest$(EXEEXT)
 	test ! -f cpptest$(EXEEXT) || ./cpptest$(EXEEXT)
 	test ! -f disclaim_bench$(EXEEXT) || ./disclaim_bench$(EXEEXT)
 	test ! -f disclaimtest$(EXEEXT) || ./disclaimtest$(EXEEXT)
@@ -459,6 +458,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f liftlimittest$(EXEEXT) || ./liftlimittest$(EXEEXT)
 	test ! -f markercounttest$(EXEEXT) || ./markercounttest$(EXEEXT)
 	test ! -f markslicestest$(EXEEXT) || ./markslicestest$(EXEEXT)
+	test ! -f pacingtest$(EXEEXT) || ./pacingtest$(EXEEXT)
 	test ! -f stackunmaptest$(EXEEXT) || ./stackunmaptest$(EXEEXT)
 	test ! -f subthreadcreatetest$(EXEEXT) || ./subthreadcreatetest$(EXEEXT)
 	test ! -f threadcanceltest$(EXEEXT) || ./threadcanceltest$(EXEEXT)
