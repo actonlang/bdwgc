@@ -81,9 +81,14 @@
  * the allocation volume between two steps.  With the next chunk not due,
  * a collection that is due after the first chunk must end the unmapping
  * and start, but not while none is due, not before that chunk, and not
- * while the collections are disabled.  The checks of the unmapping run
- * only where the clock of the collector resolves fractions of
- * a millisecond (see `fine_clock()`).  The trees must stay intact.
+ * while the collections are disabled.  With the blocks of every other one
+ * of as many new objects freed, the unmapping of every free block before
+ * a heap growth must stop at the time limit, counted from its start, which
+ * leaves most of those blocks mapped, and without a time limit the next
+ * growth must unmap more, so that the two together unmap at least half as
+ * many bytes as were freed.  The checks of the unmapping run only where
+ * the clock of the collector resolves fractions of a millisecond (see
+ * `fine_clock()`).  The trees must stay intact.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -974,9 +979,9 @@ static void *volatile apart[N_APART];
  * every other one, so that their free blocks stay apart.  By `GC_free()`,
  * as they are allocated without a debug header: `GC_FREE()` is
  * `GC_debug_free()` with `GC_DEBUG`, which leaves a collectable object to
- * the collector, so no block would be freed.
+ * the collector, so no block would be freed.  Return the bytes freed.
  */
-static void
+static size_t
 free_apart(void)
 {
   size_t bytes = 4 * HBLK_PAGE_SIZE - EXTRA_BYTES;
@@ -1003,27 +1008,31 @@ free_apart(void)
   GC_set_warn_proc(GC_ignore_warn_proc);
   GC_enable();
   GC_set_warn_proc(warn_proc);
+  return N_APART / 2 * bytes;
 }
 
 /*
- * Check when a chunk of the unmapping may start and is due, and that
+ * Check when a chunk of the unmapping may start and is due, that
  * a collection that is due ends the unmapping in chunks after its first
- * chunk, and only then.  Run only where the clock of the collector resolves
- * fractions of a millisecond (see `fine_clock()`): a chunk does not stop at
- * a time limit of 10 us otherwise.
+ * chunk, and only then, and that the unmapping before a heap growth stops
+ * at the time limit, counted from its start.  Run only where the clock of
+ * the collector resolves fractions of a millisecond (see `fine_clock()`):
+ * the unmapping does not stop at a time limit of 10 us otherwise.
  */
 static void
 check_unmap_chunks(void)
 {
   unsigned saved_threshold;
-  unsigned long marks;
+  unsigned long marks, since_start;
+  size_t freed;
   word unmapped, saved_allocd;
+  CLOCK_TYPE before;
   long n;
   int i;
   IF_CANCEL(int cancel_state;)
 
   complete_collection();
-  free_apart();
+  (void)free_apart();
   LOCK();
   /* The blocks freed before the next collection are old enough then. */
   saved_threshold = GC_unmap_threshold;
@@ -1076,6 +1085,32 @@ check_unmap_chunks(void)
   GC_collect_a_little_inner(1);
   CHECK(!FINISH_PENDING() && n_stopped_marks > marks);
   GC_unmap_threshold = saved_threshold;
+  set_time_limit(0, 100000);
+  RESTORE_CANCEL(cancel_state);
+  UNLOCK();
+  for (i = 0; i < N_APART; i++)
+    apart[i] = NULL;
+  complete_collection();
+
+  /*
+   * The unmapping of every free block before a heap growth stops at the
+   * time limit, as a chunk does...
+   */
+  freed = free_apart();
+  LOCK();
+  DISABLE_CANCEL(cancel_state);
+  set_time_limit(0, 10000);
+  unmapped = GC_unmapped_bytes;
+  GET_TIME(before);
+  CHECK(GC_collect_or_expand(1, 0, FALSE));
+  CHECK(GC_unmapped_bytes - unmapped < freed / 2);
+  /* Its time limit counts from its own start. */
+  since_start = us_since(unmap_start_time);
+  CHECK(since_start <= us_since(before));
+  /* ...and unmaps more without a time limit. */
+  set_time_limit(GC_TIME_UNLIMITED, 0);
+  CHECK(GC_collect_or_expand(1, 0, FALSE));
+  CHECK(GC_unmapped_bytes - unmapped >= freed / 2);
   set_time_limit(0, 100000);
   RESTORE_CANCEL(cancel_state);
   UNLOCK();
