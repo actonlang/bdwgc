@@ -31,10 +31,9 @@
  * 48 MiB): as the live data grows step by step from 2 MiB to 52 MiB,
  * after each step the allocation volume between collections is 200% of
  * the live data, at most half of the distance to the ceiling, and at
- * least 10% of the live data, and the heap target and the heap cap (in
- * builds that pace the steps of the incremental mode) are the live data
- * plus the volume.  Allocating garbage of 6 volumes in small objects
- * causes a collection after about the volume plus the roots and the
+ * least 10% of the live data, and the heap target and the heap cap are
+ * the live data plus the volume.  Allocating garbage of 6 volumes in small
+ * objects causes a collection after about the volume plus the roots and the
  * stacks (which the live data counts, but which are not in the heap), 13
  * collections at most, and the heap stays below the target plus a slack.
  * With the live data above the ceiling, garbage of 6 volumes in large
@@ -49,8 +48,12 @@
  * least.  Without the ceiling, or with the collections disabled or in
  * the incremental mode, there is no heap target; without the ceiling,
  * there is no heap cap, and without an allocation budget, the heap cap is
- * the live data plus half of the distance to the ceiling.  This test
- * includes the collector source to call its static functions.
+ * the live data plus half of the distance to the ceiling.  At last, in
+ * builds with the incremental mode, check that a minor collection after
+ * which the data in use, with the roots and the stacks, exceed the heap
+ * cap makes the next collection a full one, and not one after which they
+ * are below it.  This test includes the collector source to call its
+ * static functions.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -545,11 +548,7 @@ read_sizing(void)
   r.roots = total_stack_size() + GC_root_size;
   r.volume = min_bytes_allocd();
   r.target = heap_target();
-#ifdef PARALLEL_MARK_DEADLINE
   r.cap = heap_cap();
-#else
-  r.cap = 0;
-#endif
   r.heap = GC_heapsize;
   UNLOCK();
   return r;
@@ -580,13 +579,11 @@ check_step(word step, size_t lb, GC_bool strict, word initial_heap)
   TEST_ASSERT(close_to(s.volume, expected_volume(s.live, heap_ceiling())));
   TEST_ASSERT(GC_incremental ? 0 == s.target
                              : close_to(s.target, s.live + s.volume));
-#ifdef PARALLEL_MARK_DEADLINE
   if (!GC_incremental) {
     word cap = s.live + sized_volume(s.live, heap_ceiling());
 
     TEST_ASSERT(close_to(s.cap, cap));
   }
-#endif
   slack = lb < HBLKSIZE
               ? percent_of(s.live, 10) + (word)MINHINCR * HBLKSIZE + 2 * MiB
               : s.target;
@@ -797,7 +794,6 @@ test_heap_sizing(void)
   TEST_ASSERT(0 == s.cap);
   GC_set_heap_ceiling_percent(75);
 
-#ifdef PARALLEL_MARK_DEADLINE
   /*
    * Without a budget, the cap is the live data plus half of the distance
    * to the ceiling, here 75% of the detected memory limit.
@@ -813,7 +809,6 @@ test_heap_sizing(void)
   }
   GC_set_alloc_budget_percent(TEST_BUDGET_PERCENT);
   GC_set_memory_limit(TEST_MEMORY_LIMIT);
-#endif
 
   /* Without collections, there is no target. */
   GC_disable();
@@ -827,6 +822,75 @@ test_heap_sizing(void)
   GC_set_alloc_budget_percent(budget);
 }
 
+/*
+ * Check the full collection that the heap cap makes due after a minor
+ * collection in the incremental mode (see `finish_rest()`), as if the
+ * mode were on, without a time limit and without the trigger by the
+ * growth of the bytes in use (`GC_gen_full_live_pct`).  The live list
+ * holds a quarter of the roots and the stacks plus 1 MiB, so that with
+ * a memory limit of 4 KiB, where the heap cap is 10% above the data live
+ * after the latest full collection (here 1 byte) with the roots and the
+ * stacks, the data in use exceed the cap whatever the size of the roots.
+ */
+static void
+test_heap_cap_trigger(void)
+{
+#ifndef GC_DISABLE_INCREMENTAL
+  word roots, in_use_after_full, used_after_full;
+  word ceiling_percent = GC_get_heap_ceiling_percent();
+  unsigned long time_limit;
+  int full_live_pct;
+  GC_bool incremental;
+  IF_CANCEL(int cancel_state;)
+
+  LOCK();
+  roots = total_stack_size() + GC_root_size;
+  UNLOCK();
+  grow_live_list(roots / 4 + MiB);
+  GC_gcollect();
+  GC_set_heap_ceiling_percent(75);
+  LOCK();
+  DISABLE_CANCEL(cancel_state);
+  incremental = GC_incremental;
+  in_use_after_full = GC_in_use_after_full;
+  used_after_full = GC_used_heap_size_after_full;
+  time_limit = GC_time_limit;
+  full_live_pct = GC_gen_full_live_pct;
+  GC_incremental = TRUE;
+  GC_time_limit = GC_TIME_UNLIMITED;
+  GC_gen_full_live_pct = -1;
+  GC_used_heap_size_after_full = GC_heapsize;
+
+  /* The data in use after the latest full collection: below the cap. */
+  GC_in_use_after_full = GC_composite_in_use + GC_atomic_in_use;
+  finish_rest(FALSE);
+  TEST_ASSERT(!GC_need_full_gc);
+
+  GC_set_memory_limit(4096);
+  GC_in_use_after_full = 1;
+  TEST_ASSERT(heap_cap() != 0 && live_bytes() > heap_cap());
+  finish_rest(FALSE);
+  TEST_ASSERT(GC_need_full_gc);
+
+  GC_set_memory_limit(0);
+  GC_need_full_gc = FALSE;
+  GC_incremental = incremental;
+  GC_time_limit = time_limit;
+  GC_gen_full_live_pct = full_live_pct;
+  GC_in_use_after_full = in_use_after_full;
+  GC_used_heap_size_after_full = used_after_full;
+  RESTORE_CANCEL(cancel_state);
+  UNLOCK();
+  GC_set_heap_ceiling_percent(ceiling_percent);
+  live_list = NULL;
+  live_list_bytes = 0;
+  printf("Full collection after a minor one above the heap cap checked\n");
+#else
+  printf("Full collection after a minor one above the heap cap not"
+         " checked: no incremental mode\n");
+#endif
+}
+
 int
 main(void)
 {
@@ -835,6 +899,7 @@ main(void)
 #endif
   test_memory_limit();
   test_heap_sizing();
+  test_heap_cap_trigger();
   printf("SUCCEEDED\n");
   return 0;
 }
