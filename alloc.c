@@ -356,27 +356,95 @@ static word slice_bytes = 0;
 /* The slices of the latest collection whose marking completed. */
 static unsigned prev_n_slices = 0;
 
+/*
+ * The inputs of the pacing by the memory headroom (see `collector_share()`):
+ * the start of the first slice of the collection in progress and the bytes
+ * allocated at its end, the end and the length of its latest slice; the time
+ * the world was stopped for the latest minor (index 0) and full (index 1)
+ * collection whose marking completed, the length of the slice that completed
+ * it if that was a final mark, and the bytes allocated and the time the client
+ * ran from its first slice until then.  Protected by the allocator lock, as
+ * the following.
+ */
+static CLOCK_TYPE mark_start_time;
+static word allocd_at_mark_start = 0;
+static CLOCK_TYPE slice_end_time;
+static unsigned long last_slice_us = 0;
+static unsigned long prev_mark_us[2] = { 0, 0 };
+static unsigned long prev_final_us = 0;
+static word prev_allocd = 0;
+static unsigned long prev_client_us = 0;
+
+/*
+ * The longest final mark of the collection in progress that was
+ * abandoned, or its time limit if that is longer.
+ */
+static unsigned long abandoned_final_us = 0;
+
+/* The number of the final mark in progress, 0 if none. */
+static unsigned final_mark_no = 0;
+
+/*
+ * Whether the caller holds the allocator lock until the marking of the
+ * collection in progress completes (see `GC_complete_marking()`).
+ */
+static GC_bool marking_awaited = FALSE;
+
 static word
 allocd_now(void)
 {
   return GC_bytes_allocd + (word)AO_load(&GC_bytes_allocd_tmp);
 }
 
-/* The microseconds from `start` until now. */
+/*
+ * The microseconds from `start` until now, saturated at `~0UL`.  Where
+ * `unsigned long` has 32 bits, they would wrap after 2^32 microseconds
+ * (71.6 minutes) otherwise, which may pass while the client is idle.
+ */
 static unsigned long
 us_since(CLOCK_TYPE start)
 {
   CLOCK_TYPE now;
+  unsigned long ms;
 
   GET_TIME(now);
-  return MS_TIME_DIFF(now, start) * 1000UL
-         + NS_FRAC_TIME_DIFF(now, start) / 1000UL;
+  ms = MS_TIME_DIFF(now, start);
+  if (ms >= ~0UL / 1000)
+    return ~0UL;
+  return ms * 1000UL + NS_FRAC_TIME_DIFF(now, start) / 1000UL;
 }
 #endif
 
 #if defined(GC_DISABLE_INCREMENTAL) || defined(NO_CLOCK)
 #  define GC_timeout_stop_func GC_default_stop_func
 #else
+#  ifdef PARALLEL_MARK_DEADLINE
+/*
+ * The time limit of the world-stopped mark or step in progress in
+ * microseconds, raised by the pacing of the steps (see `step_limit_us()`
+ * and `final_limit_us()`); if zero, the time limit is the one of
+ * `GC_time_limit` and `GC_time_lim_nsec`.  Protected by the allocator
+ * lock.
+ */
+static unsigned long slice_limit_us = 0;
+#  else
+/* Without the steps, nothing raises the time limit. */
+#    define slice_limit_us 0UL
+#  endif
+
+/* The time limit of the world-stopped mark or step in progress. */
+static void
+current_time_limit(unsigned long *pms, unsigned long *pns)
+{
+  if (LIKELY(0 == slice_limit_us)) {
+    *pms = GC_time_limit;
+    *pns = GC_time_lim_nsec;
+    return;
+  }
+  *pms = slice_limit_us / 1000UL;
+  *pns = slice_limit_us % 1000UL * 1000UL;
+}
+
 /*
  * Whether `GC_timeout_stop_func()` returned `TRUE` at the time limit, after
  * `timeout_stop_ms` milliseconds and `timeout_stop_ns` nanoseconds, and the
@@ -407,7 +475,7 @@ GC_timeout_stop_func(void)
 {
   CLOCK_TYPE current_time;
   static unsigned count = 0;
-  unsigned long time_diff, nsec_diff;
+  unsigned long time_diff, nsec_diff, limit_ms, limit_ns;
 
   GC_ASSERT(I_HOLD_LOCK());
   if (GC_default_stop_func())
@@ -427,8 +495,9 @@ GC_timeout_stop_func(void)
   /* Note: GCC reports a warning if `GC_noop1_ptr()` is used here. */
   GC_noop1(ADDR(&nsec_diff));
 #  endif
-  if (time_diff >= GC_time_limit
-      && (time_diff > GC_time_limit || nsec_diff >= GC_time_lim_nsec)) {
+  current_time_limit(&limit_ms, &limit_ns);
+  if (time_diff >= limit_ms
+      && (time_diff > limit_ms || nsec_diff >= limit_ns)) {
     timeout_stopped = TRUE;
     timeout_stop_ms = time_diff;
     timeout_stop_ns = nsec_diff;
@@ -503,8 +572,8 @@ GC_get_memory_limit(void)
 #endif
 
 /*
- * The heap ceiling as a percentage of the memory limit, 0 if the heap is
- * not sized by the memory limit.
+ * The heap ceiling as a percentage of the memory limit, 0 for no heap
+ * ceiling (thus the heap is not sized by the memory limit).
  */
 static word heap_ceiling_percent = GC_HEAP_CEILING_PERCENT;
 
@@ -629,7 +698,7 @@ live_bytes(void)
 
 /*
  * Return the heap ceiling in bytes (the percentage of the memory limit),
- * 0 if the heap is not sized by the memory limit.
+ * 0 if the memory limit is unknown or the percentage is 0.
  */
 static word
 heap_ceiling(void)
@@ -705,6 +774,44 @@ heap_target(void)
     return 0;
   return SIZET_SAT_ADD(live_bytes(), min_bytes_allocd());
 }
+
+#ifdef PARALLEL_MARK_DEADLINE
+/*
+ * Return the heap cap: the data live after the latest full collection
+ * (including the roots) plus the larger one of `BUDGET_FLOOR_PERCENT` of it
+ * and `ROOM_SHARE_PERCENT` of the distance from it to the heap ceiling, but
+ * at most the allocation budget percentage of it if there is a budget.
+ * With a budget, this is the heap that the memory-aware sizing of the
+ * allocation volume (see `min_bytes_allocd()`, before the incremental mode
+ * halves it) gives that data.  Without a budget the heap is not sized by the
+ * memory limit, but the cap is computed as well.  Return 0 if the memory limit
+ * is unknown or the heap ceiling percentage is 0 (thus `heap_ceiling()` is 0).
+ */
+static word
+heap_cap(void)
+{
+  word ceiling = heap_ceiling();
+  word live, room, min_room;
+
+  if (0 == ceiling)
+    return 0;
+  live = GC_in_use_after_full != 0
+             ? SIZET_SAT_ADD(GC_in_use_after_full,
+                             SIZET_SAT_ADD(total_stack_size(), GC_root_size))
+             : live_bytes();
+  room = ceiling > live ? percent_of(ceiling - live, ROOM_SHARE_PERCENT) : 0;
+  min_room = percent_of(live, BUDGET_FLOOR_PERCENT);
+  if (room < min_room)
+    room = min_room;
+  if (GC_alloc_budget_percent != 0) {
+    word volume = percent_of(live, GC_alloc_budget_percent);
+
+    if (room > volume)
+      room = volume;
+  }
+  return SIZET_SAT_ADD(live, room);
+}
+#endif
 
 /*
  * Return the number of bytes allocated, adjusted for explicit storage
@@ -899,7 +1006,13 @@ unmap_old_blocks(size_t *pindex, GC_stop_func stop_func)
  * Set the allocation volume after which the next step, or the next chunk
  * of the set-up of a full collection, is due: the allocation budget
  * divided by twice the slices of the previous collection (by 8 at least),
- * so that a marking of as many slices completes within half the budget.
+ * so that a marking of as many slices completes within half the budget,
+ * unless the spacing of the slices (see `slice_gap_passed()`) holds the
+ * steps back: where the client allocates the volume in less time than the
+ * spacing, the spacing decides when the steps run, and the client allocates
+ * more than half the budget during such a marking.  Neither the volume nor
+ * the spacing holds a step back while a caller holds the allocator lock
+ * until the marking completes (see `GC_complete_marking()`).
  */
 static void
 pace_next_slice(void)
@@ -959,6 +1072,209 @@ static unsigned long
 time_limit_us(void)
 {
   return GC_time_limit * 1000UL + GC_time_lim_nsec / 1000UL;
+}
+
+/*
+ * The length of the latest slice for the spacing of the slices (see
+ * `slice_gap_passed()`), in microseconds.  A slice measured as 0 us ended
+ * before the clock of the collector advanced by a microsecond: where the
+ * clock counts milliseconds (with `GetTickCount64()` on Windows) or reads the
+ * user time of the process (with `BSD_TIME`), a slice that ends before the
+ * next tick reads so, however long it ran.  It counts as long as the time
+ * limit, the length of a step that ends at it, instead of leaving no gap
+ * before the next slice.  Without a time limit, it counts as 0.
+ */
+static unsigned long
+paced_slice_us(void)
+{
+  if (last_slice_us != 0 || GC_TIME_UNLIMITED == GC_time_limit)
+    return last_slice_us;
+  return time_limit_us();
+}
+
+/*
+ * The pacing of the steps by the memory headroom: the marking of
+ * a collection must complete before the bytes in use reach the heap cap
+ * (see `heap_cap()`).  The share of the time for which the world must be
+ * stopped meanwhile (see `collector_share()`), in per mille, sets the
+ * spacing of the slices (see `slice_gap_passed()`) and the time limits of
+ * the steps and of the final marks (see `step_limit_us()` and
+ * `final_limit_us()`).
+ */
+#  define HALF_SHARE 500
+#  define ONE_STOP_SHARE 900
+#  define MAX_SLICE_LIMITS 4
+
+/*
+ * Return `a * b / c`, rounded down and saturated.  If `a * b` overflows,
+ * this is `q * b` plus `r * b / c`, where `q` and `r` are the quotient and
+ * the remainder of `a / c`.  The latter is less than `b` and is computed
+ * without overflow, bit by bit of `b` from the highest one: `t` and `rem`
+ * are the quotient and the remainder of `r` times the bits of `b` from the
+ * highest one down to `bit` divided by `c`.  As `rem` and `r` are less
+ * than `c`, doubling `rem` or adding `r` to it gives less than twice `c`,
+ * and subtracting `c` once brings it below `c` again.
+ */
+static word
+scale_word(word a, word b, word c)
+{
+  word q, r, bit, t, rem;
+
+  GC_ASSERT(c > 0);
+  if (0 == b || a <= GC_WORD_MAX / b)
+    return a * b / c;
+  q = a / c;
+  if (q > GC_WORD_MAX / b)
+    return GC_WORD_MAX;
+  r = a % c;
+  t = 0;
+  rem = 0;
+  bit = 1;
+  while (bit <= b / 2)
+    bit <<= 1;
+  for (; bit != 0; bit >>= 1) {
+    t <<= 1;
+    if (rem >= c - rem) {
+      rem -= c - rem;
+      t++;
+    } else {
+      rem += rem;
+    }
+    if ((b & bit) != 0) {
+      if (rem >= c - r) {
+        rem -= c - r;
+        t++;
+      } else {
+        rem += r;
+      }
+    }
+  }
+  q *= b;
+  return q > GC_WORD_MAX - t ? GC_WORD_MAX : q + t;
+}
+
+/*
+ * Return the share of the time for which the world must be stopped from
+ * now on so that the marking of the collection in progress completes
+ * before the bytes in use reach the heap cap: need / (need + headroom).
+ * The headroom is the heap cap minus the bytes in use (the data in use
+ * after the latest collection plus the bytes allocated since).  `need` is
+ * what the client allocates, at its allocation rate, in its share of the
+ * time while the marking left stops the world: the world-stopped time of
+ * the latest collection of the same kind (minor or full) minus that of
+ * the collection in progress so far, but at least the time limit and the
+ * final mark that completed the previous collection.  The rate is the
+ * bytes allocated per microsecond the client ran since the first slice of
+ * the collection in progress, or during the previous collection if the
+ * client ran for less than the time limit since.  The share is 0 if the
+ * heap cap is 0 (see `heap_cap()`) or the rate is unknown, and 1000 if the
+ * bytes in use reach the heap cap.
+ */
+static unsigned
+collector_share(void)
+{
+  word cap = heap_cap();
+  word in_use, headroom, allocd, need;
+  unsigned long left, client_us;
+  int kind = GC_is_full_gc ? 1 : 0;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  if (0 == cap)
+    return 0;
+  in_use = SIZET_SAT_ADD(live_bytes(), allocd_now());
+  if (in_use >= cap)
+    return 1000;
+  headroom = cap - in_use;
+  left = prev_mark_us[kind] > total_slice_us
+             ? prev_mark_us[kind] - total_slice_us
+             : 0;
+  if (left < prev_final_us)
+    left = prev_final_us;
+  if (left < time_limit_us())
+    left = time_limit_us();
+  allocd = 0;
+  client_us = 0;
+  if (n_slices > 0) {
+    unsigned long us = us_since(mark_start_time);
+
+    if (allocd_now() > allocd_at_mark_start)
+      allocd = allocd_now() - allocd_at_mark_start;
+    client_us = us > total_slice_us ? us - total_slice_us : 0;
+  }
+  if (client_us < time_limit_us()) {
+    allocd = prev_allocd;
+    client_us = prev_client_us;
+  }
+  if (0 == client_us || 0 == allocd)
+    return 0;
+  need = scale_word(allocd, left, client_us);
+  return (unsigned)scale_word(need, 1000, SIZET_SAT_ADD(need, headroom));
+}
+
+/*
+ * Return the time limit of a step at the share `share`, in microseconds:
+ * the time limit up to a share of half, then rising linearly to
+ * `MAX_SLICE_LIMITS` times it at `ONE_STOP_SHARE`, so that the world is
+ * stopped for more of the time in fewer stops.
+ */
+static unsigned long
+step_limit_us(unsigned share)
+{
+  word limit = time_limit_us();
+
+  if (share <= HALF_SHARE)
+    return (unsigned long)limit;
+  if (share >= ONE_STOP_SHARE)
+    share = ONE_STOP_SHARE;
+  return (unsigned long)(limit
+                         + scale_word((MAX_SLICE_LIMITS - 1) * limit,
+                                      share - HALF_SHARE,
+                                      ONE_STOP_SHARE - HALF_SHARE));
+}
+
+/*
+ * Return the time limit of a final mark at the share `share`, in
+ * microseconds, or 0 if it runs without a time limit.  The final mark
+ * needs 1.25 times what the final mark that completed the previous
+ * collection took, and twice the longest final mark of the collection in
+ * progress that was abandoned (or its time limit, if longer, so that the
+ * need doubles whatever stopped it, e.g. the stop function of the
+ * client); the limit is the larger one of that need and the limit of
+ * a step, unless the need exceeds `MAX_SLICE_LIMITS` times the time
+ * limit.
+ */
+static unsigned long
+final_limit_us(unsigned share)
+{
+  unsigned long limit = step_limit_us(share);
+  unsigned long need = prev_final_us + prev_final_us / 4;
+
+  if (need < 2 * abandoned_final_us)
+    need = 2 * abandoned_final_us;
+  if (need <= limit)
+    return limit;
+  return need <= MAX_SLICE_LIMITS * time_limit_us() ? need : 0;
+}
+
+/*
+ * Return whether the slice of the share `share` may start: whether the
+ * world was stopped for at most that share of the time since the start of
+ * the latest slice (of the length of `paced_slice_us()`), or for at most
+ * half of it while the share is below half.  The client thus keeps at
+ * least half of the time while the heap can still grow toward the cap,
+ * and less as the bytes in use approach it.
+ */
+static GC_bool
+slice_gap_passed(unsigned share)
+{
+  word gap;
+
+  if (share < HALF_SHARE)
+    share = HALF_SHARE;
+  if (share >= 1000)
+    return TRUE;
+  gap = scale_word(paced_slice_us(), 1000 - share, share);
+  return us_since(slice_end_time) >= gap;
 }
 
 /*
@@ -1660,7 +1976,8 @@ GC_get_rate(void)
  * A value of 1 means that we finish the second time, no matter how long
  * it takes.  Does not count the initial root scan for a full collection.
  * With a time limit, the final marks of an incremental collection follow
- * `MAX_ABANDONED_FINALS` instead.
+ * `MAX_ABANDONED_FINALS` instead or, with the heap cap (see `heap_cap()`)
+ * in builds with the parallel marker, `final_limit_us()`.
  */
 static int max_prior_attempts = MAX_PRIOR_ATTEMPTS;
 
@@ -1727,6 +2044,10 @@ GC_collect_a_little_inner(size_t n_blocks)
     size_t i;
     size_t max_deficit = GC_rate * n_blocks;
     GC_bool stack_empty = FALSE;
+#ifdef PARALLEL_MARK_DEADLINE
+    unsigned share
+        = GC_time_limit != GC_TIME_UNLIMITED ? collector_share() : 0;
+#endif
 
     DISABLE_CANCEL_FOR_WORK(cancel_state);
     ENTER_GC();
@@ -1735,22 +2056,39 @@ GC_collect_a_little_inner(size_t n_blocks)
       /*
        * Mark only in world-stopped steps, one per `slice_bytes` allocated,
        * or when nothing was allocated since the previous call (the caller
-       * waits for the collection to complete, or the heap is to grow).
+       * waits for the collection to complete, or the heap is to grow), once
+       * the pacing by the memory headroom lets it start (else the heap
+       * grows).  If the caller holds the allocator lock until the marking
+       * completes, no client takes memory from the allocator meanwhile, and
+       * the steps follow each other at once.
        */
       word allocd = allocd_now();
-      GC_bool due = allocd - allocd_at_slice >= slice_bytes
-                    || allocd < allocd_at_slice || allocd == allocd_at_call;
+      GC_bool due
+          = marking_awaited
+            || ((allocd - allocd_at_slice >= slice_bytes
+                 || allocd < allocd_at_slice || allocd == allocd_at_call)
+                && slice_gap_passed(share));
 
       if (GC_final_mark_due) {
         /*
          * The final mark is due like a step, and at the latest the time
-         * limit after the step that emptied the mark stack.
+         * limit after the step that emptied the mark stack, once the pacing
+         * lets it start.
          */
         if (!GC_dont_gc
-            && (due || us_since(final_due_since) >= time_limit_us()))
+            && (due
+                || (us_since(final_due_since) >= time_limit_us()
+                    && slice_gap_passed(share))))
           stack_empty = TRUE;
       } else if (due) {
-        if (GC_parallel_mark_step()) {
+        unsigned long limit = step_limit_us(share);
+        GC_bool stack_emptied;
+
+        if (limit > time_limit_us())
+          slice_limit_us = limit;
+        stack_emptied = GC_parallel_mark_step();
+        slice_limit_us = 0;
+        if (stack_emptied) {
           /* The final mark runs in a hold of the allocator lock of its own. */
           GC_final_mark_due = TRUE;
           GET_TIME(final_due_since);
@@ -1781,6 +2119,7 @@ GC_collect_a_little_inner(size_t n_blocks)
 
     if (stack_empty && !GC_dont_gc) {
       GC_stop_func stop_func;
+      GC_bool done;
 
       GC_ASSERT(!GC_collection_in_progress());
 #ifdef PARALLEL_MARK_DEADLINE
@@ -1800,22 +2139,54 @@ GC_collect_a_little_inner(size_t n_blocks)
 #if !defined(NO_CLOCK) && !defined(GC_DISABLE_INCREMENTAL)
       if (GC_time_limit != GC_TIME_UNLIMITED) {
         /*
-         * The final mark keeps the time limit: one that does not complete
-         * in time is abandoned, and the marking continues.  After
+         * The final mark keeps a time limit: one that does not complete in
+         * time is abandoned, and the marking continues.  With the pacing by
+         * the memory headroom, the limit is the one of `final_limit_us()`,
+         * which the need of each abandoned final mark raises until the next
+         * one runs without a time limit.  Otherwise, after
          * `MAX_ABANDONED_FINALS` abandoned final marks, the next one runs
-         * without it, so that the collection completes.
+         * without it.  Either way, the collection completes.
          */
-        stop_func = n_final_abandoned < MAX_ABANDONED_FINALS
-                        ? GC_timeout_stop_func
-                        : GC_never_stop_func;
+        stop_func = GC_timeout_stop_func;
+#  ifdef PARALLEL_MARK_DEADLINE
+        if (heap_cap() != 0) {
+          unsigned long limit = final_limit_us(share);
+
+          if (0 == limit)
+            stop_func = GC_never_stop_func;
+          else if (limit > time_limit_us())
+            slice_limit_us = limit;
+        } else
+#  endif
+        /* else */ {
+          if (n_final_abandoned >= MAX_ABANDONED_FINALS)
+            stop_func = GC_never_stop_func;
+        }
       }
+#endif
+#ifdef PARALLEL_MARK_DEADLINE
+      final_mark_no = n_final_abandoned + 1;
 #endif
 #ifndef NO_CLOCK
       if (GC_time_limit != GC_TIME_UNLIMITED
           && stop_func == GC_timeout_stop_func)
         GET_TIME(GC_start_time);
 #endif
-      if (GC_stopped_mark(stop_func)) {
+      done = GC_stopped_mark(stop_func);
+#ifdef PARALLEL_MARK_DEADLINE
+      if (!done) {
+        unsigned long us
+            = slice_limit_us != 0 ? slice_limit_us : time_limit_us();
+
+        if (us < last_slice_us)
+          us = last_slice_us;
+        if (us > abandoned_final_us)
+          abandoned_final_us = us;
+      }
+      slice_limit_us = 0;
+      final_mark_no = 0;
+#endif
+      if (done) {
         GC_finish_collection();
       } else {
 #if !defined(NO_CLOCK) && !defined(GC_DISABLE_INCREMENTAL)
@@ -1870,15 +2241,25 @@ GC_collect_a_little_inner(size_t n_blocks)
 GC_INNER GC_bool
 GC_complete_marking(GC_stop_func stop_func, size_t n_blocks)
 {
+  GC_bool done = TRUE;
+
   GC_ASSERT(I_HOLD_LOCK());
+#ifdef PARALLEL_MARK_DEADLINE
+  marking_awaited = TRUE;
+#endif
   /* A final mark does not run while the collections are disabled. */
   while (GC_incremental
          && (GC_collection_in_progress() || (FINAL_DUE() && !GC_dont_gc))) {
-    if ((*stop_func)())
-      return FALSE;
+    if ((*stop_func)()) {
+      done = FALSE;
+      break;
+    }
     GC_collect_a_little_inner(n_blocks);
   }
-  return TRUE;
+#ifdef PARALLEL_MARK_DEADLINE
+  marking_awaited = FALSE;
+#endif
+  return done;
 }
 
 #if !defined(NO_FIND_LEAK) || !defined(SHORT_DBG_HDRS)
@@ -1978,6 +2359,12 @@ end_slice(CLOCK_TYPE start, int outcome)
   GET_TIME(now);
   us = MS_TIME_DIFF(now, start) * 1000UL
        + NS_FRAC_TIME_DIFF(now, start) / 1000UL;
+  if (0 == n_slices) {
+    mark_start_time = start;
+    allocd_at_mark_start = allocd_now();
+  }
+  slice_end_time = now;
+  last_slice_us = us;
   n_slices++;
   if (us > longest_slice_us)
     longest_slice_us = us;
@@ -1989,10 +2376,19 @@ end_slice(CLOCK_TYPE start, int outcome)
                      : SLICE_STACK_EMPTY == outcome ? "mark stack empty"
                                                     : "marking continues");
   if (done) {
+    unsigned long wall_us = us_since(mark_start_time);
+
     GC_COND_LOG_PRINTF("Marked collection #%lu in %u slices: longest %lu us,"
                        " total %lu us\n",
                        (unsigned long)GC_gc_no, n_slices, longest_slice_us,
                        total_slice_us);
+    prev_mark_us[GC_is_full_gc ? 1 : 0] = total_slice_us;
+    prev_final_us = final_mark_no != 0 ? us : 0;
+    prev_allocd = allocd_now() > allocd_at_mark_start
+                      ? allocd_now() - allocd_at_mark_start
+                      : 0;
+    prev_client_us = wall_us > total_slice_us ? wall_us - total_slice_us : 0;
+    abandoned_final_us = 0;
     prev_n_slices = n_slices;
     n_slices = 0;
     longest_slice_us = 0;
@@ -2109,7 +2505,10 @@ GC_stopped_mark(GC_stop_func stop_func)
 #  ifdef PARALLEL_MARK_DEADLINE
     /* Mark in parallel until the time limit. */
     if (stop_func == GC_timeout_stop_func && parallel_slices_on()) {
-      GC_set_mark_deadline(GC_time_limit, GC_time_lim_nsec);
+      unsigned long limit_ms, limit_ns;
+
+      current_time_limit(&limit_ms, &limit_ns);
+      GC_set_mark_deadline(limit_ms, limit_ns);
     } else
 #  endif
     /* else */ {
@@ -2275,6 +2674,7 @@ GC_parallel_mark_step(void)
   ptr_t cold_gc_frame = GC_approx_sp();
   CLOCK_TYPE slice_start;
   GC_bool stack_empty = FALSE;
+  unsigned long limit_ms, limit_ns;
 
   GC_ASSERT(I_HOLD_LOCK());
   GC_ASSERT(GC_collection_in_progress());
@@ -2296,7 +2696,8 @@ GC_parallel_mark_step(void)
   GC_world_stopped = TRUE;
 #    endif
 #  endif
-  GC_set_mark_deadline(GC_time_limit, GC_time_lim_nsec);
+  current_time_limit(&limit_ms, &limit_ns);
+  GC_set_mark_deadline(limit_ms, limit_ns);
   /* Make progress even if stopping the world took the whole time limit. */
   do {
     if (GC_mark_some(cold_gc_frame)) {

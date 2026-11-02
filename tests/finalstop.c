@@ -16,7 +16,9 @@
  * the incremental mode with the manual VDB and a live list of about 1 MiB.
  * Each part of the test runs `N_COLLECTIONS` collections, which must
  * complete before the heap grows beyond `MAX_HEAP`, and counts the
- * world-stopped marks of each.
+ * world-stopped marks of each.  The first three parts run without the heap
+ * cap (`GC_set_heap_ceiling_percent(0)`), thus without the pacing of the
+ * steps by the memory headroom.
  *
  * First, with a time limit of 1 ms and a client stop function that returns
  * true during every world-stopped mark, the world-stopped marks of
@@ -44,6 +46,11 @@
  * `GC_get_max_prior_attempts()` (1): each collection takes 3 marks.  It lets
  * a step mark to the end of the marking: without thread-local allocation,
  * the steps run only before the heap grows.
+ *
+ * Last, as the first part but with the heap cap, the time limit of a final
+ * mark grows with each one abandoned, also by the stop function of the
+ * client, until a final mark runs without it: each collection takes 2 to 5
+ * marks.
  *
  * Without the steps (e.g. without the parallel marker), the manual VDB mode
  * abandons no mark, and every collection completes in its first one.
@@ -132,13 +139,15 @@ static void *volatile big;
 
 /*
  * The part that runs (0 if none), whether the world was stopped for
- * a world-stopped mark (not for a step), the world-stopped marks of the
+ * a world-stopped mark (not for a step), whether a step of the second part
+ * ended since the client last slept, the world-stopped marks of the
  * collection in progress, and those of each collection of the part that
  * completed.  Updated by `on_collection_event()`, which the collector calls
  * holding the allocator lock on the thread that collects.
  */
 static volatile int part;
 static volatile int marking;
+static volatile int step_ended;
 static volatile unsigned n_marks;
 static volatile unsigned n_counted;
 static unsigned marks_of[N_COLLECTIONS];
@@ -263,9 +272,8 @@ on_collection_event(GC_EventType e)
       note_abandoned_final();
     break;
   case GC_EVENT_POST_START_WORLD:
-    /* A final mark that follows the step starts long after the step. */
     if (2 == part && !marking)
-      sleep_ms(2 * LIMIT_MS);
+      step_ended = 1;
     marking = 0;
     since_us = now_us();
     break;
@@ -288,12 +296,13 @@ stop_marks(void)
 
 /*
  * Run part `p`: complete `N_COLLECTIONS` collections, each of which must
- * take `marks` world-stopped marks, or as many as the first one if `marks`
- * is 0, and in the second part one more for each of its final marks that
- * was abandoned.  Return the marks of the first collection.
+ * take `marks` to `max_marks` world-stopped marks, or as many as the first
+ * one if `marks` is 0, and in the second part one more for each of its
+ * final marks that was abandoned.  Return the marks of the first
+ * collection.
  */
 static unsigned
-run_part(int p, unsigned marks)
+run_part(int p, unsigned marks, unsigned max_marks)
 {
   GC_word start;
   unsigned long i;
@@ -310,6 +319,16 @@ run_part(int p, unsigned marks)
       since_us = now_us();
     junk = GC_MALLOC(sizeof(struct node));
     CHECK(junk != NULL);
+    if (step_ended) {
+      /*
+       * A final mark that follows the step starts long after the step.
+       * The client sleeps outside the collector: a sleep in the event
+       * callback would count as part of the step, and the world would run
+       * as long again before the final mark, with the client allocating.
+       */
+      step_ended = 0;
+      sleep_ms(2 * LIMIT_MS);
+    }
     if (2 == p && 1 == n_marks && big_for != n_counted) {
       /* The first mark was abandoned: only a root holds the new object. */
       since_us = now_us();
@@ -341,12 +360,15 @@ run_part(int p, unsigned marks)
     exit(1);
   }
   if (0 == marks)
-    marks = marks_of[0];
+    marks = max_marks = marks_of[0];
   for (k = 0; k < N_COLLECTIONS; k++) {
-    if (marks_of[k] != marks + abandoned_of[k]) {
+    if (marks_of[k] < marks + abandoned_of[k]
+        || marks_of[k] > max_marks + abandoned_of[k]) {
       fprintf(stderr,
-              "Part %d: collection %u took %u world-stopped marks, not %u\n",
-              p, k + 1, marks_of[k], marks + abandoned_of[k]);
+              "Part %d: collection %u took %u world-stopped marks, not %u"
+              " to %u\n",
+              p, k + 1, marks_of[k], marks + abandoned_of[k],
+              max_marks + abandoned_of[k]);
       exit(1);
     }
   }
@@ -357,8 +379,9 @@ int
 main(void)
 {
   GC_stop_func old_stop_func;
+  GC_word ceiling_percent;
   unsigned long i;
-  unsigned first;
+  unsigned first, last;
   int steps;
 
   GC_set_manual_vdb_allowed(1);
@@ -382,11 +405,13 @@ main(void)
   GC_gcollect();
   GC_set_on_collection_event(on_collection_event);
   old_stop_func = GC_get_stop_func();
+  ceiling_percent = GC_get_heap_ceiling_percent();
+  GC_set_heap_ceiling_percent(0);
 
   GC_set_time_limit(1);
   GC_set_max_prior_attempts(1);
   GC_set_stop_func(stop_marks);
-  first = run_part(1, 0);
+  first = run_part(1, 0, 0);
   steps = first != 1;
   if (steps && first != 5) {
     fprintf(stderr,
@@ -398,18 +423,24 @@ main(void)
   GC_set_time_limit(LIMIT_MS);
   GC_set_max_prior_attempts(0);
   GC_set_stop_func(stop_first);
-  (void)run_part(2, steps ? 2 : 1);
+  (void)run_part(2, steps ? 2 : 1, steps ? 2 : 1);
 
   GC_set_time_limit(GC_TIME_UNLIMITED);
   GC_set_max_prior_attempts(1);
   GC_set_full_freq(0);
   GC_set_stop_func(stop_marks);
-  (void)run_part(3, steps ? 3 : 1);
+  (void)run_part(3, steps ? 3 : 1, steps ? 3 : 1);
+
+  GC_set_heap_ceiling_percent(ceiling_percent);
+  GC_set_time_limit(1);
+  GC_set_stop_func(stop_marks);
+  last = run_part(4, steps ? 2 : 1, steps ? 5 : 1);
 
   GC_set_stop_func(old_stop_func);
-  printf("Collections in %u, %u and %u world-stopped marks, %u more for"
-         " final marks abandoned in the second part, heap %lu MiB\n",
-         first, steps ? 2U : 1U, steps ? 3U : 1U, n_abandoned,
+  printf("Collections in %u, %u, %u and %u (the first of the part)"
+         " world-stopped marks, %u more for final marks abandoned in the"
+         " second part, heap %lu MiB\n",
+         first, steps ? 2U : 1U, steps ? 3U : 1U, last, n_abandoned,
          (unsigned long)(GC_get_heap_size() / MiB));
   printf("SUCCEEDED\n");
   return 0;
