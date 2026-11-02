@@ -135,12 +135,12 @@ jobs:
           - os: ubuntu-latest
             conf_options: --disable-parallel-mark --enable-gc-assertions
             cflags_extra: -D TEST_MANUAL_VDB -D _FORTIFY_SOURCE=2
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             conf_options: --disable-shared
             cflags_extra: >-
               -fno-omit-frame-pointer -fsanitize=memory -std=gnu11
             extra_sanitizer_checks: true
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             conf_options: --disable-shared
             cflags_extra: >-
               -fsanitize=memory,undefined -fno-omit-frame-pointer
@@ -231,7 +231,7 @@ jobs:
             cflags_extra: -O0 -fsanitize=address -m32
             extra_sanitizer_checks: true
             install_multilib: true
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             conf_options: --disable-shared --enable-gc-assertions
             cflags_extra: -O0 -fsanitize=address
             c_compiler: gcc
@@ -251,7 +251,7 @@ jobs:
           - os: ubuntu-24.04-arm
             conf_options: --disable-threads
             c_compiler: gcc
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             conf_options: --disable-threads --enable-cplusplus
             cflags_extra: >-
               -D DONT_PROTECT_PTRFREE -D GC_PREFER_MPROTECT_VDB -O3
@@ -273,7 +273,7 @@ jobs:
             conf_options: >-
               --disable-threads --enable-gc-debug
               --enable-redirect-malloc --enable-uncollectable-redirection
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             conf_options: >-
               --disable-threads --enable-large-config
               --enable-redirect-malloc
@@ -318,7 +318,7 @@ jobs:
             conf_options: --enable-cplusplus
             cflags_extra: -D NO_MPROTECT_VDB -O3
             c_compiler: gcc
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             conf_options: --enable-cplusplus
             cflags_extra: -O3 -fanalyzer -march=native
             c_compiler: gcc
