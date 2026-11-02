@@ -8,9 +8,10 @@
  * the speed and the load of the machine, thus each thread, after
  * `N_ROUNDS` rounds, drives the collection in progress by
  * `GC_collect_a_little()` without allocation until a marking completed
- * (for `MAX_DRIVE_S` at most), checking its forest meanwhile.  Then it
- * replaces trees in `CHECK_EVERY` more rounds, which reuse the nodes that
- * the collection freed, and checks its forest once more.
+ * (for `MAX_DRIVE_S` at most), sleeping for a millisecond between the
+ * calls, checking its forest meanwhile.  Then it replaces trees in
+ * `CHECK_EVERY` more rounds, which reuse the nodes that the collection
+ * freed, and checks its forest once more.
  * Unless `NO_INCREMENTAL` is defined, the test turns the incremental mode
  * on with a time limit of 0.1 ms (by `GC_ENABLE_INCREMENTAL` and
  * `GC_PAUSE_TIME_TARGET` environment variables).  With the parallel
@@ -73,10 +74,13 @@
 /*
  * The time for which each thread drives the collection in progress at
  * most, in seconds.  A bound on the calls of `GC_collect_a_little()` would
- * bound no time where the collector spaces the steps of a caller that
- * allocates nothing in time, as calls in between run none.
+ * bound no time, as the collector spaces the steps of a caller that
+ * allocates nothing in time, and the calls in between run none.  In a slow
+ * build on a loaded machine, stopping the world takes longer than the time
+ * limit, which counts from before the stop, so that a step marks little,
+ * and the next step waits as long again.
  */
-#define MAX_DRIVE_S 60
+#define MAX_DRIVE_S 180
 
 /* The nodes of a tree, set by `main()`. */
 static unsigned long nodes_per_tree;
@@ -217,10 +221,30 @@ check_forest(struct node **forest)
     fail("node count", 0, 0);
 }
 
+/* Sleep for `ms` milliseconds. */
+static void
+sleep_ms(unsigned ms)
+{
+#ifdef GC_PTHREADS
+  struct timespec ts;
+
+  ts.tv_sec = (time_t)(ms / 1000);
+  ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+  (void)nanosleep(&ts, NULL);
+#else
+  Sleep(ms);
+#endif
+}
+
 /*
  * Drive the collection in progress, without allocation, until a marking
  * completed, and check the forest every `CHECK_EVERY` calls.  Once no
- * thread allocates, a step is due at each call.
+ * thread allocates, a step is due at the first call after the world has
+ * run for as long as the latest slice stopped it, or for less near the
+ * heap cap.  The thread sleeps for a millisecond between the calls: calls
+ * in a tight loop only contend for the allocator lock until then, and on
+ * a loaded machine they make every world stop longer, as it has to stop
+ * the threads that spin.
  */
 static void
 drive_collection(struct node **forest)
@@ -233,6 +257,7 @@ drive_collection(struct node **forest)
       break;
     if (n % CHECK_EVERY == 0)
       check_forest(forest);
+    sleep_ms(1);
   }
 }
 
@@ -307,18 +332,20 @@ always_stop(void)
 /*
  * Start a collection and complete it with the stop function always
  * returning true: it is marked only by steps and by the final mark without
- * the time limit.
+ * the time limit.  The test waits for it for at most a minute: nothing is
+ * allocated, so the steps are spaced by the pacing, and the calls of
+ * `GC_collect_a_little()` in between do nothing.
  */
 static void
 check_step_progress(void)
 {
   GC_stop_func stop_func = GC_get_stop_func();
   GC_word gc_no = GC_get_gc_no();
-  long n;
+  time_t start = time(NULL);
 
   GC_set_stop_func(always_stop);
   GC_start_incremental_collection();
-  for (n = 0; n < 100000L && GC_collect_a_little(); n++) {
+  while (GC_collect_a_little() && difftime(time(NULL), start) < 60) {
     /* Empty. */
   }
   GC_set_stop_func(stop_func);

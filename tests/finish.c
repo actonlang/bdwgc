@@ -503,15 +503,18 @@ check_all(void)
 
 /*
  * Run collections until `n_collections` have completed, and return the
- * finishes which were pending meanwhile.
+ * finishes which were pending meanwhile.  An explicit collection runs
+ * every `COLLECT_EVERY` rounds, if `after_progress` only when a collection
+ * has completed since the previous one.
  */
 static unsigned long
-run(unsigned long n_collections)
+run(unsigned long n_collections, int after_progress)
 {
   GC_word start = GC_get_gc_no();
   unsigned seed = 1;
   unsigned long round;
   unsigned long pending_at_start = n_finish_pending;
+  GC_word explicit_gc_no = GC_get_gc_no();
 
   for (round = 1; GC_get_gc_no() - start < n_collections; round++) {
     GC_word i;
@@ -566,8 +569,11 @@ run(unsigned long n_collections)
         }
       }
     }
-    if (round % COLLECT_EVERY == 0)
+    if (round % COLLECT_EVERY == 0
+        && (!after_progress || GC_get_gc_no() != explicit_gc_no)) {
       collect();
+      explicit_gc_no = GC_get_gc_no();
+    }
     if (round % CHECK_EVERY == 0)
       check_all();
   }
@@ -606,11 +612,17 @@ main(void)
   GC_gcollect();
   GC_set_on_collection_event(on_event);
   GC_set_start_callback(on_full_start);
-  n_pending_setup = run(N_COLLECTIONS);
+  n_pending_setup = run(N_COLLECTIONS, 0);
+  /*
+   * With steps of 2 ms, spaced by the pacing, a collection marks over more
+   * than `COLLECT_EVERY` rounds: the explicit collections, each of which
+   * completes the marking of the collection in progress and its finish at
+   * once, would catch every collection while it marks.
+   */
   set_time_limit_us(2000);
-  n_pending_full = run(N_COLLECTIONS);
+  n_pending_full = run(N_COLLECTIONS, 1);
   GC_set_full_freq(1000);
-  n_pending_minor = run(N_COLLECTIONS);
+  n_pending_minor = run(N_COLLECTIONS, 1);
   GC_set_start_callback(0);
   GC_set_on_collection_event(0);
   printf("%lu pending set-ups seen, %lu replaced by an explicit collection,"

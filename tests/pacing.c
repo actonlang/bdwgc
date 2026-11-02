@@ -30,18 +30,24 @@
  * lock held with the world running.  Where the collector spaces work in
  * time rather than by the bytes allocated, the spacing is a quarter of the
  * time limit at least (the final mark and the chunks of a set-up are spaced
- * by the time limit, the chunks of a finish by a quarter of it).  Thus,
- * from the first stop of that marking to the one that completes it, at
- * least half of the times between two stops are under a quarter of the
- * time limit.  Not all of them: such a time also counts any wait of the
- * thread for a processor, or for a marker thread which waits for one,
- * which on a loaded host may last longer than a step.
+ * by the time limit, the chunks of a finish by a quarter of it, and, while
+ * the share of the time for which the world must be stopped is below half,
+ * the steps by the length of the latest slice, the time limit at least after
+ * a step that does not empty the mark stack).  Thus, from the first stop of
+ * that marking to the one that completes it, at least half of the times
+ * between two stops are under a quarter of the time limit.  Not all of them:
+ * such a time also counts any wait of the thread for a processor, or for
+ * a marker thread which waits for one, which on a loaded host may last longer
+ * than a step.
  *
- * Then, with no allocation budget, the client allocates until 12 more
- * collections completed, and at least 12 of the world stops must leave the
- * marking of a collection incomplete.  The test reports those followed by
- * a shorter run before the next stop.  This part is skipped if the memory
- * limit is unknown.
+ * Then, at low pressure: there is no allocation budget, so the heap cap is
+ * the live data plus half of the distance to the heap ceiling, far above
+ * the heap of the test, thus the client must keep at least half of the
+ * time.  It allocates until 12 more collections completed, at least 12 of
+ * the world stops must leave the marking of a collection incomplete, and
+ * after each of them the world must run about as long as it was stopped
+ * before the next stop.  This part is skipped if the memory limit is
+ * unknown.
  *
  * Without the manual VDB mode, the parallel marker (only with it the
  * marking runs in steps) or the clock, if `NO_INCREMENTAL` is defined, or
@@ -299,8 +305,9 @@ test_awaited_marking(void)
 }
 
 /*
- * Count the world stops that leave the marking of a collection incomplete
- * and are followed by a shorter run.
+ * The client keeps at least half of the time.  An allocation budget would
+ * bound the heap cap to the live data plus the budget percentage of it,
+ * which the bytes in use may approach while a collection marks.
  */
 static void
 test_low_pressure(void)
@@ -333,6 +340,7 @@ test_low_pressure(void)
          " run\n",
          n_stops, n_pairs, n_short);
   CHECK(n_pairs >= N_COLLECTIONS);
+  CHECK(0 == n_short);
 }
 
 int

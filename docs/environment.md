@@ -159,10 +159,26 @@ e.g. before the heap grows.  The manual VDB mode never marks with the world
 running: it runs the steps on one thread if the parallel marker is not used,
 and in builds without the parallel marker, every world-stopped mark of that
 mode runs to completion.  If the parallel marker is supported, the value may
-have a fraction of a millisecond, e.g. "0.05" for 50 microseconds.  The final
-world-stopped mark of a collection, which completes its marking, keeps the time
-limit until 3 final marks of the collection were abandoned, and the next one
-runs without a limit.
+have a fraction of a millisecond, e.g. "0.05" for 50 microseconds.  A step, or
+a final mark that is due, also waits until the world has run for as long as the
+previous slice stopped it (as long as this value if that slice measured less
+than a microsecond, as a slice between two ticks of the clock does where it
+counts milliseconds), unless a caller holds the allocator lock until the marking
+completes (e.g. `GC_gcollect`).  If the memory limit is known (see
+`GC_MEMORY_LIMIT`) and the heap ceiling is not 0, the steps are also paced so
+that the marking completes before the bytes in use reach the heap cap: the data
+live after the latest full collection plus the allocation volume of the heap
+sizing (see `GC_HEAP_CEILING_PERCENT`), with half of the distance to the
+ceiling, but at least 10% of that data, as the volume if there is no allocation
+budget.  Nearer to the cap, the steps wait less, and their time limit rises up
+to 4 times this value.  The final world-stopped mark of a collection, which
+completes its marking, keeps a time limit.  With the heap cap, in builds with
+the parallel marker, that is the one of a step, or 1.25 times what the final
+mark of the previous collection took if that is more, doubled with each final
+mark of the collection abandoned, and none once that exceeds 4 times this value.
+Without the heap cap, or in builds without the parallel marker, the final mark
+keeps this value until 3 final marks of the collection were abandoned, and the
+next one runs without a limit.
 
 `GC_GEN_FULL_LIVE_PCT` - In the incremental mode, makes the next collection
 a full one when, after a minor collection, the bytes in use exceed the ones

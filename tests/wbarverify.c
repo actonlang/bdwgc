@@ -1381,10 +1381,12 @@ ff_hand_out(size_t i)
  * a freed object before each step, until a world-stopped mark runs: the
  * last one is handed out after the step that emptied the mark stack.  The
  * stack is cleared after each, so that the stack scan of the final mark
- * finds none of the new objects.  A call of `GC_collect_a_little()` with
- * nothing allocated since the previous one runs a step or the final mark,
- * not both: they hold the allocator lock each on their own.  Return the
- * objects handed out marked.
+ * finds none of the new objects.  A call of `GC_collect_a_little()` runs at
+ * most a step or the final mark, not both (away from the heap cap, they hold
+ * the allocator lock each on their own), and runs one only once the world
+ * has run for as long as the latest slice stopped it (see
+ * `slice_gap_passed()`), thus the inner loop calls it until the world was
+ * stopped.  Return the objects handed out marked.
  */
 static GC_ATTR_NOINLINE int
 ff_fill(void)

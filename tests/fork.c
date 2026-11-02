@@ -344,6 +344,15 @@ main(void)
 
   /* Handle `fork()` either by at-fork handlers or manually. */
   GC_set_handle_fork(-1);
+  /*
+   * Without an allocation budget, the heap cap is the live data plus half
+   * of the distance from it to the heap ceiling, several GiB on a runner.
+   * The threads of this test allocate fast while the steps are paced by the
+   * memory headroom, so its heap can grow toward that cap, and the test then
+   * takes much longer.  A memory limit of 256 MiB keeps the cap at about
+   * 100 MiB.
+   */
+  GC_set_memory_limit((GC_word)256 << 20);
   GC_INIT();
 #  ifndef NO_INCREMENTAL
   GC_enable_incremental();

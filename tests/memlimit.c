@@ -31,10 +31,11 @@
  * 48 MiB): as the live data grows step by step from 2 MiB to 52 MiB,
  * after each step the allocation volume between collections is 200% of
  * the live data, at most half of the distance to the ceiling, and at
- * least 10% of the live data, and the heap target is the live data plus
- * the volume.  Allocating garbage of 6 volumes in small objects causes
- * a collection after about the volume plus the roots and the stacks
- * (which the live data counts, but which are not in the heap), 13
+ * least 10% of the live data, and the heap target and the heap cap (in
+ * builds that pace the steps of the incremental mode) are the live data
+ * plus the volume.  Allocating garbage of 6 volumes in small objects
+ * causes a collection after about the volume plus the roots and the
+ * stacks (which the live data counts, but which are not in the heap), 13
  * collections at most, and the heap stays below the target plus a slack.
  * With the live data above the ceiling, garbage of 6 volumes in large
  * objects of 256 KiB to 4 MiB causes 13 collections at most, and the
@@ -46,8 +47,10 @@
  * of the live data), and causes one collection after 3/4 of the volume.
  * A heap growth reaches the target, and is 10% of the live data at
  * least.  Without the ceiling, or with the collections disabled or in
- * the incremental mode, there is no heap target.  This test includes the
- * collector source to call its static functions.
+ * the incremental mode, there is no heap target; without the ceiling,
+ * there is no heap cap, and without an allocation budget, the heap cap is
+ * the live data plus half of the distance to the ceiling.  This test
+ * includes the collector source to call its static functions.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -481,10 +484,11 @@ alloc_garbage(word bytes, size_t lb)
 
 /*
  * Return the allocation volume between collections which the heap sizing
- * gives for `live` bytes of live data and the heap ceiling `ceiling`.
+ * gives for `live` bytes of live data and the heap ceiling `ceiling`,
+ * before the incremental mode halves it.
  */
 static word
-expected_volume(word live, word ceiling)
+sized_volume(word live, word ceiling)
 {
   word volume = percent_of(live, TEST_BUDGET_PERCENT);
 
@@ -496,6 +500,15 @@ expected_volume(word live, word ceiling)
     if (volume > bound)
       volume = bound;
   }
+  return volume;
+}
+
+/* The same volume as the collector uses it. */
+static word
+expected_volume(word live, word ceiling)
+{
+  word volume = sized_volume(live, ceiling);
+
   if (GC_incremental)
     volume /= 2;
   return volume > min_bytes_allocd_minimum ? volume : min_bytes_allocd_minimum;
@@ -518,6 +531,7 @@ struct sizing_s {
   word roots;
   word volume;
   word target;
+  word cap;
   word heap;
 };
 
@@ -531,6 +545,11 @@ read_sizing(void)
   r.roots = total_stack_size() + GC_root_size;
   r.volume = min_bytes_allocd();
   r.target = heap_target();
+#ifdef PARALLEL_MARK_DEADLINE
+  r.cap = heap_cap();
+#else
+  r.cap = 0;
+#endif
   r.heap = GC_heapsize;
   UNLOCK();
   return r;
@@ -561,6 +580,13 @@ check_step(word step, size_t lb, GC_bool strict, word initial_heap)
   TEST_ASSERT(close_to(s.volume, expected_volume(s.live, heap_ceiling())));
   TEST_ASSERT(GC_incremental ? 0 == s.target
                              : close_to(s.target, s.live + s.volume));
+#ifdef PARALLEL_MARK_DEADLINE
+  if (!GC_incremental) {
+    word cap = s.live + sized_volume(s.live, heap_ceiling());
+
+    TEST_ASSERT(close_to(s.cap, cap));
+  }
+#endif
   slack = lb < HBLKSIZE
               ? percent_of(s.live, 10) + (word)MINHINCR * HBLKSIZE + 2 * MiB
               : s.target;
@@ -760,12 +786,34 @@ test_heap_sizing(void)
   if (strict)
     check_growth_decisions();
 
-  /* Without the ceiling, the budget gives the volume, and no target. */
+  /*
+   * Without the ceiling, the budget gives the volume, and there is no
+   * target and no cap.
+   */
   GC_set_heap_ceiling_percent(0);
   s = read_sizing();
   TEST_ASSERT(close_to(s.volume, expected_volume(s.live, 0)));
   TEST_ASSERT(0 == s.target);
+  TEST_ASSERT(0 == s.cap);
   GC_set_heap_ceiling_percent(75);
+
+#ifdef PARALLEL_MARK_DEADLINE
+  /*
+   * Without a budget, the cap is the live data plus half of the distance
+   * to the ceiling, here 75% of the detected memory limit.
+   */
+  GC_set_alloc_budget_percent(0);
+  GC_set_memory_limit(0);
+  GC_gcollect();
+  s = read_sizing();
+  if (!GC_incremental && heap_ceiling() > 2 * s.live) {
+    word cap = s.live + percent_of(heap_ceiling() - s.live, 50);
+
+    TEST_ASSERT(close_to(s.cap, cap));
+  }
+  GC_set_alloc_budget_percent(TEST_BUDGET_PERCENT);
+  GC_set_memory_limit(TEST_MEMORY_LIMIT);
+#endif
 
   /* Without collections, there is no target. */
   GC_disable();
