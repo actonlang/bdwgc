@@ -13,12 +13,15 @@
 
 /*
  * Test the time limit of the final world-stopped marks of a collection:
- * the incremental mode with the manual VDB and a live list of about 1 MiB.
- * Each part of the test runs `N_COLLECTIONS` collections, which must
- * complete before the heap grows beyond `MAX_HEAP`, and counts the
- * world-stopped marks of each.  The first three parts run without the heap
- * cap (`GC_set_heap_ceiling_percent(0)`), thus without the pacing of the
- * steps by the memory headroom.
+ * the incremental mode with the manual VDB.  This test includes the
+ * collector source to read the time limit of each final mark.
+ *
+ * The first four parts keep a live list of about 1 MiB.  Each runs
+ * `N_COLLECTIONS` collections, which must complete before the heap grows
+ * beyond `MAX_HEAP`, and counts the world-stopped marks of each.  The
+ * first three parts run without the heap cap
+ * (`GC_set_heap_ceiling_percent(0)`), thus without the pacing of the steps
+ * by the memory headroom.
  *
  * First, with a time limit of 1 ms and a client stop function that returns
  * true during every world-stopped mark, the world-stopped marks of
@@ -47,25 +50,58 @@
  * a step mark to the end of the marking: without thread-local allocation,
  * the steps run only before the heap grows.
  *
- * Last, as the first part but with the heap cap, the time limit of a final
+ * Fourth, as the first part but with the heap cap, the time limit of a final
  * mark grows with each one abandoned, also by the stop function of the
  * client, until a final mark runs without it: each collection takes 2 to 5
  * marks.
  *
+ * Last, with a time limit of 1 ms and no allocation budget, so that the heap
+ * cap is the live data plus half of the distance from it to the heap ceiling,
+ * far above the heap of the test, the client links a new list of `N_LIST`
+ * nodes to a root, allocated with the collections disabled, before
+ * a collection (so that its first mark does not complete), once the collection
+ * marks in steps, and again after every abandoned final mark, until a final
+ * mark at `MAX_SLICE_LIMITS` times the time limit (the bound) is abandoned.
+ * The steps do not mark from the roots, thus every final mark has the latest
+ * list to mark, which takes longer than the bound, and the need of the next
+ * final mark doubles with each one abandoned.  The test reports the final
+ * marks, those abandoned, those at the bound, and those that ran without
+ * a time limit outside one stop; the part ends after the first of the latter,
+ * or once a collection completes after a final mark abandoned at the bound.
+ *
  * Without the steps (e.g. without the parallel marker), the manual VDB mode
  * abandons no mark, and every collection completes in its first one.
  * Without the manual VDB mode, or if `NO_INCREMENTAL` is defined, the test
- * is skipped.
+ * is skipped.  The last part is skipped without the parallel marker, the
+ * clock or a known memory limit, and on Windows, where the clock of the
+ * collector counts milliseconds.
  */
 
 #ifdef HAVE_CONFIG_H
 #  include "config.h"
 #endif
 
-#include "gc.h"
+#define GC_SINGLE_OBJ_BUILD
+#ifndef __cplusplus
+#  define GC_INNER STATIC
+#  define GC_EXTERN GC_INNER
+#endif
+#undef GC_PTHREAD_START_STANDALONE
+#undef GC_DLL
+#ifndef GC_NOT_DLL
+#  define GC_NOT_DLL
+#endif
+#include "private/gc_priv.h"
 
-#include <stdio.h>
-#include <stdlib.h>
+#if defined(CPPCHECK) && GC_GNUC_PREREQ(12, 0)
+/* See the same in `memlimit.c` file. */
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wdangling-pointer"
+#endif
+#include "../extra/gc.c"
+#if defined(CPPCHECK) && GC_GNUC_PREREQ(12, 0)
+#  pragma GCC diagnostic pop
+#endif
 
 #ifdef _WIN32
 #  include <windows.h>
@@ -107,7 +143,9 @@
          || (defined(_POSIX_TIMERS)                         \
              && (defined(__CYGWIN__)                        \
                  || (defined(__linux__) && defined(__USE_POSIX199309)))))
-#  define PROCESSOR_TIME_LIMIT
+#  ifndef NO_CLOCK
+#    define PROCESSOR_TIME_LIMIT
+#  endif
 #endif
 
 /*
@@ -159,7 +197,8 @@ static unsigned marks_of[N_COLLECTIONS];
  * of the part, and the first final mark abandoned before the time limit had
  * passed: its collection (counted from 1, or 0 if none) and how long it
  * ran.  With `PROCESSOR_TIME_LIMIT`, also the processor time at the latest
- * stop of the world, and how long that final mark ran on it.
+ * stop of the world, by the clock of the collector, and how long that final
+ * mark ran on it.
  */
 static volatile unsigned long since_us;
 static unsigned abandoned_of[N_COLLECTIONS];
@@ -167,7 +206,7 @@ static unsigned n_abandoned;
 static unsigned early_in;
 static unsigned long early_us;
 #ifdef PROCESSOR_TIME_LIMIT
-static volatile clock_t stop_clock;
+static CLOCK_TYPE stop_clock;
 static unsigned long early_cpu_us;
 #endif
 
@@ -226,6 +265,9 @@ static void
 note_abandoned_final(void)
 {
   unsigned long us = now_us() - since_us;
+#ifdef PROCESSOR_TIME_LIMIT
+  CLOCK_TYPE now;
+#endif
 
   if (n_counted < N_COLLECTIONS)
     abandoned_of[n_counted]++;
@@ -233,8 +275,9 @@ note_abandoned_final(void)
   if (early_in != 0 || us >= (LIMIT_MS - SLACK_MS) * 1000UL)
     return;
 #ifdef PROCESSOR_TIME_LIMIT
-  early_cpu_us
-      = (unsigned long)((double)(clock() - stop_clock) * 1e6 / CLOCKS_PER_SEC);
+  GET_TIME(now);
+  early_cpu_us = MS_TIME_DIFF(now, stop_clock) * 1000UL
+                 + NS_FRAC_TIME_DIFF(now, stop_clock) / 1000UL;
   if (early_cpu_us >= (LIMIT_MS - SLACK_MS) * 1000UL)
     return;
 #endif
@@ -250,7 +293,7 @@ on_collection_event(GC_EventType e)
   switch (e) {
 #ifdef PROCESSOR_TIME_LIMIT
   case GC_EVENT_PRE_STOP_WORLD:
-    stop_clock = clock();
+    GET_TIME(stop_clock);
     break;
 #endif
   case GC_EVENT_POST_STOP_WORLD:
@@ -375,6 +418,151 @@ run_part(int p, unsigned marks, unsigned max_marks)
   return marks_of[0];
 }
 
+#if defined(PARALLEL_MARK_DEADLINE) && !defined(_WIN32)
+
+/* The nodes of a list of the last part, of 2 words each. */
+#  define N_LIST (1 << 21)
+
+/* The collections to run at most in the last part. */
+#  define MAX_COLLECTIONS 40
+
+struct list_node {
+  struct list_node *next;
+  GC_word value;
+};
+
+static struct list_node *volatile list;
+
+/*
+ * The final marks, those without a time limit outside one stop, those at
+ * the bound and those of them abandoned, and all those abandoned; the
+ * collections marked, and whether one completed its marking after a final
+ * mark at the bound was abandoned (1, or 2 if in one stop).  Protected by
+ * the allocator lock.
+ */
+static unsigned long n_finals, n_unlimited, n_bound, n_bound_abandoned;
+static unsigned long n_finals_abandoned, n_marked;
+static int completed_after_bound;
+
+/* The state of the final mark in progress. */
+static GC_bool final_in_progress, final_at_bound, final_done;
+
+/* Called with the allocator lock held. */
+static void GC_CALLBACK
+on_bound_event(GC_EventType e)
+{
+  if (GC_EVENT_PRE_STOP_WORLD == e && final_mark_no != 0) {
+    n_finals++;
+    final_in_progress = TRUE;
+    final_done = FALSE;
+    if (final_mark_unlimited && !in_one_stop)
+      n_unlimited++;
+    final_at_bound = !final_mark_unlimited
+                     && slice_limit_us == MAX_SLICE_LIMITS * time_limit_us();
+    if (final_at_bound)
+      n_bound++;
+  } else if (GC_EVENT_MARK_END == e) {
+    n_marked++;
+    final_done = TRUE;
+    if (n_bound_abandoned > 0 && 0 == completed_after_bound)
+      completed_after_bound = in_one_stop ? 2 : 1;
+  } else if (GC_EVENT_POST_START_WORLD == e && final_in_progress) {
+    final_in_progress = FALSE;
+    if (!final_done) {
+      n_finals_abandoned++;
+      if (final_at_bound)
+        n_bound_abandoned++;
+    }
+  }
+}
+
+/* Link a new list to the root, allocated with the collections disabled. */
+static void
+new_list(void)
+{
+  struct list_node *head = NULL;
+  unsigned long i;
+
+  GC_disable();
+  for (i = 0; i < N_LIST; i++) {
+    struct list_node *n
+        = (struct list_node *)GC_MALLOC(sizeof(struct list_node));
+
+    CHECK(n != NULL);
+    n->value = (GC_word)i;
+    GC_PTR_STORE_AND_DIRTY(&n->next, head);
+    head = n;
+  }
+  list = head;
+  GC_enable();
+}
+
+/* Run the last part. */
+static void
+run_bound_part(void)
+{
+  struct GC_timeval_s tv;
+  unsigned long abandoned_at = 0, marked_at = 0;
+  GC_word list_gc_no = ~(GC_word)0;
+
+  tv.tv_ms = 1;
+  tv.tv_nsec = 0;
+  GC_set_time_limit_tv(tv);
+  GC_set_alloc_budget_percent(0);
+  GC_gcollect();
+  GC_set_on_collection_event(on_bound_event);
+  new_list();
+  for (;;) {
+    unsigned long abandoned, bound_abandoned, marked, unlimited;
+    int completed;
+    GC_bool in_progress;
+    GC_word gc_no;
+
+    junk = GC_MALLOC(sizeof(struct list_node));
+    CHECK(junk != NULL);
+    LOCK();
+    abandoned = n_finals_abandoned;
+    bound_abandoned = n_bound_abandoned;
+    marked = n_marked;
+    unlimited = n_unlimited;
+    completed = completed_after_bound;
+    in_progress = GC_collection_in_progress() || FINAL_DUE();
+    gc_no = GC_gc_no;
+    UNLOCK();
+    if (unlimited > 0 || completed != 0)
+      break;
+    if (marked >= MAX_COLLECTIONS) {
+      fprintf(stderr,
+              "No final mark at the bound was abandoned in %lu"
+              " collections (%lu final marks, %lu abandoned)\n",
+              marked, (unsigned long)n_finals, abandoned);
+      CHECK(0);
+    }
+    /*
+     * Until a final mark at the bound is abandoned: a new list once
+     * a collection marks in steps and after each abandoned final mark,
+     * and before the next collection.
+     */
+    if (bound_abandoned > 0)
+      continue;
+    if (in_progress && (gc_no != list_gc_no || abandoned > abandoned_at)) {
+      new_list();
+      list_gc_no = gc_no;
+      abandoned_at = abandoned;
+    } else if (!in_progress && marked > marked_at) {
+      new_list();
+      marked_at = marked;
+    }
+  }
+  GC_set_on_collection_event(0);
+  list = NULL;
+  printf("Last part: %lu collections, %lu final marks, %lu abandoned, %lu at"
+         " the bound (%lu abandoned), %lu without a time limit\n",
+         n_marked, n_finals, n_finals_abandoned, n_bound, n_bound_abandoned,
+         n_unlimited);
+}
+#endif
+
 int
 main(void)
 {
@@ -382,7 +570,7 @@ main(void)
   GC_word ceiling_percent;
   unsigned long i;
   unsigned first, last;
-  int steps;
+  int steps, full_freq, max_attempts;
 
   GC_set_manual_vdb_allowed(1);
   GC_INIT();
@@ -406,6 +594,8 @@ main(void)
   GC_set_on_collection_event(on_collection_event);
   old_stop_func = GC_get_stop_func();
   ceiling_percent = GC_get_heap_ceiling_percent();
+  full_freq = GC_get_full_freq();
+  max_attempts = GC_get_max_prior_attempts();
   GC_set_heap_ceiling_percent(0);
 
   GC_set_time_limit(1);
@@ -437,11 +627,25 @@ main(void)
   last = run_part(4, steps ? 2 : 1, steps ? 5 : 1);
 
   GC_set_stop_func(old_stop_func);
+  GC_set_on_collection_event(0);
   printf("Collections in %u, %u, %u and %u (the first of the part)"
          " world-stopped marks, %u more for final marks abandoned in the"
          " second part, heap %lu MiB\n",
          first, steps ? 2U : 1U, steps ? 3U : 1U, last, n_abandoned,
          (unsigned long)(GC_get_heap_size() / MiB));
+
+  GC_set_full_freq(full_freq);
+  GC_set_max_prior_attempts(max_attempts);
+#if defined(PARALLEL_MARK_DEADLINE) && !defined(_WIN32)
+  if (0 == GC_get_memory_limit()) {
+    printf("The memory limit is unknown, the last part skipped\n");
+  } else {
+    run_bound_part();
+  }
+#else
+  printf("The parallel marker or the clock is unavailable, or the clock"
+         " counts milliseconds, the last part skipped\n");
+#endif
   printf("SUCCEEDED\n");
   return 0;
 }
