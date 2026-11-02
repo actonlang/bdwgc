@@ -91,9 +91,16 @@
  * The full collections to run after the first one of a run (only those
  * the growth of the heap alone makes due, if it may), or the minor
  * collections over half the bytes in use after it, if the percentage is
- * negative.  Also the collections of each part of `run_pct_0()`.
+ * negative.  Also the collections of each part of `run_pct_0()`, and the
+ * minor collections in a row that keep the bytes in use before them.
  */
 #  define N_WANTED 3
+
+/*
+ * The minor collections that `run_pct_0()` runs at most until `N_WANTED`
+ * in a row keep the bytes in use.
+ */
+#  define MAX_SETTLE (4 * N_WANTED)
 
 /*
  * The range of the percentages that the run with the one of the variable
@@ -308,29 +315,41 @@ check_minor(unsigned first, unsigned n)
 }
 
 /*
- * Collect fully, then once more with the trigger off, and make the bytes
- * in use after that minor collection the ones after the latest full
- * collection: the minor collection may mark a free object through a stale
- * pointer, as the full collection emptied the global free lists, whose
- * objects it marks only to clear their marks again.  With the percentage
- * 0, collect `N_WANTED` times without allocation: the bytes in use stay
- * the same.  Then set the bytes in use after the latest full collection to
- * 0, refill the ring and collect `N_WANTED` times.  None of the minor
- * collections may be full.  Called before any object dies, so that no
- * collection marks a dead object through a stale pointer, which would add
- * to the bytes in use.
+ * Collect fully, then with the trigger off until `N_WANTED` minor
+ * collections in a row keep the bytes in use, and make the bytes in use
+ * after the latest of them the ones after the latest full collection.
+ * A minor collection may mark a free object through a stale pointer: the
+ * full collection emptied the global free lists, whose objects it marks
+ * only to clear their marks again, and the collector leaves the addresses
+ * of blocks, which are those of their first objects, in its stack frames.
+ * These words change from one collection to the next until the
+ * collections run the same way.  With the percentage 0, collect
+ * `N_WANTED` times without allocation: the bytes in use stay the same.
+ * Then set the bytes in use after the latest full collection to 0, refill
+ * the ring and collect `N_WANTED` times.  None of the minor collections
+ * may be full.  Called before any object dies, so that no collection
+ * marks a dead object through a stale pointer, which would add to the
+ * bytes in use.
  */
 static void
 run_pct_0(void)
 {
-  unsigned first, n, i;
+  unsigned start, first, n, i, quiet;
 
   LOCK();
   GC_gen_full_live_pct = -1;
   UNLOCK();
   GC_gcollect();
-  GC_start_incremental_collection();
-  first = locked_n_colls() - 1;
+  start = locked_n_colls();
+  quiet = 0;
+  do {
+    GC_start_incremental_collection();
+    n = locked_n_colls();
+    CHECK(n <= start + MAX_SETTLE);
+    quiet = colls[n - 1].in_use == colls[n - 2].in_use ? quiet + 1 : 0;
+  } while (quiet < N_WANTED);
+  check_minor(start, n);
+  first = n - 1;
   LOCK();
   GC_in_use_after_full = colls[first].in_use;
   GC_gen_full_live_pct = 0;
