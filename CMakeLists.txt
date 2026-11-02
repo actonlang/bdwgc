@@ -1394,9 +1394,9 @@ if(BUILD_TESTING)
         target_link_libraries(finishtest PRIVATE gc ${THREADDLLIBS_LIST})
         add_test(NAME finishtest COMMAND finishtest)
 
-        add_executable(collectwaittest tests/collectwait.c ${NODIST_SRC})
-        target_link_libraries(collectwaittest PRIVATE gc ${THREADDLLIBS_LIST})
-        add_test(NAME collectwaittest COMMAND collectwaittest)
+        add_executable(pacingtest tests/pacing.c ${NODIST_SRC})
+        target_link_libraries(pacingtest PRIVATE gc ${THREADDLLIBS_LIST})
+        add_test(NAME pacingtest COMMAND pacingtest)
 
         add_executable(unmapchunkstest tests/unmapchunks.c ${NODIST_SRC})
         target_link_libraries(unmapchunkstest PRIVATE gc ${THREADDLLIBS_LIST})
