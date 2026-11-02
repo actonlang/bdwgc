@@ -322,10 +322,12 @@ check_PROGRAMS += wbarverifytest
 wbarverifytest_SOURCES = tests/wbarverify.c
 wbarverifytest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
-TESTS += finalstoptest$(EXEEXT)
-check_PROGRAMS += finalstoptest
-finalstoptest_SOURCES = tests/finalstop.c
-finalstoptest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+# The test includes the collector source instead of linking `libgc`.
+TESTS += finalboundtest$(EXEEXT)
+check_PROGRAMS += finalboundtest
+finalboundtest_SOURCES = tests/finalbound.c
+finalboundtest_LDADD = $(nodist_libgc_la_OBJECTS) $(EXTRA_TEST_LIBS) \
+                       @addobjs@ $(THREADDLLIBS) $(UNWINDLIBS) $(ATOMIC_OPS_LIBS)
 
 TESTS += finishtest$(EXEEXT)
 check_PROGRAMS += finishtest
@@ -457,7 +459,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f disclaim_bench$(EXEEXT) || ./disclaim_bench$(EXEEXT)
 	test ! -f disclaimtest$(EXEEXT) || ./disclaimtest$(EXEEXT)
 	test ! -f expandmanytest$(EXEEXT) || ./expandmanytest$(EXEEXT)
-	test ! -f finalstoptest$(EXEEXT) || ./finalstoptest$(EXEEXT)
+	test ! -f finalboundtest$(EXEEXT) || ./finalboundtest$(EXEEXT)
 	test ! -f finishtest$(EXEEXT) || ./finishtest$(EXEEXT)
 	test ! -f forktest$(EXEEXT) || ./forktest$(EXEEXT)
 	test ! -f heapsectstest$(EXEEXT) || ./heapsectstest$(EXEEXT)

@@ -407,6 +407,9 @@ static unsigned long abandoned_final_us = 0;
 /* The number of the final mark in progress, 0 if none. */
 static unsigned final_mark_no = 0;
 
+/* Whether the final mark in progress runs without a time limit. */
+static GC_bool final_mark_unlimited = FALSE;
+
 /*
  * Whether the slice in progress completes the marking of the collection in
  * one stop (see `ONE_STOP_SHARE`).
@@ -2285,6 +2288,8 @@ GC_collect_a_little_inner(size_t n_blocks)
         in_one_stop = TRUE;
       }
       final_mark_no = n_final_abandoned + 1;
+      final_mark_unlimited = stop_func != GC_timeout_stop_func
+                             || GC_time_limit == GC_TIME_UNLIMITED;
 #endif
 #ifndef NO_CLOCK
       if (GC_time_limit != GC_TIME_UNLIMITED
