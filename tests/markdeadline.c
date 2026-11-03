@@ -72,7 +72,18 @@
  * mark must run, and the first world-stopped mark of a set-up must follow
  * in the chunk that completes it.  With POSIX threads, the clearing of the
  * mark bits and the first world-stopped mark must wait for a builder of
- * a free list.  The trees must stay intact.
+ * a free list.  With memory unmapping (except on Windows), the blocks of
+ * every other one of many objects (with resident pages) are freed
+ * explicitly and unmapped after the finish of the next collection, in
+ * chunks with a time limit of 10 us (the unmapping threshold is one
+ * collection): it must not start in a chunk after half of the time limit,
+ * and with a time limit of 10 s the next chunk must not be due, even after
+ * the allocation volume between two steps.  With the next chunk not due,
+ * a collection that is due after the first chunk must end the unmapping
+ * and start, but not while none is due, not before that chunk, and not
+ * while the collections are disabled.  The checks of the unmapping run
+ * only where the clock of the collector resolves fractions of
+ * a millisecond (see `fine_clock()`).  The trees must stay intact.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -951,6 +962,130 @@ check_setup_builders(void)
 }
 #  endif
 
+#  if defined(USE_MUNMAP) && !defined(_WIN32)
+/* The objects allocated in a row, every other one freed. */
+#    define N_APART 256
+
+static void *volatile apart[N_APART];
+
+/*
+ * Allocate `N_APART` objects of 4 pages in a row, in a heap grown for
+ * them and with the collections disabled, writing every page, and free
+ * every other one, so that their free blocks stay apart.  By `GC_free()`,
+ * as they are allocated without a debug header: `GC_FREE()` is
+ * `GC_debug_free()` with `GC_DEBUG`, which leaves a collectable object to
+ * the collector, so no block would be freed.
+ */
+static void
+free_apart(void)
+{
+  size_t bytes = 4 * HBLK_PAGE_SIZE - EXTRA_BYTES;
+  GC_warn_proc warn_proc;
+  int i;
+
+  CHECK(GC_expand_hp(N_APART * (bytes + HBLKSIZE)));
+  GC_disable();
+  for (i = 0; i < N_APART; i++) {
+    char *p = (char *)GC_malloc_atomic(bytes);
+    size_t j;
+
+    CHECK(p != NULL);
+    for (j = 0; j < bytes; j += GC_page_size)
+      p[j] = 1;
+    apart[i] = p;
+  }
+  for (i = 0; i < N_APART; i += 2) {
+    GC_free(apart[i]);
+    apart[i] = NULL;
+  }
+  /* Silence the warning that the heap grew while collections were off. */
+  warn_proc = GC_get_warn_proc();
+  GC_set_warn_proc(GC_ignore_warn_proc);
+  GC_enable();
+  GC_set_warn_proc(warn_proc);
+}
+
+/*
+ * Check when a chunk of the unmapping may start and is due, and that
+ * a collection that is due ends the unmapping in chunks after its first
+ * chunk, and only then.  Run only where the clock of the collector resolves
+ * fractions of a millisecond (see `fine_clock()`): a chunk does not stop at
+ * a time limit of 10 us otherwise.
+ */
+static void
+check_unmap_chunks(void)
+{
+  unsigned saved_threshold;
+  unsigned long marks;
+  word unmapped, saved_allocd;
+  long n;
+  int i;
+  IF_CANCEL(int cancel_state;)
+
+  complete_collection();
+  free_apart();
+  LOCK();
+  /* The blocks freed before the next collection are old enough then. */
+  saved_threshold = GC_unmap_threshold;
+  GC_unmap_threshold = 1;
+  UNLOCK();
+  set_time_limit(0, 10000);
+  start_collection();
+  for (n = 0; GC_collect_a_little() && !FINISH_PENDING(); n++)
+    CHECK(n < MAX_COLLECT_CALLS);
+  LOCK();
+  DISABLE_CANCEL(cancel_state);
+  while (FINISH_PENDING()
+         && !(FINISH_UNMAP == finish_phase && unmap_chunk_ran)) {
+    GET_TIME(GC_start_time);
+    run_finish_chunk(FALSE);
+  }
+  /* A chunk unmaps a few of the blocks at most. */
+  CHECK(FINISH_UNMAP == finish_phase);
+  /* The unmapping does not start in a chunk after half of its time limit. */
+  unmapped = GC_unmapped_bytes;
+  GET_TIME(GC_start_time);
+  wait_us_since(GC_start_time, 6);
+  run_finish_chunk(FALSE);
+  CHECK(FINISH_UNMAP == finish_phase && GC_unmapped_bytes == unmapped);
+
+  /*
+   * With a time limit of 10 s, the next chunk of the unmapping is not due,
+   * even after the allocation volume between two steps.
+   */
+  set_time_limit(10000, 0);
+  saved_allocd = allocd_at_slice;
+  allocd_at_slice = allocd_now() - slice_bytes;
+  CHECK(!finish_chunk_due());
+  allocd_at_slice = saved_allocd;
+  marks = n_stopped_marks;
+  GC_collect_a_little_inner(1);
+  CHECK(FINISH_UNMAP == finish_phase);
+  /* A collection due does not end the unmapping before its first chunk. */
+  GC_should_start_incremental_collection = TRUE;
+  unmap_chunk_ran = FALSE;
+  GC_collect_a_little_inner(1);
+  CHECK(FINISH_UNMAP == finish_phase);
+  /* Nor while the collections are disabled. */
+  unmap_chunk_ran = TRUE;
+  GC_dont_gc++;
+  GC_collect_a_little_inner(1);
+  GC_dont_gc--;
+  CHECK(FINISH_UNMAP == finish_phase && n_stopped_marks == marks);
+  /* Otherwise it ends the unmapping and starts. */
+  GC_collect_a_little_inner(1);
+  CHECK(!FINISH_PENDING() && n_stopped_marks > marks);
+  GC_unmap_threshold = saved_threshold;
+  set_time_limit(0, 100000);
+  RESTORE_CANCEL(cancel_state);
+  UNLOCK();
+  for (i = 0; i < N_APART; i++)
+    apart[i] = NULL;
+  complete_collection();
+  printf("Chunks of the unmapping checked\n");
+}
+#  endif
+
 int
 main(void)
 {
@@ -1041,6 +1176,14 @@ main(void)
       check_setup_chunks();
 #  ifdef GC_PTHREADS
       check_setup_builders();
+#  endif
+#  if defined(USE_MUNMAP) && !defined(_WIN32)
+      if (fine) {
+        check_unmap_chunks();
+      } else {
+        printf("The clock does not resolve 10 us, the unmapping in chunks"
+               " not checked\n");
+      }
 #  endif
       for (t = 0; t < N_TREES; t++)
         CHECK(check_tree(trees[t], (GC_word)t + 1, 0, 0) == nodes_per_tree);
