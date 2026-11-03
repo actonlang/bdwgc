@@ -26,17 +26,20 @@
  * filled after the stop function abandoned a first world-stopped mark
  * (`abandon`).  An object allocated during a collection marked in
  * world-stopped steps (a time limit of 10 microseconds) and filled after
- * a step scanned it (`alloc`, skipped in builds without the parallel
- * marker, and where the clock does not resolve 10 microseconds, e.g. on
- * Windows).  Large objects, of which only the dirty blocks are rescanned,
- * unless they are of a kind always rescanned: stores with a barrier into
- * a far block (`large-barrier`, `large-stubborn`), a new large object filled
- * in a far block after a collection marked it from the stack
- * (`large-stack`), a large uncollectable object filled in a far block
- * without a barrier (`large-uncoll`).  A report whose object was freed
- * before the full collection that checks it is stale (`stale`).  A dead
- * object marked again by a conservative reference, whose old pointers now
- * point to new objects, holds no missed store (`revived`).  With an
+ * a step scanned it (`alloc`, also skipped where the clock does not resolve
+ * 10 microseconds, e.g. on Windows), and objects freed while a stale
+ * pointer kept them reachable, marked on the free list by a step and filled
+ * after the step that emptied the mark stack (`free-final`), both skipped
+ * in builds without the parallel marker.  Large objects, of which only the
+ * dirty blocks are rescanned, unless they are of a kind always rescanned:
+ * stores with a barrier into a far block (`large-barrier`,
+ * `large-stubborn`), a new large object filled in a far block after
+ * a collection marked it from the stack (`large-stack`), a large
+ * uncollectable object filled in a far block without a barrier
+ * (`large-uncoll`).  A report whose object was freed before the full
+ * collection that checks it is stale (`stale`).  A dead object marked
+ * again by a conservative reference, whose old pointers now point to new
+ * objects, holds no missed store (`revived`).  With an
  * argument, one case runs; the cases `lost`, `missed`, `missed-next`,
  * `kind-unflagged`, `large-missed`, `large-missed-next`, `missed-abandoned`
  * and `final-lost` store without a barrier and must be reported (as lost, as
@@ -934,11 +937,17 @@ static struct chain *volatile g_chain;
 static volatile GC_hidden_pointer g_mid;
 static volatile GC_word g_mark_starts;
 
+/* The world stops: of the steps and of the world-stopped marks. */
+static volatile GC_word g_stops;
+
 static void GC_CALLBACK
 on_event(GC_EventType e)
 {
-  if (GC_EVENT_MARK_START == e)
+  if (GC_EVENT_MARK_START == e) {
     g_mark_starts++;
+  } else if (GC_EVENT_PRE_STOP_WORLD == e) {
+    g_stops++;
+  }
 }
 
 static GC_ATTR_NOINLINE void
@@ -1276,6 +1285,207 @@ case_final_lost(void)
   }
   report("final-lost");
   return 0;
+}
+
+/*
+ * Objects freed explicitly while an object at the end of a chain still
+ * points to them, so that a step of a collection marked in steps marks
+ * and scans them on the free list (`free-final`).  Then they are handed
+ * out again one per step, each filled without a barrier, also after the
+ * step that emptied the mark stack and before the final mark: each block
+ * must be dirty for the final read.  Each freed object shares its block
+ * only with a kept object, so that no other allocation dirties it.  The
+ * objects must be small ones, on a free list once freed, at any block
+ * size.
+ */
+#  define N_FF 512
+
+/* Two per block, with room for the extra byte of an object. */
+struct ff {
+  struct young *p;
+  void *pad[HBLKSIZE / (2 * sizeof(void *)) - 2];
+};
+
+struct ff_arr {
+  struct ff *o[N_FF];
+};
+
+static struct ff *volatile g_ff[N_FF];
+static struct ff *volatile g_ff_pad[N_FF];
+static volatile GC_hidden_pointer g_ff_arr;
+
+/*
+ * Hang the objects to free off the last node of the chain.  No collection
+ * may mark them before they are freed: the free of a marked object dirties
+ * its block.
+ */
+static GC_ATTR_NOINLINE void
+ff_prepare(void)
+{
+  struct chain *t = g_chain;
+  struct ff_arr *a;
+  size_t i;
+
+  GC_disable();
+  a = (struct ff_arr *)GC_generic_malloc(sizeof(struct ff_arr), NORMAL);
+  CHECK(a != NULL);
+  for (i = 0; i < N_FF; i++) {
+    a->o[i] = (struct ff *)GC_generic_malloc(sizeof(struct ff), NORMAL);
+    g_ff_pad[i] = (struct ff *)GC_generic_malloc(sizeof(struct ff), NORMAL);
+    CHECK(a->o[i] != NULL && g_ff_pad[i] != NULL);
+    g_ff[i] = NULL;
+  }
+  while (t->next != NULL)
+    t = t->next;
+  t->x = a;
+  GC_END_STUBBORN_CHANGE(&t->x);
+  g_ff_arr = GC_HIDE_POINTER(a);
+  GC_enable();
+}
+
+/*
+ * Free the objects; the array keeps pointing to them.  By `GC_free()`, as
+ * they were allocated without a debug header: `GC_FREE()` is
+ * `GC_debug_free()` with `GC_DEBUG`, which leaves the object to the
+ * collector, so it would never be on a free list.
+ */
+static GC_ATTR_NOINLINE void
+ff_free(void)
+{
+  struct ff_arr *a = (struct ff_arr *)GC_REVEAL_POINTER(g_ff_arr);
+  size_t i;
+
+  for (i = 0; i < N_FF; i++)
+    GC_free(a->o[i]);
+}
+
+/*
+ * Hand out a freed object (the head of the free list of its size) and
+ * fill it without a barrier.  Return whether it was marked.
+ */
+static GC_ATTR_NOINLINE int
+ff_hand_out(size_t i)
+{
+  struct ff *x = (struct ff *)GC_generic_malloc(sizeof(struct ff), NORMAL);
+  int marked;
+
+  CHECK(x != NULL);
+  marked = GC_is_marked(x);
+  x->p = new_young(); /*< no barrier: a new object */
+  g_ff[i] = x;
+  return marked;
+}
+
+/*
+ * Run the steps, one per round.  Once the array is marked, hand out
+ * a freed object before each step, until a world-stopped mark runs: the
+ * last one is handed out after the step that emptied the mark stack.  The
+ * stack is cleared after each, so that the stack scan of the final mark
+ * finds none of the new objects.  A call of `GC_collect_a_little()` with
+ * nothing allocated since the previous one runs a step or the final mark,
+ * not both: they hold the allocator lock each on their own.  Return the
+ * objects handed out marked.
+ */
+static GC_ATTR_NOINLINE int
+ff_fill(void)
+{
+  const struct ff_arr *a = (const struct ff_arr *)GC_REVEAL_POINTER(g_ff_arr);
+  GC_word starts = g_mark_starts;
+  int n_marked = 0;
+  size_t i = 0;
+  int k;
+
+  for (k = 0;; k++) {
+    GC_word stops;
+    int more;
+    int j;
+
+    CHECK(k < 1000000);
+    if (i < N_FF && GC_is_marked(a)) {
+      n_marked += ff_hand_out(i++);
+      clear_stack();
+    }
+    stops = g_stops;
+    for (j = 0;; j++) {
+      CHECK(j < 10000000);
+      more = GC_collect_a_little();
+      if (!more || g_stops != stops)
+        break;
+    }
+    CHECK(g_stops - stops <= 1);
+    if (!more || g_mark_starts != starts)
+      break;
+  }
+  return n_marked;
+}
+
+/*
+ * Clear the pointers of the array, which point to free objects now, for
+ * the checks of the next collections.
+ */
+static GC_ATTR_NOINLINE void
+ff_drop(void)
+{
+  struct ff_arr *a = (struct ff_arr *)GC_REVEAL_POINTER(g_ff_arr);
+  size_t i;
+
+  for (i = 0; i < N_FF; i++) {
+    a->o[i] = NULL;
+    GC_END_STUBBORN_CHANGE(&a->o[i]);
+  }
+}
+
+static GC_ATTR_NOINLINE int
+ff_intact(void)
+{
+  size_t i;
+
+  for (i = 0; i < N_FF; i++) {
+    const struct ff *x = g_ff[i];
+
+    if (x != NULL && (NULL == x->p || x->p->magic != MAGIC))
+      return 0;
+  }
+  return 1;
+}
+
+static int
+case_free_final(void)
+{
+  int round;
+  int exercised = 0;
+  size_t i;
+
+  if (!HAVE_STEPS) {
+    printf("free-final: %s\n", NO_STEPS_MSG);
+    return 1;
+  }
+  for (round = 0; round < 20 && !exercised; round++) {
+    build_chain(200000);
+    ff_prepare();
+    clear_stack();
+    if (start_sliced()) {
+      ff_free();
+      clear_stack();
+      exercised = ff_fill() > 0;
+    }
+    clear_stack();
+    finish_sliced();
+    ff_drop();
+    g_chain = NULL;
+  }
+  collect();
+  report("free-final");
+  if (!exercised)
+    printf("free-final: no freed object was handed out marked,"
+           " case not exercised\n");
+  if (0 == errors())
+    CHECK(ff_intact());
+  for (i = 0; i < N_FF; i++) {
+    g_ff[i] = NULL;
+    g_ff_pad[i] = NULL;
+  }
+  return exercised && errors() == 0;
 }
 
 /*
@@ -1940,6 +2150,7 @@ static const struct test_case cases[] = {
   { "kind", case_kind, 1 },
   { "alloc", case_alloc, 1 },
   { "abandon", case_abandon, 1 },
+  { "free-final", case_free_final, 1 },
   { "large-barrier", case_large_barrier, 1 },
   { "large-stubborn", case_large_stubborn, 1 },
   { "large-stack", case_large_stack, 1 },
