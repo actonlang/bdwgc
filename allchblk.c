@@ -631,25 +631,115 @@ GC_adjust_num_unmapped(struct hblk *h, const hdr *hhdr)
 #  endif
 }
 
-GC_INNER void
-GC_unmap_old(unsigned threshold)
-{
-  size_t i;
+#  ifndef UNMAP_PIECE_BYTES
+/*
+ * The most memory `GC_unmap_old()` unmaps in one call of `GC_unmap()`
+ * before it calls a stop function other than `GC_never_stop_func` (see
+ * `unmap_block()`), a multiple of `HBLK_PAGE_SIZE`.
+ */
+#    define UNMAP_PIECE_BYTES ((size_t)32 << 20)
+#  endif
 
+/*
+ * Split the free block `h` with the header `hhdr`, on the free list
+ * `index`, at `rest`, a block address inside it up to which the memory is
+ * unmapped: `h` becomes an unmapped free block, `rest` a mapped one as old
+ * as `h`.  Lower `*pindex` to the free list of `rest` if that is lower.
+ * Return false if the header of `rest` cannot be allocated (then nothing
+ * is changed).
+ */
+static GC_bool
+split_unmapped_part(struct hblk *h, hdr *hhdr, size_t index, struct hblk *rest,
+                    size_t *pindex)
+{
+  hdr *rest_hdr;
+  size_t rest_index;
+
+  GC_ASSERT(IS_MAPPED(hhdr));
+  GC_ASSERT(ADDR_LT((ptr_t)h, (ptr_t)rest)
+            && ADDR_LT((ptr_t)rest, (ptr_t)h + hhdr->hb_sz));
+  rest_hdr = GC_install_header(rest);
+  if (UNLIKELY(NULL == rest_hdr))
+    return FALSE;
+  GC_remove_from_fl_at(hhdr, index);
+  rest_hdr->hb_block = rest;
+  rest_hdr->hb_sz = hhdr->hb_sz - (size_t)((ptr_t)rest - (ptr_t)h);
+  rest_hdr->hb_flags = 0;
+  rest_hdr->hb_last_reclaimed = hhdr->hb_last_reclaimed;
+  hhdr->hb_sz -= rest_hdr->hb_sz;
+  GC_adjust_num_unmapped(h, hhdr);
+  hhdr->hb_flags |= WAS_UNMAPPED;
+  GC_add_to_fl(h, hhdr);
+  GC_add_to_fl(rest, rest_hdr);
+  rest_index = GC_hblk_fl_from_blocks(divHBLKSZ(rest_hdr->hb_sz));
+  if (rest_index < *pindex)
+    *pindex = rest_index;
+  return TRUE;
+}
+
+/*
+ * Unmap the free block `h` with the header `hhdr`, on the free list
+ * `index`: in one call if `stop_func` is `GC_never_stop_func`, else in
+ * pieces of at most `UNMAP_PIECE_BYTES`, calling `stop_func` after each
+ * piece but the last.  If it returns true, then the unmapped first part
+ * of the block is split off (see `split_unmapped_part()`), and the result
+ * is false.
+ */
+static GC_bool
+unmap_block(struct hblk *h, hdr *hhdr, size_t index, size_t *pindex,
+            GC_stop_func stop_func)
+{
+  ptr_t piece = (ptr_t)h;
+  ptr_t block_end = piece + hhdr->hb_sz;
+
+  for (;;) {
+    /*
+     * The pieces end at multiples of `HBLK_PAGE_SIZE`, thus the pieces
+     * unmap together the same pages as `GC_unmap()` of the whole block,
+     * and a split at the end of a piece leaves no page unmapped in the
+     * rest.
+     */
+    ptr_t piece_end = PTR_ALIGN_UP(piece, HBLK_PAGE_SIZE);
+
+    if (stop_func == GC_never_stop_func || ADDR_GE(piece_end, block_end)
+        || (size_t)(block_end - piece_end) <= UNMAP_PIECE_BYTES) {
+      GC_unmap(piece, (size_t)(block_end - piece));
+      break;
+    }
+    piece_end += UNMAP_PIECE_BYTES;
+    GC_unmap(piece, (size_t)(piece_end - piece));
+    piece = piece_end;
+    if ((*stop_func)()) {
+      if (split_unmapped_part(h, hhdr, index, (struct hblk *)piece, pindex))
+        return FALSE;
+      /* The rest cannot become a block of its own; unmap all of it. */
+      stop_func = GC_never_stop_func;
+    }
+  }
+  GC_adjust_num_unmapped(h, hhdr);
+  hhdr->hb_flags |= WAS_UNMAPPED;
+  return TRUE;
+}
+
+GC_INNER GC_bool
+GC_unmap_old(unsigned threshold, size_t *pindex, GC_stop_func stop_func)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  GC_ASSERT(UNMAP_PIECE_BYTES % HBLK_PAGE_SIZE == 0);
 #  ifdef COUNT_UNMAPPED_REGIONS
   /*
    * Skip unmapping if we have already exceeded the soft limit.
    * This forgoes any opportunities to merge unmapped regions though.
    */
   if (GC_num_unmapped_regions >= GC_UNMAPPED_REGIONS_SOFT_LIMIT)
-    return;
+    return TRUE;
 #  endif
 
-  for (i = 0; i <= N_HBLK_FLS; ++i) {
+  for (; *pindex <= N_HBLK_FLS; ++(*pindex)) {
     struct hblk *h;
     hdr *hhdr;
 
-    for (h = GC_hblkfreelist[i]; h != NULL; h = hhdr->hb_next) {
+    for (h = GC_hblkfreelist[*pindex]; h != NULL; h = hhdr->hb_next) {
       hhdr = HDR(h);
       if (!IS_MAPPED(hhdr))
         continue;
@@ -667,19 +757,21 @@ GC_unmap_old(unsigned threshold)
          * of regions.
          */
         int delta = calc_num_unmapped_regions_delta(h, hhdr);
-        GC_signed_word regions = GC_num_unmapped_regions + delta;
 
-        if (delta >= 0 && regions >= GC_UNMAPPED_REGIONS_SOFT_LIMIT) {
+        if (delta >= 0
+            && GC_num_unmapped_regions + delta
+                   >= GC_UNMAPPED_REGIONS_SOFT_LIMIT) {
           GC_COND_LOG_PRINTF("Unmapped regions limit reached!\n");
-          return;
+          return TRUE;
         }
-        GC_num_unmapped_regions = regions;
 #  endif
-        GC_unmap((ptr_t)h, hhdr->hb_sz);
-        hhdr->hb_flags |= WAS_UNMAPPED;
+        if (!unmap_block(h, hhdr, *pindex, pindex, stop_func)
+            || (*stop_func)())
+          return FALSE;
       }
     }
   }
+  return TRUE;
 }
 
 GC_INNER GC_bool

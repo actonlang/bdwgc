@@ -4179,10 +4179,18 @@ GC_INNER void GC_debug_free_inner(void *p);
 #ifdef USE_MUNMAP
 
 /*
- * Unmap blocks that have not been recently touched.  This is the only
- * way blocks are ever unmapped.
+ * Unmap the free blocks which have been free for at least `threshold`
+ * collections, from the free list `*pindex` on, until `stop_func` returns
+ * true, which is called after each block and after each piece of at most
+ * `UNMAP_PIECE_BYTES` of it (a block is unmapped in one piece if
+ * `stop_func` is `GC_never_stop_func`).  A block whose unmapping stops is
+ * split into its unmapped first part and a mapped rest of the same age.
+ * Return whether every such block is unmapped; otherwise `*pindex` is the
+ * free list to resume with.  This is the only way blocks are ever
+ * unmapped.
  */
-GC_INNER void GC_unmap_old(unsigned threshold);
+GC_INNER GC_bool GC_unmap_old(unsigned threshold, size_t *pindex,
+                              GC_stop_func stop_func);
 
 /*
  * Merge all unmapped blocks that are adjacent to other free blocks.

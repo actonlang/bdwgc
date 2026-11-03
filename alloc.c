@@ -876,6 +876,24 @@ start_mark(void)
   }
 }
 
+#ifdef USE_MUNMAP
+/* Whether the free blocks old enough are unmapped after a collection. */
+#  define UNMAP_ON()                                            \
+    (GC_unmap_threshold > 0    /*< memory unmapping enabled? */ \
+     && LIKELY(GC_gc_no != 1)) /*< do not unmap during `GC_init` */
+
+/*
+ * Unmap the free blocks old enough (see `GC_unmap_old()`) from the free
+ * list `*pindex` on, until `stop_func` returns true.  Return whether all
+ * of them are unmapped.
+ */
+static GC_bool
+unmap_old_blocks(size_t *pindex, GC_stop_func stop_func)
+{
+  return GC_unmap_old(GC_unmap_threshold, pindex, stop_func);
+}
+#endif
+
 #ifdef PARALLEL_MARK_DEADLINE
 /*
  * Set the allocation volume after which the next step, or the next chunk
@@ -959,6 +977,19 @@ setup_stop_func(void)
   ns = NS_FRAC_TIME_DIFF(now, GC_start_time);
   return ms > GC_time_limit || (ms == GC_time_limit && ns >= GC_time_lim_nsec);
 }
+
+#  ifdef USE_MUNMAP
+/*
+ * The stop function of the chunks of the unmapping: true once the time
+ * limit has passed since `GC_start_time`.  It is called after each call
+ * of `GC_unmap()`, which costs much more than reading the clock.
+ */
+static int GC_CALLBACK
+unmap_stop_func(void)
+{
+  return us_since(GC_start_time) >= time_limit_us();
+}
+#  endif
 
 /*
  * Run a chunk of the pending set-up, from `GC_start_time` until the time
@@ -1082,24 +1113,42 @@ STATIC word GC_clear_fl_marks(ptr_t *pq, GC_bool clear_links,
  *     blocks on the reclaim lists `pending_rl`, which the allocator gets
  *     when the walk is done; a block freed or set up meanwhile is below
  *     `walk_next` or skipped;
- *   - `FINISH_REST`: the unmapping and the rest of the finish.
- * The walk (from `FINISH_WALK_START`) and the rest each start in the
- * chunk that completes the phase before if less than half of the time
- * limit has passed, else in the next chunk.  A chunk is due after
- * a quarter of the allocation volume between two steps, and at the latest
- * a quarter of the time limit after the end of the previous chunk:
- * meanwhile the allocator cannot reuse the memory the collection found
- * free, thus the chunks run closer together than the steps of the
- * marking.  No collection starts while the finish is pending;
- * `GC_try_to_collect_inner()` completes it at once.  Protected by the
- * allocator lock.
+ *   - `FINISH_REST`: the rest of the finish (the logging, the trigger of
+ *     the next collection);
+ *   - `FINISH_UNMAP`: the unmapping of the free blocks old enough, from
+ *     the free list `unmap_list` (see `GC_unmap_old()`); the allocator and
+ *     the heap growth work as without a pending finish meanwhile.
+ * The walk (from `FINISH_WALK_START`), the rest and the unmapping each
+ * start in the chunk that completes the phase before if less than half of
+ * the time limit has passed, else in the next chunk.  Until the
+ * unmapping, a chunk is due after a quarter of the allocation volume
+ * between two steps, and at the latest a quarter of the time limit after
+ * the end of the previous chunk: meanwhile the allocator cannot reuse the
+ * memory the collection found free, thus the chunks run closer together
+ * than the steps of the marking.  A chunk of the unmapping is due the time
+ * limit after the end of the previous one, so that the client keeps at
+ * least half of the time.  No collection starts while the finish is
+ * pending, except that a collection that is due ends the unmapping after
+ * its first chunk (the blocks left are unmapped after a later
+ * collection); `GC_try_to_collect_inner()` completes the finish at once.
+ * Protected by the allocator lock.
  */
 #  define FINISH_NONE 0
 #  define FINISH_CLEAR 1
 #  define FINISH_WALK_START 2
 #  define FINISH_WALK 3
 #  define FINISH_REST 4
+#  define FINISH_UNMAP 5
 static int finish_phase = FINISH_NONE;
+
+#  ifdef USE_MUNMAP
+/*
+ * In the `FINISH_UNMAP` phase, the free list to resume the unmapping
+ * with, and whether a chunk of the unmapping has run.
+ */
+static size_t unmap_list = 0;
+static GC_bool unmap_chunk_ran = FALSE;
+#  endif
 
 /* In the `FINISH_WALK` phase, the first block not visited yet. */
 static struct hblk *walk_next = NULL;
@@ -1234,6 +1283,24 @@ half_limit_left(GC_bool unlimited)
   return unlimited || 2 * us_since(GC_start_time) < time_limit_us();
 }
 
+#  ifdef USE_MUNMAP
+/*
+ * Run a chunk of the unmapping of the pending finish until the time limit
+ * since `GC_start_time` (or to the end if `unlimited`).  Return whether
+ * the unmapping is complete.
+ */
+static GC_bool
+run_unmap_chunk(GC_bool unlimited)
+{
+  GC_ASSERT(FINISH_UNMAP == finish_phase);
+  unmap_chunk_ran = TRUE;
+  /* Unmapping may have been turned off meanwhile. */
+  return 0 == GC_unmap_threshold
+         || unmap_old_blocks(&unmap_list,
+                             unlimited ? GC_never_stop_func : unmap_stop_func);
+}
+#  endif
+
 /*
  * Run a chunk of the pending finish until the time limit since
  * `GC_start_time` (or to the end if `unlimited`).
@@ -1271,7 +1338,19 @@ run_finish_chunk(GC_bool unlimited)
   if (FINISH_REST == finish_phase && half_limit_left(unlimited)) {
     finish_phase = FINISH_NONE;
     finish_rest(finish_full);
+#  ifdef USE_MUNMAP
+    if (UNMAP_ON()) {
+      finish_phase = FINISH_UNMAP;
+      unmap_list = 0;
+      unmap_chunk_ran = FALSE;
+    }
+#  endif
   }
+#  ifdef USE_MUNMAP
+  if (FINISH_UNMAP == finish_phase && half_limit_left(unlimited)
+      && run_unmap_chunk(unlimited))
+    finish_phase = FINISH_NONE;
+#  endif
   if (FINISH_PENDING()) {
     GET_TIME(setup_chunk_end);
     pace_next_slice();
@@ -1295,6 +1374,10 @@ finish_chunk_due(void)
 {
   word allocd = allocd_now();
 
+#  ifdef USE_MUNMAP
+  if (FINISH_UNMAP == finish_phase)
+    return us_since(setup_chunk_end) >= time_limit_us();
+#  endif
   return allocd - allocd_at_slice >= slice_bytes / 4
          || allocd < allocd_at_slice
          || 4 * us_since(setup_chunk_end) >= time_limit_us();
@@ -1737,6 +1820,18 @@ GC_collect_a_little_inner(size_t n_blocks)
     }
     RESTORE_CANCEL_FOR_WORK(cancel_state);
 #ifdef PARALLEL_MARK_DEADLINE
+#  ifdef USE_MUNMAP
+  } else if (FINISH_UNMAP == finish_phase && unmap_chunk_ran && !GC_dont_gc
+             && GC_should_collect()) {
+    /*
+     * A collection that is due ends the unmapping of the previous one
+     * after its first chunk.
+     */
+    DISABLE_CANCEL_FOR_WORK(cancel_state);
+    finish_phase = FINISH_NONE;
+    GC_maybe_gc();
+    RESTORE_CANCEL_FOR_WORK(cancel_state);
+#  endif
   } else if (FINISH_PENDING()) {
     /* The finish of a collection proceeds even if collections are disabled. */
     if (finish_chunk_due()) {
@@ -2579,23 +2674,27 @@ GC_finish_collection(void)
   if (GC_WBAR_SWEEPS_ALL())
     (void)GC_reclaim_all((GC_stop_func)0, FALSE);
 #endif
+#ifdef USE_MUNMAP
+  if (UNMAP_ON()) {
+    size_t index = 0;
+
+    (void)unmap_old_blocks(&index, GC_never_stop_func);
+  }
+#endif
   finish_rest(full);
 }
 
 /*
  * The rest of `GC_finish_collection()` after the walk of the blocks: the
- * unmapping, the logging and the trigger of the next collection, for
- * a full collection if `full`.
+ * logging and the trigger of the next collection, for a full collection
+ * if `full`.  The unmapping of the free blocks precedes it in a finish at
+ * once, and follows it in a finish in chunks.
  */
 static void
 finish_rest(GC_bool full)
 {
   GC_ASSERT(I_HOLD_LOCK());
 #ifdef USE_MUNMAP
-  if (GC_unmap_threshold > 0    /*< memory unmapping enabled? */
-      && LIKELY(GC_gc_no != 1)) /*< do not unmap during `GC_init` */
-    GC_unmap_old(GC_unmap_threshold);
-
   GC_ASSERT(GC_heapsize >= GC_unmapped_bytes);
 #endif
   GC_ASSERT(GC_our_mem_bytes >= GC_heapsize);
@@ -3349,8 +3448,11 @@ GC_collect_or_expand(word needed_blocks, unsigned flags, GC_bool retry)
    * on no range lying in any free block (`GC_free` drops those that start
    * in a large object which it frees, e.g. the old object of a `GC_realloc`).
    */
-  if (GC_unmap_threshold > 1 && !GC_collection_in_progress())
-    GC_unmap_old(0);
+  if (GC_unmap_threshold > 1 && !GC_collection_in_progress()) {
+    size_t index = 0;
+
+    (void)GC_unmap_old(0, &index, GC_never_stop_func);
+  }
 #endif
   if (!GC_expand_hp_inner(blocks_to_get)
       && (fallback_blocks >= blocks_to_get || fallback_blocks == needed_blocks

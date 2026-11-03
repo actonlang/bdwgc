@@ -941,6 +941,7 @@ pub fn build(b: *std.Build) void {
             .env_runs = &.{.{ .name = "GC_WBAR_VERIFY", .value = "1" }},
         });
         addTest(b, gc, test_step, flags, "collectwaittest", "tests/collectwait.c");
+        addTest(b, gc, test_step, flags, "unmapchunkstest", "tests/unmapchunks.c");
         addTest(b, gc, test_step, flags, "subthreadcreatetest", "tests/subthreadcreate.c");
         addTest(b, gc, test_step, flags, "threadleaktest", "tests/threadleak.c");
         addTest(b, gc, test_step, flags, "threadwarmuptest", "tests/threadwarmup.c");
