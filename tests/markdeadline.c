@@ -261,11 +261,17 @@ check_near_deadline(void)
  * if the thread is preempted meanwhile).  On Windows it counts
  * milliseconds: a phase stops at a deadline less than 1 ms after its start
  * only when the clock advances, and a world-stopped mark with a time limit
- * of 0.1 ms runs until then, often to the end of its marking.
+ * of 0.1 ms runs until then, often to the end of its marking.  With
+ * `BSD_TIME` the result is false without a try: the clock reads the user
+ * time of the process (`getrusage()`), which advances in small steps in
+ * such a loop but may stay the same over a whole world-stopped mark.
  */
 static GC_bool
 fine_clock(void)
 {
+#  ifdef BSD_TIME
+  return FALSE;
+#  else
   int i;
 
   for (i = 0; i < 10; i++) {
@@ -282,6 +288,7 @@ fine_clock(void)
       return TRUE;
   }
   return FALSE;
+#  endif
 }
 
 static struct node *
