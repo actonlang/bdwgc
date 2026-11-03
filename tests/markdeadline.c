@@ -54,7 +54,20 @@
  * allocated since the previous call of `GC_collect_a_little_inner()`),
  * and leave no deadline set.  The checks with the time limit of 0.1 ms are
  * skipped if the clock of the collector does not resolve it (on Windows
- * it counts milliseconds).  The trees must stay intact.
+ * it counts milliseconds).  The set-up of a full collection then runs in
+ * chunks with a time limit of 1 ns (see `continue_full_setup()`): a chunk
+ * must stop before the set-up is complete (except on Windows, where the
+ * clock of the collector counts milliseconds, and with `BSD_TIME`, where
+ * it reads the user time of the process), the first world-stopped
+ * mark must be due after the chunk that completes it, and no block but
+ * those of uncollectable objects may keep a mark bit then.  The next chunk
+ * must be due once `slice_bytes` were allocated since the latest one, and
+ * not earlier, or once the time limit has passed since its end, and none
+ * may run while the collections are disabled.  With a time limit of 10 s,
+ * the due first world-stopped mark must run, and the first world-stopped
+ * mark of a set-up must follow in the chunk that completes it.  With POSIX
+ * threads, the clearing of the mark bits and the first world-stopped mark
+ * must wait for a builder of a free list.  The trees must stay intact.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -534,6 +547,33 @@ set_time_limit(unsigned long ms, unsigned long ns)
   GC_set_time_limit_tv(tv);
 }
 
+/* Spin until `us` microseconds have passed since `start`. */
+static void
+wait_us_since(CLOCK_TYPE start, unsigned long us)
+{
+  while (us_since(start) < us) {
+    /* Empty. */
+  }
+}
+
+/*
+ * Start a collection and run its set-up (see `SETUP_PENDING()`) until its
+ * first world-stopped mark: every collection is full.
+ */
+static void
+start_collection(void)
+{
+  IF_CANCEL(int cancel_state;)
+
+  GC_start_incremental_collection();
+  LOCK();
+  DISABLE_CANCEL(cancel_state);
+  while (SETUP_PENDING())
+    continue_full_setup();
+  RESTORE_CANCEL(cancel_state);
+  UNLOCK();
+}
+
 /* Complete the collection in progress, if any. */
 static void
 complete_collection(void)
@@ -549,7 +589,7 @@ static void
 check_stopped_marks(void)
 {
   set_time_limit(50, 0);
-  GC_start_incremental_collection();
+  start_collection();
   complete_collection();
   printf("Collection with a time limit of 50 ms: %lu world-stopped marks,"
          " %lu with a parallel mark phase\n",
@@ -565,7 +605,7 @@ static void
 check_abandoned_mark(void)
 {
   set_time_limit(0, 100000);
-  GC_start_incremental_collection();
+  start_collection();
   LOCK();
   CHECK(GC_collection_in_progress());
   CHECK(!GC_mark_deadline_on);
@@ -586,7 +626,7 @@ check_step_trigger(void)
   GC_bool enough;
 
   /* The time limit is 0.1 ms, thus the collection stays in progress. */
-  GC_start_incremental_collection();
+  start_collection();
   /* Allocate more than `slice_bytes`, without marking. */
   GC_disable();
   do {
@@ -618,6 +658,201 @@ check_step_trigger(void)
   UNLOCK();
   complete_collection();
 }
+
+/* Count the blocks with marked objects, except uncollectable ones. */
+static void
+count_marked_block(hdr *hhdr, void *client_data)
+{
+  if (!IS_UNCOLLECTABLE(hhdr->hb_obj_kind) && hhdr->hb_n_marks != 0)
+    ++*(unsigned long *)client_data;
+}
+
+/*
+ * Check the chunks of the set-up of a full collection, started as
+ * `GC_maybe_gc()` starts it, and when the first world-stopped mark of the
+ * collection runs.
+ */
+static void
+check_setup_chunks(void)
+{
+  unsigned long n_marked_blocks = 0;
+  unsigned long marks;
+  GC_bool enough;
+  IF_CANCEL(int cancel_state;)
+
+  complete_collection();
+  LOCK();
+  DISABLE_CANCEL(cancel_state);
+  CHECK(!GC_collection_in_progress() && !SETUP_PENDING());
+  /* A chunk stops once it reads the clock. */
+  set_time_limit(0, 1);
+  setup_phase = SETUP_SWEEP;
+  continue_full_setup();
+#  if !defined(_WIN32) && !defined(BSD_TIME)
+  /*
+   * The clock of the collector counts milliseconds on Windows
+   * (`GetTickCount64()`), and with `BSD_TIME` it reads the user time of the
+   * process (`getrusage()`), which may stay the same over several reads,
+   * thus a time limit of 1 ns lasts until the clock advances there.
+   */
+  CHECK(SETUP_SWEEP == setup_phase || SETUP_CLEAR == setup_phase);
+#  endif
+  while (SETUP_SWEEP == setup_phase || SETUP_CLEAR == setup_phase)
+    continue_full_setup();
+  /* The chunk that completed the set-up took more than half the limit. */
+  CHECK(SETUP_MARK == setup_phase);
+  GC_apply_to_all_hdrs(count_marked_block, &n_marked_blocks);
+  CHECK(0 == n_marked_blocks);
+  RESTORE_CANCEL(cancel_state);
+  UNLOCK();
+
+  /* Allocate more than `slice_bytes`, with the first mark left due. */
+  GC_disable();
+  do {
+    CHECK(GC_MALLOC_ATOMIC(ALLOC_CHUNK_BYTES) != NULL);
+    LOCK();
+    enough = allocd_now() > slice_bytes;
+    UNLOCK();
+  } while (!enough);
+  CHECK(!GC_collect_a_little());
+  GC_enable();
+
+  LOCK();
+  DISABLE_CANCEL(cancel_state);
+  CHECK(SETUP_MARK == setup_phase);
+  CHECK(slice_bytes > 0);
+  /*
+   * With a time limit of 10 s, the next chunk is due once `slice_bytes`
+   * were allocated since the latest one, and not earlier.
+   */
+  set_time_limit(10000, 0);
+  GET_TIME(setup_chunk_end);
+  allocd_at_slice = allocd_now() - (slice_bytes - 1);
+  CHECK(!setup_chunk_due());
+  allocd_at_slice = allocd_now() - slice_bytes;
+  CHECK(setup_chunk_due());
+  /* With nothing allocated, it is due once the time limit has passed. */
+  set_time_limit(0, 1000);
+  allocd_at_slice = allocd_now();
+  GET_TIME(setup_chunk_end);
+  wait_us_since(setup_chunk_end, 2);
+  CHECK(setup_chunk_due());
+
+  /* With a time limit of 10 s, the first mark that is due runs. */
+  set_time_limit(10000, 0);
+  marks = n_stopped_marks;
+  continue_full_setup();
+  CHECK(!SETUP_PENDING() && n_stopped_marks > marks);
+  RESTORE_CANCEL(cancel_state);
+  UNLOCK();
+  complete_collection();
+
+  /* The first mark follows in the chunk that completes the set-up. */
+  LOCK();
+  DISABLE_CANCEL(cancel_state);
+  marks = n_stopped_marks;
+  setup_phase = SETUP_SWEEP;
+  continue_full_setup();
+  CHECK(!SETUP_PENDING() && n_stopped_marks > marks);
+  RESTORE_CANCEL(cancel_state);
+  UNLOCK();
+  complete_collection();
+  set_time_limit(0, 100000);
+  printf("Chunks of the set-up of a full collection checked\n");
+}
+
+#  ifdef GC_PTHREADS
+/*
+ * Whether the builder has registered itself, and the set-up phase and the
+ * world stops that it saw when it left.
+ */
+static volatile int builder_entered;
+static volatile int builder_saw_phase;
+static volatile unsigned long builder_saw_stops;
+
+/*
+ * A builder of a free list: it registers itself as one, as
+ * `GC_generic_malloc_many()` does, and leaves 20 ms later.
+ */
+static void *
+builder(void *arg)
+{
+  CLOCK_TYPE start;
+
+  (void)arg;
+  LOCK();
+  GC_fl_builder_enter();
+  UNLOCK();
+  builder_entered = 1;
+  GET_TIME(start);
+  wait_us_since(start, 20000);
+  builder_saw_phase = setup_phase;
+  builder_saw_stops = n_stops;
+  GC_fl_builder_leave();
+  return NULL;
+}
+
+/*
+ * Run the set-up from `phase` with a time limit of 10 s, which completes
+ * it with the first world-stopped mark, while a builder of a free list
+ * works, and return the set-up phase that the builder saw when it left.
+ * The world must not stop before the builder leaves.
+ */
+static int
+setup_with_builder(int phase)
+{
+  pthread_t th;
+  unsigned long stops;
+  IF_CANCEL(int cancel_state;)
+
+  set_time_limit(10000, 0);
+  builder_entered = 0;
+  CHECK(pthread_create(&th, NULL, builder, NULL) == 0);
+  while (!builder_entered) {
+    /* Empty. */
+  }
+  LOCK();
+  DISABLE_CANCEL(cancel_state);
+  stops = n_stops;
+  setup_phase = phase;
+  continue_full_setup();
+  CHECK(!SETUP_PENDING());
+  RESTORE_CANCEL(cancel_state);
+  UNLOCK();
+  CHECK(pthread_join(th, NULL) == 0);
+  CHECK(builder_saw_stops == stops);
+  complete_collection();
+  return builder_saw_phase;
+}
+
+/*
+ * Check that the clearing of the mark bits and the first world-stopped
+ * mark of a set-up wait for the builders of free lists, which read the
+ * mark bits without the allocator lock.
+ */
+static void
+check_setup_builders(void)
+{
+  IF_CANCEL(int cancel_state;)
+
+  complete_collection();
+  CHECK(SETUP_SWEEP == setup_with_builder(SETUP_SWEEP));
+  LOCK();
+  DISABLE_CANCEL(cancel_state);
+  set_time_limit(0, 1);
+  setup_phase = SETUP_SWEEP;
+  while (SETUP_SWEEP == setup_phase || SETUP_CLEAR == setup_phase)
+    continue_full_setup();
+  CHECK(SETUP_MARK == setup_phase);
+  /* No chunk is due by the time limit until the builder works. */
+  set_time_limit(10000, 0);
+  RESTORE_CANCEL(cancel_state);
+  UNLOCK();
+  (void)setup_with_builder(SETUP_MARK);
+  set_time_limit(0, 100000);
+  printf("Builders of free lists during the set-up checked\n");
+}
+#  endif
 
 int
 main(void)
@@ -705,6 +940,10 @@ main(void)
         printf("The clock does not resolve 0.1 ms, the checks with that"
                " time limit skipped\n");
       }
+      check_setup_chunks();
+#  ifdef GC_PTHREADS
+      check_setup_builders();
+#  endif
       for (t = 0; t < N_TREES; t++)
         CHECK(check_tree(trees[t], (GC_word)t + 1, 0, 0) == nodes_per_tree);
     } else {

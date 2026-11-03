@@ -369,10 +369,25 @@ GC_is_marked(const void *p)
 GC_INNER void
 GC_clear_marks(void)
 {
+  GC_apply_to_all_hdrs(clear_marks_for_hdr, NULL);
+  GC_end_clear_marks();
+}
+
+#ifdef PARALLEL_MARK_DEADLINE
+GC_INNER GC_bool
+GC_clear_marks_from(struct hblk **pnext, GC_stop_func stop_func)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  return GC_apply_to_hdrs_from(pnext, clear_marks_for_hdr, NULL, stop_func);
+}
+#endif
+
+GC_INNER void
+GC_end_clear_marks(void)
+{
   /* The initialization is needed for `GC_push_roots()`. */
   GC_ASSERT(GC_is_initialized);
 
-  GC_apply_to_all_hdrs(clear_marks_for_hdr, NULL);
   GC_objects_are_marked = FALSE;
   GC_mark_state = MS_INVALID;
   GC_scan_ptr = NULL;

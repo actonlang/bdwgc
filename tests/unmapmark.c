@@ -79,10 +79,26 @@
 #define MAX_BLOCK (64 * 1024)
 
 /*
- * The calls of `GC_collect_a_little()` at most to start the marking, and
- * to mark the scanned object.
+ * The calls of `GC_collect_a_little()` at most to start the marking.  The
+ * set-up of the collection runs in chunks, and the loop allocates nothing:
+ * once a chunk does not complete the set-up, or ends after half of the time
+ * limit, the next chunk or the first world-stopped mark is due only when
+ * the time limit has passed since the end of that chunk.  The clock of the
+ * collector counts milliseconds on Windows (`GetTickCount64()`), so there
+ * the wait lasts until its next tick, up to 15.6 ms or several hundred
+ * thousand calls.
  */
-#define MAX_START_CALLS 100000
+#ifdef _WIN32
+#  define MAX_START_CALLS 100000000
+#else
+#  define MAX_START_CALLS 100000
+#endif
+
+/*
+ * The calls of `GC_collect_a_little()` at most to mark the scanned object.
+ * They run steps, as nothing is allocated.
+ */
+#define MAX_MARK_CALLS 100000
 
 static GC_word *volatile scanned;
 
@@ -151,7 +167,7 @@ run_cycle(int steps)
   for (i = 0; n_mark_starts == starts + 1 && n_mark_ends == ends
               && NULL == GC_call_with_alloc_lock(is_marked, scanned);
        i++) {
-    CHECK(i < MAX_START_CALLS);
+    CHECK(i < MAX_MARK_CALLS);
     (void)GC_collect_a_little();
   }
   for (i = 0; i < steps && n_mark_starts == starts + 1 && n_mark_ends == ends;
