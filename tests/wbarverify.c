@@ -984,11 +984,13 @@ fine_clock(void)
   int i;
 
   for (i = 0; i < 10; i++) {
-    CLOCK_TYPE start, now;
+    CLOCK_TYPE start;
     unsigned long us;
 
     GET_TIME(start);
     do {
+      CLOCK_TYPE now;
+
       GET_TIME(now);
       us = MS_TIME_DIFF(now, start) * 1000UL
            + NS_FRAC_TIME_DIFF(now, start) / 1000UL;
