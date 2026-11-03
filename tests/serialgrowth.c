@@ -488,10 +488,20 @@ check_data(void)
   }
 }
 
-/* The object with a finalizer, which refers to a list. */
+/*
+ * The object with a finalizer, which refers to a list.  The padding gives
+ * it a size that no other object of the test has (7 granules), so that
+ * it is not in a block of 2-granule objects: after dropped entries the
+ * collector scans such a block for its marked objects and keeps, in
+ * a stack frame, the address just past the last marked object of each run
+ * of 64 granules.  The stack of the collecting thread is pushed as a range
+ * and scanned later, so if the object below this one is marked (by a stale
+ * word, say), the marking may find the address of this one.
+ */
 struct holder_s {
   void **list;
   GC_word len;
+  GC_word pad[10];
 };
 
 static size_t fin_list_len;
