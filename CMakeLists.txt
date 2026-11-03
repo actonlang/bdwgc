@@ -1390,6 +1390,10 @@ if(BUILD_TESTING)
         target_link_libraries(finalstoptest PRIVATE gc ${THREADDLLIBS_LIST})
         add_test(NAME finalstoptest COMMAND finalstoptest)
 
+        add_executable(fullsetuptest tests/fullsetup.c ${NODIST_SRC})
+        target_link_libraries(fullsetuptest PRIVATE gc ${THREADDLLIBS_LIST})
+        add_test(NAME fullsetuptest COMMAND fullsetuptest)
+
         if(NOT WIN32)
             add_executable(forktest tests/fork.c ${NODIST_SRC})
             target_link_libraries(

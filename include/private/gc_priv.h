@@ -3197,6 +3197,12 @@ GC_INNER void GC_mark_init(void);
 GC_INNER void GC_clear_marks(void);
 
 /*
+ * Set the marker state after the mark bits of every block were cleared by
+ * `GC_clear_marks_from()`, as `GC_clear_marks()` sets it.
+ */
+GC_INNER void GC_end_clear_marks(void);
+
+/*
  * Tell the marker that marked objects may point to unmarked ones, and
  * roots may point to unmarked objects.  Switch the mark phase to
  * `MS_INVALID` and reset the mark stack.  Also, if `ENABLE_DISCLAIM` is
@@ -5225,6 +5231,36 @@ GC_INNER void GC_clear_mark_deadline(void);
 
 /* Whether a parallel mark phase has stopped at the deadline. */
 GC_INNER GC_bool GC_mark_deadline_reached(void);
+
+/*
+ * Called by `GC_enqueue_all_finalizers()`, which marks objects with no
+ * collection in progress: a pending set-up of a full collection that has
+ * cleared mark bits clears them all again, as its marking starts from no
+ * marked object.  The allocator lock is held.
+ */
+GC_INNER void GC_redo_mark_clearing(void);
+
+/*
+ * Call `fn` on the header of every block in use from `*pnext` on (from
+ * the lowest address if `NULL`), in the ascending order of addresses,
+ * until `stop_func` returns true (called once per `GC_HDR_WALK_CHECK`
+ * entries of the header index).  Return whether every such block was
+ * visited; otherwise store the first block not visited into `*pnext`, for
+ * a later call, which skips the blocks allocated below it in between.
+ * `fn` should not modify the headers of the blocks not visited yet.
+ */
+GC_INNER GC_bool GC_apply_to_hdrs_from(struct hblk **pnext, GC_walk_hdr_fn fn,
+                                       void *client_data,
+                                       GC_stop_func stop_func);
+#    define GC_HDR_WALK_CHECK 64
+
+/*
+ * `GC_apply_to_hdrs_from()` that clears the mark bits of each block, as
+ * `GC_clear_marks()` does, but not the marker state, which
+ * `GC_end_clear_marks()` sets once every block is cleared.
+ */
+GC_INNER GC_bool GC_clear_marks_from(struct hblk **pnext,
+                                     GC_stop_func stop_func);
 #  endif
 
 /*

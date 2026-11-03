@@ -355,6 +355,17 @@ allocd_now(void)
 {
   return GC_bytes_allocd + (word)AO_load(&GC_bytes_allocd_tmp);
 }
+
+/* The microseconds from `start` until now. */
+static unsigned long
+us_since(CLOCK_TYPE start)
+{
+  CLOCK_TYPE now;
+
+  GET_TIME(now);
+  return MS_TIME_DIFF(now, start) * 1000UL
+         + NS_FRAC_TIME_DIFF(now, start) / 1000UL;
+}
 #endif
 
 #if defined(GC_DISABLE_INCREMENTAL) || defined(NO_CLOCK)
@@ -837,6 +848,212 @@ void GC_check_tls(void);
 #endif
 
 /*
+ * Start the marking of the collection in progress with a world-stopped
+ * mark, and finish the collection if the marking completes.  If we run
+ * out of time, then this turns into an incremental marking.  The time
+ * limit counts from `GC_start_time`.
+ */
+static void
+start_mark(void)
+{
+  /* Allow parallel marking without a timeout or custom stop function. */
+  if (GC_stopped_mark(GC_time_limit == GC_TIME_UNLIMITED
+                              && GC_default_stop_func == GC_never_stop_func
+                          ? GC_never_stop_func
+                          : GC_timeout_stop_func)) {
+    SAVE_CALLERS_TO_LAST_STACK();
+    GC_finish_collection();
+  } else if (!GC_is_full_gc) {
+    /* Count this as the first attempt. */
+    GC_n_attempts++;
+  }
+}
+
+#ifdef PARALLEL_MARK_DEADLINE
+/*
+ * Set the allocation volume after which the next step, or the next chunk
+ * of the set-up of a full collection, is due: the allocation budget
+ * divided by twice the slices of the previous collection (by 8 at least),
+ * so that a marking of as many slices completes within half the budget.
+ */
+static void
+pace_next_slice(void)
+{
+  allocd_at_slice = allocd_now();
+  slice_bytes
+      = min_bytes_allocd() / (prev_n_slices > 4 ? 2 * (word)prev_n_slices : 8);
+}
+
+/*
+ * The set-up of a full collection: the blocks left unswept since the
+ * previous collection are swept or dropped (see `GC_reclaim_all()`), as
+ * the sweep reads the mark bits, then the mark bits of every block are
+ * cleared.  With world-stopped steps (see `steps_on()`) and a time limit,
+ * the set-up runs in chunks, each holding the allocator lock for at most
+ * the time limit, due after the allocation volume between two steps, and
+ * at the latest the time limit after the end of the previous chunk (a call of
+ * `GC_collect_a_little_inner()` with nothing allocated since the previous one
+ * makes a step due, not a chunk).  The phases:
+ *   - `SETUP_SWEEP`: the blocks of the reclaim lists are swept, also by
+ *     the allocator, as the mark bits are still those of the previous
+ *     collection;
+ *   - `SETUP_CLEAR`: the reclaim lists are empty, thus nothing reads the
+ *     mark bits until the marking starts; they are cleared in the
+ *     ascending order of the block addresses from `clear_next` (a block
+ *     allocated meanwhile gets clear mark bits from the allocator);
+ *   - `SETUP_MARK`: the first world-stopped mark of the collection is due.
+ * The marker state stays `MS_NONE` until then, and allocation needs no
+ * dirty bits, since the first mark of a full collection clears them.
+ * Protected by the allocator lock.
+ */
+#  define SETUP_NONE 0
+#  define SETUP_SWEEP 1
+#  define SETUP_CLEAR 2
+#  define SETUP_MARK 3
+static int setup_phase = SETUP_NONE;
+
+/* In the `SETUP_CLEAR` phase, the first block not cleared yet. */
+static struct hblk *clear_next = NULL;
+
+/* The end of the latest chunk of the set-up. */
+static CLOCK_TYPE setup_chunk_end;
+
+/*
+ * The calls of `setup_stop_func()` in the chunk in progress.  It reads the
+ * clock at every 4th call, but not before the `SETUP_MIN_CALLS`-th one,
+ * so that every chunk makes some progress.
+ */
+static unsigned setup_stop_calls = 0;
+#  define SETUP_MIN_CALLS 4
+
+#  define SETUP_PENDING() (setup_phase != SETUP_NONE)
+
+/* The time limit, in microseconds. */
+static unsigned long
+time_limit_us(void)
+{
+  return GC_time_limit * 1000UL + GC_time_lim_nsec / 1000UL;
+}
+
+/*
+ * The stop function of the chunks of the set-up: true once the time limit
+ * has passed since `GC_start_time`.
+ */
+static int GC_CALLBACK
+setup_stop_func(void)
+{
+  CLOCK_TYPE now;
+  unsigned long ms, ns;
+
+  if (++setup_stop_calls < SETUP_MIN_CALLS || (setup_stop_calls & 3) != 0)
+    return FALSE;
+  GET_TIME(now);
+  ms = MS_TIME_DIFF(now, GC_start_time);
+  ns = NS_FRAC_TIME_DIFF(now, GC_start_time);
+  return ms > GC_time_limit || (ms == GC_time_limit && ns >= GC_time_lim_nsec);
+}
+
+/*
+ * Run a chunk of the pending set-up, from `GC_start_time` until the time
+ * limit.  Return whether the set-up is complete.
+ */
+static GC_bool
+run_setup_chunk(void)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  GC_ASSERT(SETUP_SWEEP == setup_phase || SETUP_CLEAR == setup_phase);
+  setup_stop_calls = 0;
+  ENTER_GC();
+  if (SETUP_SWEEP == setup_phase && GC_reclaim_all(setup_stop_func, TRUE)) {
+#  ifdef PARALLEL_MARK
+    /*
+     * Builders of free lists sweep the blocks they took from the reclaim
+     * lists outside the lock.
+     */
+    if (GC_parallel)
+      GC_wait_for_reclaim();
+#  endif
+    setup_phase = SETUP_CLEAR;
+    clear_next = NULL;
+  }
+  if (SETUP_CLEAR == setup_phase
+      && GC_clear_marks_from(&clear_next, setup_stop_func))
+    setup_phase = SETUP_MARK;
+  EXIT_GC();
+  return SETUP_MARK == setup_phase;
+}
+
+/* Start the first world-stopped mark of the full collection set up. */
+static void
+start_full_mark(void)
+{
+  GC_ASSERT(SETUP_MARK == setup_phase);
+  setup_phase = SETUP_NONE;
+#  ifdef PARALLEL_MARK
+  /* No builder of free lists may run while the world is stopped. */
+  if (GC_parallel)
+    GC_wait_for_reclaim();
+#  endif
+  ENTER_GC();
+  GC_promote_black_lists();
+  GC_end_clear_marks();
+  EXIT_GC();
+  GC_n_partial_gcs = 0;
+  GC_is_full_gc = TRUE;
+  start_mark();
+}
+
+/*
+ * Run the next chunk of the pending set-up.  If the set-up is complete
+ * and less than half of the time limit has passed, start the first
+ * world-stopped mark of the collection, which keeps the rest of the time
+ * limit; otherwise the mark is due like another chunk.
+ */
+static void
+continue_full_setup(void)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  GET_TIME(GC_start_time);
+  if (setup_phase != SETUP_MARK) {
+    GC_bool done = run_setup_chunk();
+    unsigned long us = us_since(GC_start_time);
+
+    if (!done || 2 * us >= time_limit_us()) {
+      GET_TIME(setup_chunk_end);
+      pace_next_slice();
+      return;
+    }
+  }
+  start_full_mark();
+}
+
+/* Whether the next chunk of the pending set-up is due. */
+static GC_bool
+setup_chunk_due(void)
+{
+  word allocd = allocd_now();
+
+  return allocd - allocd_at_slice >= slice_bytes || allocd < allocd_at_slice
+         || us_since(setup_chunk_end) >= time_limit_us();
+}
+
+GC_INNER void
+GC_redo_mark_clearing(void)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  if (SETUP_CLEAR == setup_phase || SETUP_MARK == setup_phase) {
+    setup_phase = SETUP_CLEAR;
+    clear_next = NULL;
+  }
+}
+
+/* Whether the set-up of a full collection is still to run. */
+#  define WORK_PENDING() SETUP_PENDING()
+#else
+#  define WORK_PENDING() FALSE
+#endif /* !PARALLEL_MARK_DEADLINE */
+
+/*
  * Initiate a garbage collection.  Choose judiciously between partial,
  * full, and stop-world collections.  Called only if `GC_should_collect()`
  * returned true.
@@ -852,6 +1069,7 @@ GC_maybe_gc(void)
   }
 
   GC_ASSERT(!GC_collection_in_progress());
+  GC_ASSERT(!WORK_PENDING());
 #ifdef PARALLEL_MARK
   if (GC_parallel)
     GC_wait_for_reclaim();
@@ -865,6 +1083,13 @@ GC_maybe_gc(void)
         "***>Full mark for collection #%lu after %lu bytes allocated\n",
         (unsigned long)GC_gc_no + 1, (unsigned long)GC_bytes_allocd);
     GC_notify_full_gc();
+#ifdef PARALLEL_MARK_DEADLINE
+    if (steps_on() && GC_time_limit != GC_TIME_UNLIMITED) {
+      setup_phase = SETUP_SWEEP;
+      continue_full_setup();
+      return;
+    }
+#endif
     ENTER_GC();
     GC_promote_black_lists();
     (void)GC_reclaim_all((GC_stop_func)0, TRUE);
@@ -875,26 +1100,11 @@ GC_maybe_gc(void)
   } else {
     GC_n_partial_gcs++;
   }
-
-  /*
-   * Try to mark with the world stopped.  If we run out of time, then this
-   * turns into an incremental marking.
-   */
 #ifndef NO_CLOCK
   if (GC_time_limit != GC_TIME_UNLIMITED)
     GET_TIME(GC_start_time);
 #endif
-  /* Allow parallel marking without a timeout or custom stop function. */
-  if (GC_stopped_mark(GC_time_limit == GC_TIME_UNLIMITED
-                              && GC_default_stop_func == GC_never_stop_func
-                          ? GC_never_stop_func
-                          : GC_timeout_stop_func)) {
-    SAVE_CALLERS_TO_LAST_STACK();
-    GC_finish_collection();
-  } else if (!GC_is_full_gc) {
-    /* Count this as the first attempt. */
-    GC_n_attempts++;
-  }
+  start_mark();
 }
 
 STATIC GC_on_collection_event_proc GC_on_collection_event = 0;
@@ -977,6 +1187,10 @@ GC_try_to_collect_inner(GC_stop_func stop_func)
   }
   GC_invalidate_mark_state(); /*< flush mark stack */
   GC_clear_marks();
+#ifdef PARALLEL_MARK_DEADLINE
+  /* This replaces the pending set-up, if any. */
+  setup_phase = SETUP_NONE;
+#endif
   SAVE_CALLERS_TO_LAST_STACK();
   GC_is_full_gc = TRUE;
   EXIT_GC();
@@ -1216,6 +1430,14 @@ GC_collect_a_little_inner(size_t n_blocks)
           = GC_mark_deficit > max_deficit ? GC_mark_deficit - max_deficit : 0;
     }
     RESTORE_CANCEL_FOR_WORK(cancel_state);
+#ifdef PARALLEL_MARK_DEADLINE
+  } else if (SETUP_PENDING()) {
+    if (!GC_dont_gc && setup_chunk_due()) {
+      DISABLE_CANCEL_FOR_WORK(cancel_state);
+      continue_full_setup();
+      RESTORE_CANCEL_FOR_WORK(cancel_state);
+    }
+#endif
   } else if (!GC_dont_gc && GC_should_collect()) {
     DISABLE_CANCEL_FOR_WORK(cancel_state);
     GC_maybe_gc();
@@ -1244,7 +1466,12 @@ GC_collect_a_little(void)
    * stopping the world) even in case of disabled garbage collection.
    */
   GC_collect_a_little_inner(1);
-  result = (int)GC_collection_in_progress();
+  /*
+   * The work counted by `WORK_PENDING()` does not run while the collections
+   * are disabled.
+   */
+  result
+      = (int)(GC_collection_in_progress() || (WORK_PENDING() && !GC_dont_gc));
   UNLOCK();
   if (GC_debugging_started && !result)
     GC_print_all_smashed();
@@ -1304,10 +1531,8 @@ GC_INNER unsigned GC_unmap_threshold = MUNMAP_THRESHOLD;
 /*
  * Count a slice of the collection in progress: the world was stopped
  * from `start` until now.  If the marking is complete (`SLICE_DONE`), log
- * the slices of the collection.  Otherwise the next step is due after
- * allocating the allocation budget divided by twice the slices of the
- * previous collection (by 8 at least), so that a marking of as many
- * slices completes within half the budget.
+ * the slices of the collection.  Otherwise set when the next step is due
+ * (see `pace_next_slice()`).
  */
 static void
 end_slice(CLOCK_TYPE start, int outcome)
@@ -1340,9 +1565,7 @@ end_slice(CLOCK_TYPE start, int outcome)
     longest_slice_us = 0;
     total_slice_us = 0;
   } else {
-    allocd_at_slice = allocd_now();
-    slice_bytes = min_bytes_allocd()
-                  / (prev_n_slices > 4 ? 2 * (word)prev_n_slices : 8);
+    pace_next_slice();
   }
 }
 #endif

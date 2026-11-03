@@ -322,6 +322,11 @@ check_PROGRAMS += finalstoptest
 finalstoptest_SOURCES = tests/finalstop.c
 finalstoptest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
+TESTS += fullsetuptest$(EXEEXT)
+check_PROGRAMS += fullsetuptest
+fullsetuptest_SOURCES = tests/fullsetup.c
+fullsetuptest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+
 endif
 
 if CPLUSPLUS
@@ -426,6 +431,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f disclaimtest$(EXEEXT) || ./disclaimtest$(EXEEXT)
 	test ! -f finalstoptest$(EXEEXT) || ./finalstoptest$(EXEEXT)
 	test ! -f forktest$(EXEEXT) || ./forktest$(EXEEXT)
+	test ! -f fullsetuptest$(EXEEXT) || ./fullsetuptest$(EXEEXT)
 	test ! -f heapsectstest$(EXEEXT) || ./heapsectstest$(EXEEXT)
 	test ! -f initfromthreadtest$(EXEEXT) || ./initfromthreadtest$(EXEEXT)
 	test ! -f markercounttest$(EXEEXT) || ./markercounttest$(EXEEXT)
