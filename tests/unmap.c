@@ -12,8 +12,9 @@
  */
 
 /*
- * Check the coalescing of free blocks (`GC_merge_unmapped()`) and
- * the counting of unmapped regions for deliberately laid out blocks and
+ * Check the coalescing of free blocks (`GC_merge_unmapped()`), the
+ * unmapping of old free blocks in pieces (`GC_unmap_old()`) and the
+ * counting of unmapped regions for deliberately laid out blocks and
  * ordered free lists.  This test includes the collector source to access
  * the free lists and the block headers, and to count the header lookups.
  */
@@ -26,6 +27,8 @@
 #ifndef COUNT_UNMAPPED_REGIONS
 #  define COUNT_UNMAPPED_REGIONS
 #endif
+/* Unmap in pieces that the arena holds several times with any block size. */
+#define UNMAP_PIECE_BYTES ((size_t)1 << 20)
 #define GC_SINGLE_OBJ_BUILD
 #ifndef __cplusplus
 #  define GC_INNER STATIC
@@ -429,6 +432,107 @@ test_merge_order(void)
   clear_layout();
 }
 
+/* A stop function that stops `GC_unmap_old()` after a piece or a block. */
+static int GC_CALLBACK
+stop_at_once(void)
+{
+  return TRUE;
+}
+
+/*
+ * Unmap the free blocks of the layout, all freed 3 collections ago, with
+ * the threshold of 2 collections, calling `GC_unmap_old()` with
+ * `stop_at_once()` until it returns true.  Then every free block must be
+ * unmapped.
+ */
+static void
+unmap_layout_in_pieces(void)
+{
+  size_t i, index = 0, calls = 0;
+
+  for (i = 0; i < piece_count; ++i) {
+    if (state[i] != 0)
+      HDR(piece[i])->hb_last_reclaimed = (unsigned short)(GC_gc_no - 3);
+  }
+  do {
+    /* One call per block, two per split block, and one that completes. */
+    ++calls;
+    TEST_ASSERT(calls <= 2 * free_count + 1);
+    (void)check_layout(FALSE);
+  } while (!GC_unmap_old(2, &index, stop_at_once));
+  for (i = 0; i < piece_count; ++i) {
+    if (state[i] != 0) {
+      struct hblk *h = piece[i];
+
+      /* A split block stays split. */
+      while (h < piece[i] + length[i]) {
+        const hdr *hhdr = HDR(h);
+
+        TEST_ASSERT(HBLK_IS_FREE(hhdr) && !IS_MAPPED(hhdr));
+        h += divHBLKSZ(hhdr->hb_sz);
+      }
+    }
+  }
+  (void)check_layout(FALSE);
+}
+
+/*
+ * Check the unmapping in pieces with a stop function that stops at once.
+ * The first call must unmap the first piece of a free block larger than
+ * `UNMAP_PIECE_BYTES` and split the block there: the first part must be
+ * an unmapped free block, the rest a mapped free block as old as the
+ * block, and the unmapping must resume with the free list of the rest or
+ * a lower one.  The next call must unmap the rest, and the one after it
+ * must complete the unmapping.  Then, in a layout with that block and two
+ * free blocks of the same size, the unmapping must resume in the free list
+ * where it stopped, and unmap every free block.
+ */
+static void
+test_unmap_pieces(void)
+{
+  size_t blocks = (UNMAP_PIECE_BYTES + 2 * HBLK_PAGE_SIZE) / HBLKSIZE;
+  size_t index = 0, first_bytes;
+  struct hblk *rest;
+  hdr *hhdr;
+
+  append_piece(1, 0);
+  append_piece(blocks, 1);
+  append_piece(1, 0);
+  make_layout();
+  insert_layout(0);
+  HDR(piece[1])->hb_last_reclaimed = (unsigned short)(GC_gc_no - 3);
+  TEST_ASSERT(!GC_unmap_old(2, &index, stop_at_once));
+  (void)check_layout(FALSE);
+  hhdr = HDR(piece[1]);
+  first_bytes = (size_t)(PTR_ALIGN_UP((ptr_t)piece[1], HBLK_PAGE_SIZE)
+                         + UNMAP_PIECE_BYTES - (ptr_t)piece[1]);
+  TEST_ASSERT(HBLK_IS_FREE(hhdr) && !IS_MAPPED(hhdr)
+              && hhdr->hb_sz == first_bytes);
+  rest = piece[1] + divHBLKSZ(first_bytes);
+  hhdr = HDR(rest);
+  TEST_ASSERT(HBLK_IS_FREE(hhdr) && IS_MAPPED(hhdr)
+              && hhdr->hb_sz == blocks * HBLKSIZE - first_bytes);
+  TEST_ASSERT(hhdr->hb_last_reclaimed == (unsigned short)(GC_gc_no - 3));
+  TEST_ASSERT(index <= GC_hblk_fl_from_blocks(divHBLKSZ(hhdr->hb_sz)));
+  TEST_ASSERT(!GC_unmap_old(2, &index, stop_at_once));
+  (void)check_layout(FALSE);
+  TEST_ASSERT(!IS_MAPPED(HDR(rest)));
+  TEST_ASSERT(GC_unmap_old(2, &index, stop_at_once));
+  clear_layout();
+
+  append_piece(1, 0);
+  append_piece(blocks, 1);
+  append_piece(1, 0);
+  append_piece(3, 1);
+  append_piece(1, 0);
+  append_piece(3, 1);
+  append_piece(1, 0);
+  make_layout();
+  insert_layout(0);
+  unmap_layout_in_pieces();
+  clear_layout();
+}
+
 static void
 test_layouts(void)
 {
@@ -436,6 +540,7 @@ test_layouts(void)
   size_t i, j;
 
   test_merge_order();
+  test_unmap_pieces();
   for (permutation = 0; permutation < 3; ++permutation) {
     /* Empty free lists. */
     append_piece(1, 0);
@@ -547,9 +652,15 @@ main(void)
   GC_unmap_threshold = saved_unmap_threshold;
   UNLOCK();
 
-  /* Check the arena memory is usable after unmapping and remapping. */
+  /*
+   * Check that the free block of the arena, larger than `UNMAP_PIECE_BYTES`,
+   * is unmapped whole by a collection that cannot stop, and that its memory
+   * is usable after remapping.
+   */
   GC_free(arena);
   GC_gcollect_and_unmap();
+  TEST_ASSERT(GC_get_unmapped_bytes() + 2 * GC_page_size
+              >= (size_t)ARENA_BLOCKS * HBLKSIZE);
   arena = (struct hblk *)GC_malloc_uncollectable(ARENA_BLOCKS * HBLKSIZE
                                                  - EXTRA_BYTES);
   TEST_ASSERT(arena != NULL);

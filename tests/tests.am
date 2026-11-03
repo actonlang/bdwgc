@@ -332,6 +332,11 @@ check_PROGRAMS += collectwaittest
 collectwaittest_SOURCES = tests/collectwait.c
 collectwaittest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
+TESTS += unmapchunkstest$(EXEEXT)
+check_PROGRAMS += unmapchunkstest
+unmapchunkstest_SOURCES = tests/unmapchunks.c
+unmapchunkstest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+
 endif
 
 if CPLUSPLUS
@@ -452,6 +457,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f tracetest$(EXEEXT) || ./tracetest$(EXEEXT)
 	test ! -f treetest$(EXEEXT) || ./treetest$(EXEEXT)
 	test ! -f uffdwptest$(EXEEXT) || ./uffdwptest$(EXEEXT)
+	test ! -f unmapchunkstest$(EXEEXT) || ./unmapchunkstest$(EXEEXT)
 	test ! -f wbarverifytest$(EXEEXT) || ./wbarverifytest$(EXEEXT)
 	test ! -f weakmaptest$(EXEEXT) || ./weakmaptest$(EXEEXT)
 	./cordtest$(EXEEXT)

@@ -1427,6 +1427,13 @@ if(BUILD_TESTING)
         )
         add_test(NAME collectwaittest COMMAND collectwaittest)
 
+        add_executable(unmapchunkstest tests/unmapchunks.c ${NODIST_SRC})
+        target_link_libraries(
+            unmapchunkstest
+            PRIVATE gc gc_build_flags ${THREADDLLIBS_LIST}
+        )
+        add_test(NAME unmapchunkstest COMMAND unmapchunkstest)
+
         if(NOT WIN32)
             add_executable(forktest tests/fork.c ${NODIST_SRC})
             target_link_libraries(
