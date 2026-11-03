@@ -59,6 +59,12 @@ word GC_non_gc_bytes = 0;
 
 word GC_gc_no = 0;
 
+#if !defined(GC_DISABLE_INCREMENTAL) && !defined(NO_MANUAL_VDB)
+GC_INNER GC_bool GC_final_mark_due = FALSE;
+#elif defined(PARALLEL_MARK_DEADLINE)
+static GC_bool GC_final_mark_due = FALSE;
+#endif
+
 #ifndef NO_CLOCK
 
 GC_API void GC_CALL
@@ -1047,9 +1053,18 @@ GC_redo_mark_clearing(void)
   }
 }
 
-/* Whether the set-up of a full collection is still to run. */
-#  define WORK_PENDING() SETUP_PENDING()
+/*
+ * When the final mark of the collection in progress became due (see
+ * `GC_final_mark_due`).  Protected by the allocator lock.
+ */
+static CLOCK_TYPE final_due_since;
+
+#  define FINAL_DUE() GC_final_mark_due
+
+/* Whether the set-up of a full collection or a final mark is to run. */
+#  define WORK_PENDING() (SETUP_PENDING() || FINAL_DUE())
 #else
+#  define FINAL_DUE() FALSE
 #  define WORK_PENDING() FALSE
 #endif /* !PARALLEL_MARK_DEADLINE */
 
@@ -1144,17 +1159,14 @@ GC_try_to_collect_inner(GC_stop_func stop_func)
     return FALSE;
   if (GC_on_collection_event)
     GC_on_collection_event(GC_EVENT_START);
-  if (GC_incremental && GC_collection_in_progress()) {
+  if (GC_incremental && (GC_collection_in_progress() || FINAL_DUE())) {
     GC_COND_LOG_PRINTF(
         "GC_try_to_collect_inner: finishing collection in progress\n");
     /* Just finish collection already in progress. */
-    do {
-      if ((*stop_func)()) {
-        /* TODO: Notify `GC_EVENT_ABANDON`. */
-        return FALSE;
-      }
-      GC_collect_a_little_inner(1);
-    } while (GC_collection_in_progress());
+    if (!GC_complete_marking(stop_func, 1)) {
+      /* TODO: Notify `GC_EVENT_ABANDON`. */
+      return FALSE;
+    }
   }
   GC_notify_full_gc();
 #ifndef NO_CLOCK
@@ -1188,8 +1200,12 @@ GC_try_to_collect_inner(GC_stop_func stop_func)
   GC_invalidate_mark_state(); /*< flush mark stack */
   GC_clear_marks();
 #ifdef PARALLEL_MARK_DEADLINE
-  /* This replaces the pending set-up, if any. */
+  /*
+   * This replaces the pending set-up, if any, and a due final mark, which
+   * is left only if the incremental mode was turned off.
+   */
   setup_phase = SETUP_NONE;
+  GC_final_mark_due = FALSE;
 #endif
   SAVE_CALLERS_TO_LAST_STACK();
   GC_is_full_gc = TRUE;
@@ -1340,7 +1356,7 @@ GC_collect_a_little_inner(size_t n_blocks)
 #ifdef GC_NO_CANCEL_STATE_SKIP
   DISABLE_CANCEL(cancel_state);
 #endif
-  if (GC_incremental && GC_collection_in_progress()) {
+  if (GC_incremental && (GC_collection_in_progress() || FINAL_DUE())) {
     size_t i;
     size_t max_deficit = GC_rate * n_blocks;
     GC_bool stack_empty = FALSE;
@@ -1355,10 +1371,23 @@ GC_collect_a_little_inner(size_t n_blocks)
        * waits for the collection to complete, or the heap is to grow).
        */
       word allocd = allocd_now();
+      GC_bool due = allocd - allocd_at_slice >= slice_bytes
+                    || allocd < allocd_at_slice || allocd == allocd_at_call;
 
-      if (allocd - allocd_at_slice >= slice_bytes || allocd < allocd_at_slice
-          || allocd == allocd_at_call) {
-        stack_empty = GC_parallel_mark_step();
+      if (GC_final_mark_due) {
+        /*
+         * The final mark is due like a step, and at the latest the time
+         * limit after the step that emptied the mark stack.
+         */
+        if (!GC_dont_gc
+            && (due || us_since(final_due_since) >= time_limit_us()))
+          stack_empty = TRUE;
+      } else if (due) {
+        if (GC_parallel_mark_step()) {
+          /* The final mark runs in a hold of the allocator lock of its own. */
+          GC_final_mark_due = TRUE;
+          GET_TIME(final_due_since);
+        }
       }
       allocd_at_call = allocd;
     } else
@@ -1387,6 +1416,9 @@ GC_collect_a_little_inner(size_t n_blocks)
       GC_stop_func stop_func;
 
       GC_ASSERT(!GC_collection_in_progress());
+#ifdef PARALLEL_MARK_DEADLINE
+      GC_final_mark_due = FALSE;
+#endif
       /* Need to follow up with a full collection. */
       SAVE_CALLERS_TO_LAST_STACK();
 #ifdef PARALLEL_MARK
@@ -1446,6 +1478,20 @@ GC_collect_a_little_inner(size_t n_blocks)
 #ifdef GC_NO_CANCEL_STATE_SKIP
   RESTORE_CANCEL(cancel_state);
 #endif
+}
+
+GC_INNER GC_bool
+GC_complete_marking(GC_stop_func stop_func, size_t n_blocks)
+{
+  GC_ASSERT(I_HOLD_LOCK());
+  /* A final mark does not run while the collections are disabled. */
+  while (GC_incremental
+         && (GC_collection_in_progress() || (FINAL_DUE() && !GC_dont_gc))) {
+    if ((*stop_func)())
+      return FALSE;
+    GC_collect_a_little_inner(n_blocks);
+  }
+  return TRUE;
 }
 
 #if !defined(NO_FIND_LEAK) || !defined(SHORT_DBG_HDRS)
