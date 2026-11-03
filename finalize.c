@@ -1327,6 +1327,9 @@ GC_enqueue_all_finalizers(void)
   }
   /* All entries are deleted from the hash table. */
   GC_fo_entries = 0;
+#    ifdef PARALLEL_MARK_DEADLINE
+  GC_redo_mark_clearing();
+#    endif
   /*
    * Log the events of the marking from the finalizable objects and recycle
    * the outgrown mark stacks, also if no collection was completed.

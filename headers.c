@@ -405,6 +405,52 @@ GC_apply_to_all_hdrs(GC_walk_hdr_fn fn, void *client_data)
   }
 }
 
+#ifdef PARALLEL_MARK_DEADLINE
+GC_INNER GC_bool
+GC_apply_to_hdrs_from(struct hblk **pnext, GC_walk_hdr_fn fn,
+                      void *client_data, GC_stop_func stop_func)
+{
+  word next = ADDR(*pnext);
+  word hi = next >> (LOG_BOTTOM_SZ + LOG_HBLKSIZE);
+  bottom_index *bi;
+  size_t j;
+  unsigned n = 0;
+
+  for (bi = GC_all_bottom_indices; bi != NULL && bi->key < hi;
+       bi = bi->asc_link) {
+    /* Empty. */
+  }
+  j = bi != NULL && bi->key == hi
+          ? (size_t)(next >> LOG_HBLKSIZE) & (BOTTOM_SZ - 1)
+          : 0;
+  for (; bi != NULL; bi = bi->asc_link, j = 0) {
+    while (j < BOTTOM_SZ) {
+      hdr *hhdr;
+
+      if (UNLIKELY(++n >= GC_HDR_WALK_CHECK)) {
+        n = 0;
+        if ((*stop_func)()) {
+          *pnext = (struct hblk *)HBLK_ADDR(bi, j);
+          return FALSE;
+        }
+      }
+      hhdr = bi->index[j];
+      if (IS_FORWARDING_ADDR_OR_NIL(hhdr)) {
+        j++;
+      } else if (HBLK_IS_FREE(hhdr)) {
+        GC_ASSERT(HBLK_ADDR(bi, j) == ADDR(hhdr->hb_block));
+        j += divHBLKSZ(hhdr->hb_sz);
+      } else {
+        GC_ASSERT(HBLK_ADDR(bi, j) == ADDR(hhdr->hb_block));
+        fn(hhdr, client_data);
+        j++;
+      }
+    }
+  }
+  return TRUE;
+}
+#endif
+
 struct apply_to_block_s {
   GC_walk_hblk_fn fn;
   void *client_data;
