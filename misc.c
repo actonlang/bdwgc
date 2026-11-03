@@ -2556,9 +2556,7 @@ GC_API void GC_CALL
 GC_finish_and_disable(void)
 {
   LOCK();
-  while (GC_incremental && GC_collection_in_progress()) {
-    GC_collect_a_little_inner(1000);
-  }
+  (void)GC_complete_marking(GC_never_stop_func, 1000);
   GC_disable_inner();
   UNLOCK();
 }

@@ -3889,6 +3889,14 @@ GC_EXTERN GC_bool GC_in_thread_creation;
  */
 GC_INNER void GC_collect_a_little_inner(size_t n_blocks);
 
+/*
+ * Complete the marking of the collection in progress (in the incremental
+ * mode), with its final mark unless the collections are disabled, by
+ * `GC_collect_a_little_inner(n_blocks)` calls with the allocator lock
+ * held throughout.  Return false if `stop_func` returned true first.
+ */
+GC_INNER GC_bool GC_complete_marking(GC_stop_func stop_func, size_t n_blocks);
+
 GC_INNER void *GC_malloc_kind_aligned_global(size_t lb, int kind,
                                              size_t align_m1);
 
@@ -4308,6 +4316,15 @@ GC_EXTERN GC_bool GC_wbar_verify;
 GC_EXTERN GC_bool GC_wbar_need_full;
 
 /*
+ * Whether the final mark of the collection in progress is due after a
+ * world-stopped step emptied the mark stack (see
+ * `GC_collect_a_little_inner()`).  The marker state is `MS_NONE`
+ * meanwhile, but the collection is in progress: allocation still dirties
+ * the blocks it hands out.  Protected by the allocator lock.
+ */
+GC_EXTERN GC_bool GC_final_mark_due;
+
+/*
  * Whether the collections clear every dead object for the checker: the
  * sweep takes every block with unmarked objects at once, also the nearly
  * full ones it otherwise leaves alone, and dropped thread-local free lists
@@ -4331,20 +4348,23 @@ GC_EXTERN GC_bool GC_wbar_need_full;
  * In the manual VDB mode, dirty the `nblocks` blocks starting at the one
  * of `p`, which the allocator hands out (a block of objects, a large
  * object, or the block of a small object) while a collection is in
- * progress.  A client fills a new object without a write barrier, and
- * a world-stopped step of the collection may have marked and scanned the
- * object before (if the client stored it into an object the step scanned);
- * the final mark of the collection then rescans it.  Objects handed out
- * between collections need no such bit: they are unmarked, or (if on
- * a thread-local free list, or freed explicitly while marked) in a block
- * dirtied for the next read.  The allocator lock is held.
+ * progress, also while its final mark is due.  A client fills a new
+ * object without a write barrier, and a world-stopped step of the
+ * collection may have marked and scanned the object before (if the client
+ * stored it into an object the step scanned, or through a stale reference
+ * while it was on a free list); the final mark of the collection then
+ * rescans it.  Objects handed out between collections need no such bit:
+ * they are unmarked, or (if on a thread-local free list, or freed
+ * explicitly while marked) in a block dirtied for the next read.  The
+ * allocator lock is held.
  */
-#    define GC_WBAR_DIRTY_ALLOC(p, nblocks)                 \
-      do {                                                  \
-        if (GC_manual_vdb && GC_collection_in_progress()) { \
-          GC_ASSERT(I_HOLD_LOCK());                         \
-          GC_wbar_dirty_blocks(p, nblocks);                 \
-        }                                                   \
+#    define GC_WBAR_DIRTY_ALLOC(p, nblocks)                          \
+      do {                                                           \
+        if (GC_manual_vdb                                            \
+            && (GC_collection_in_progress() || GC_final_mark_due)) { \
+          GC_ASSERT(I_HOLD_LOCK());                                  \
+          GC_wbar_dirty_blocks(p, nblocks);                          \
+        }                                                            \
       } while (0)
 
 /*

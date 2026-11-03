@@ -54,20 +54,25 @@
  * allocated since the previous call of `GC_collect_a_little_inner()`),
  * and leave no deadline set.  The checks with the time limit of 0.1 ms are
  * skipped if the clock of the collector does not resolve it (on Windows
- * it counts milliseconds).  The set-up of a full collection then runs in
- * chunks with a time limit of 1 ns (see `continue_full_setup()`): a chunk
- * must stop before the set-up is complete (except on Windows, where the
- * clock of the collector counts milliseconds, and with `BSD_TIME`, where
- * it reads the user time of the process), the first world-stopped
- * mark must be due after the chunk that completes it, and no block but
- * those of uncollectable objects may keep a mark bit then.  The next chunk
- * must be due once `slice_bytes` were allocated since the latest one, and
- * not earlier, or once the time limit has passed since its end, and none
- * may run while the collections are disabled.  With a time limit of 10 s,
- * the due first world-stopped mark must run, and the first world-stopped
- * mark of a set-up must follow in the chunk that completes it.  With POSIX
- * threads, the clearing of the mark bits and the first world-stopped mark
- * must wait for a builder of a free list.  The trees must stay intact.
+ * it counts milliseconds).  A final mark that a step left due must not
+ * run with less than `slice_bytes` allocated since the latest slice and
+ * the time limit not passed since that step, but once the time limit has
+ * passed, and not while the collections are disabled, when
+ * `GC_collect_a_little()` must report no work left.  The set-up of a full
+ * collection then runs in chunks with a time limit of 1 ns (see
+ * `continue_full_setup()`): a chunk must stop before the set-up is
+ * complete (except on Windows, where the clock of the collector counts
+ * milliseconds, and with `BSD_TIME`, where it reads the user time of the
+ * process), the first world-stopped mark must be due after the chunk
+ * that completes it, and no block but those of uncollectable objects may
+ * keep a mark bit then.  The next chunk must be due once `slice_bytes`
+ * were allocated since the latest one, and not earlier, or once the time
+ * limit has passed since its end, and none may run while the collections
+ * are disabled.  With a time limit of 10 s, the due first world-stopped
+ * mark must run, and the first world-stopped mark of a set-up must follow
+ * in the chunk that completes it.  With POSIX threads, the clearing of the
+ * mark bits and the first world-stopped mark must wait for a builder of
+ * a free list.  The trees must stay intact.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -659,6 +664,89 @@ check_step_trigger(void)
   complete_collection();
 }
 
+/* A stop function that always stops. */
+static int GC_CALLBACK
+stop_now(void)
+{
+  return TRUE;
+}
+
+/*
+ * Check that a final mark that a step left due runs as a step would, after
+ * `slice_bytes`, or once the time limit has passed since that step, but
+ * not while the collections are disabled.
+ */
+static void
+check_final_trigger(void)
+{
+  unsigned long stops;
+  GC_bool enough;
+  IF_CANCEL(int cancel_state;)
+
+  /*
+   * The stop function stops the first world-stopped mark of the collection
+   * at once, also where the clock of the collector counts milliseconds.
+   */
+  set_time_limit(0, 100000);
+  GC_set_stop_func(stop_now);
+  start_collection();
+  GC_set_stop_func(GC_never_stop_func);
+  LOCK();
+  DISABLE_CANCEL(cancel_state);
+  /* Run steps, nothing allocated in between, until the final mark is due. */
+  while (!GC_final_mark_due) {
+    CHECK(GC_collection_in_progress());
+    allocd_at_call = allocd_now();
+    GC_collect_a_little_inner(1);
+  }
+  RESTORE_CANCEL(cancel_state);
+  UNLOCK();
+
+  /* Allocate more than `slice_bytes`, with the final mark left due. */
+  GC_disable();
+  do {
+    CHECK(GC_MALLOC_ATOMIC(ALLOC_CHUNK_BYTES) != NULL);
+    LOCK();
+    enough = allocd_now() > slice_bytes;
+    UNLOCK();
+  } while (!enough);
+  CHECK(!GC_collect_a_little());
+  LOCK();
+  DISABLE_CANCEL(cancel_state);
+  /* No marking is left to complete while the collections are disabled. */
+  CHECK(GC_complete_marking(stop_now, 1));
+  CHECK(GC_final_mark_due);
+  RESTORE_CANCEL(cancel_state);
+  UNLOCK();
+  GC_enable();
+
+  LOCK();
+  DISABLE_CANCEL(cancel_state);
+  /*
+   * One byte short of `slice_bytes` since the latest slice, some since the
+   * previous call, and the time limit (10 s) not passed since the step.
+   */
+  set_time_limit(10000, 0);
+  GET_TIME(final_due_since);
+  allocd_at_slice = allocd_now() - (slice_bytes - 1);
+  allocd_at_call = allocd_now() - 1;
+  stops = n_stops;
+  GC_collect_a_little_inner(1);
+  CHECK(n_stops == stops && GC_final_mark_due);
+  /* The time limit (1 us) has passed. */
+  set_time_limit(0, 1000);
+  wait_us_since(final_due_since, 2);
+  allocd_at_slice = allocd_now() - (slice_bytes - 1);
+  allocd_at_call = allocd_now() - 1;
+  GC_collect_a_little_inner(1);
+  CHECK(n_stops > stops && !GC_final_mark_due);
+  set_time_limit(0, 100000);
+  RESTORE_CANCEL(cancel_state);
+  UNLOCK();
+  complete_collection();
+  printf("Trigger of a due final mark checked\n");
+}
+
 /* Count the blocks with marked objects, except uncollectable ones. */
 static void
 count_marked_block(hdr *hhdr, void *client_data)
@@ -940,6 +1028,7 @@ main(void)
         printf("The clock does not resolve 0.1 ms, the checks with that"
                " time limit skipped\n");
       }
+      check_final_trigger();
       check_setup_chunks();
 #  ifdef GC_PTHREADS
       check_setup_builders();

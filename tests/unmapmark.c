@@ -19,7 +19,10 @@
  * kept by a root, right before another large object, which it frees
  * explicitly and unmaps.  It starts a collection and runs steps until the
  * kept object is marked, and a few more, so that the marker scans it in
- * pieces and the rest of it stays on the mark stack, then frees that
+ * pieces and the rest of it stays on the mark stack (the case requires
+ * a new object that only the last word of the kept object references to
+ * be unmarked still: a step that empties the mark stack leaves the final
+ * mark of the collection due, with nothing left to read), then frees that
  * object explicitly as well: its block is free and mapped, next to
  * a larger unmapped one.  Then, with collections disabled, so that the
  * allocation does no marking work, it allocates an object larger than
@@ -69,6 +72,9 @@
 #define SCANNED_BYTES (8 * MiB)
 #define UNMAPPED_BYTES (24 * MiB)
 
+/* The last word of the scanned object, which references the tail object. */
+#define TAIL_INDEX (SCANNED_BYTES / sizeof(GC_word) - 1)
+
 /*
  * The cycles to run, and the cycles at most while the case is not reached
  * (e.g. if the large objects are not adjacent).
@@ -112,6 +118,24 @@ is_marked(void *p)
   return GC_is_marked(p) ? p : NULL;
 }
 
+/*
+ * Store a new object, the tail object, into the last word of the scanned
+ * object, its only reference: while it is unmarked, the marker has not
+ * scanned the end of the scanned object.
+ */
+static void
+store_tail(void)
+{
+  const void *tail = GC_MALLOC(sizeof(GC_word));
+
+  CHECK(tail != NULL);
+  scanned[TAIL_INDEX] = (GC_word)tail;
+  GC_END_STUBBORN_CHANGE(scanned + TAIL_INDEX);
+}
+
+/* Called indirectly, so that no frame of the caller holds the address. */
+static void (*volatile store_tail_fn)(void) = store_tail;
+
 static void GC_CALLBACK
 on_event(GC_EventType e)
 {
@@ -151,6 +175,7 @@ run_cycle(int steps)
   }
   GC_FREE(after);
   after = NULL;
+  store_tail_fn();
   GC_gcollect_and_unmap();
   if (GC_get_unmapped_bytes() < UNMAPPED_BYTES)
     return 0;
@@ -174,7 +199,10 @@ run_cycle(int steps)
   for (i = 0; i < steps && n_mark_starts == starts + 1 && n_mark_ends == ends;
        i++)
     (void)GC_collect_a_little();
-  reached = n_mark_starts == starts + 1 && n_mark_ends == ends;
+  reached = n_mark_starts == starts + 1 && n_mark_ends == ends
+            && NULL
+                   == GC_call_with_alloc_lock(is_marked,
+                                              (void *)scanned[TAIL_INDEX]);
   if (reached) {
     size_t unmapped, total;
     void *big;

@@ -4,6 +4,10 @@
  * collections are in progress (storing new objects into old ones), and
  * check every node of their forests.  A node freed while reachable is
  * reused by another allocation, thus its key or check word is wrong.
+ * Each thread replaces trees in `N_ROUNDS` rounds and then goes on until
+ * a marking completed (at most `MAX_ROUNDS`), since the steps that
+ * a collection takes depend on the load of the machine.  Once a thread
+ * saw a completed marking, it checks its forest once more before it stops.
  * Unless `NO_INCREMENTAL` is defined, the test turns the incremental mode
  * on with a time limit of 0.1 ms (by `GC_ENABLE_INCREMENTAL` and
  * `GC_PAUSE_TIME_TARGET` environment variables).  With the parallel
@@ -56,8 +60,9 @@
 #define FANOUT 8
 #define DEPTH 4
 
-/* The trees (or subtrees) built by each thread. */
+/* The least and the most trees (or subtrees) that each thread builds. */
 #define N_ROUNDS 300
+#define MAX_ROUNDS (30 * N_ROUNDS)
 
 /* A thread checks its forest after this many rounds. */
 #define CHECK_EVERY 25
@@ -81,7 +86,8 @@ check_of(GC_word key, int level)
  * The world stops, the world-stopped marks (`GC_EVENT_MARK_START`) and the
  * completed markings of the collections.  Updated by
  * `on_collection_event()`, which the collector calls holding the allocator
- * lock, and read after the threads are joined.
+ * lock, and read after the threads are joined (`n_marks` also holding the
+ * lock, by `marks_seen()`).
  */
 static unsigned long n_stops;
 static unsigned long n_stopped_marks;
@@ -103,6 +109,23 @@ on_collection_event(GC_EventType e)
   default:
     break;
   }
+}
+
+static void *GC_CALLBACK
+read_marks(void *cd)
+{
+  *(unsigned long *)cd = n_marks;
+  return NULL;
+}
+
+/* The completed markings so far. */
+static unsigned long
+marks_seen(void)
+{
+  unsigned long n;
+
+  (void)GC_call_with_alloc_lock(read_marks, &n);
+  return n;
 }
 
 static GC_ATTR_NORETURN void
@@ -181,6 +204,7 @@ run(LPVOID arg)
   unsigned seed = (unsigned)(GC_uintptr_t)arg;
   struct node **forest;
   int round, i;
+  int seen = 0;
 
   forest = (struct node **)GC_MALLOC(N_TREES * sizeof(struct node *));
   if (NULL == forest) {
@@ -191,7 +215,7 @@ run(LPVOID arg)
     forest[i] = make_tree((GC_word)i + 1, 0);
     GC_END_STUBBORN_CHANGE(forest);
   }
-  for (round = 1; round <= N_ROUNDS; round++) {
+  for (round = 1;; round++) {
     seed = seed * 1103515245U + 12345U;
     i = (int)((seed >> 8) % N_TREES);
     if ((round & 1) != 0) {
@@ -219,13 +243,17 @@ run(LPVOID arg)
       n->child[c] = make_tree(key * FANOUT + (GC_word)c + 1, level + 1);
       GC_END_STUBBORN_CHANGE(n);
     }
-    if (round % CHECK_EVERY == 0 || round == N_ROUNDS) {
+    if (round % CHECK_EVERY == 0) {
       unsigned long count = 0;
 
       for (i = 0; i < N_TREES; i++)
         count += check_tree(forest[i], (GC_word)i + 1, 0);
       if (count != N_TREES * nodes_per_tree)
         fail("node count", 0, 0);
+      /* Check the forest once more after a completed marking was seen. */
+      if (round >= MAX_ROUNDS || (round >= N_ROUNDS && seen))
+        break;
+      seen = marks_seen() > 0;
     }
   }
 #ifdef GC_PTHREADS
