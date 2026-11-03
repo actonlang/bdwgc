@@ -322,7 +322,7 @@ jobs:
             conf_options: --enable-cplusplus
             cflags_extra: -O3 -fanalyzer -march=native
             c_compiler: gcc
-            make_jobs: 4
+            make_jobs: 3
           - os: ubuntu-26.04-arm
             conf_options: >-
               --enable-cplusplus --enable-dynamic-pointer-mask
@@ -551,7 +551,8 @@ jobs:
       - name: Build libraries
         # make_jobs bounds the number of compilers running at once where
         # they would take more memory than the runner has (gcc -fanalyzer
-        # takes about 3 GiB per test which includes the collector source).
+        # takes up to 5 GiB for each test which includes the collector
+        # source).
         run: >
           make -j${{ matrix.make_jobs }} -C build
           CFLAGS_EXTRA="${{ matrix.cflags_extra }}"
