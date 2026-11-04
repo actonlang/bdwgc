@@ -57,8 +57,9 @@
 /*
  * The number of the heap sections added by each grower thread.  Where
  * each chunk of memory which the collector gets from the system takes an
- * entry of a table of `MAX_HEAP_SECTS` entries (`USE_PROC_FOR_LIBRARIES`,
- * defined if `malloc` is redirected on Linux, and Windows), the growers
+ * entry of a table of `MAX_HEAP_SECTS` entries (Windows), or each such
+ * chunk that adjoins none that it got before (`USE_PROC_FOR_LIBRARIES`,
+ * defined if `malloc` is redirected on Linux with threads), the growers
  * take at most half of the entries.
  */
 #  ifndef N_SECTIONS
