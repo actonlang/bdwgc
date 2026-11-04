@@ -227,6 +227,11 @@ atomicopstest_SOURCES = tests/atomicops.c
 atomicopstest_LDADD = $(nodist_libgc_la_OBJECTS) $(EXTRA_TEST_LIBS) \
                 $(ATOMIC_OPS_LIBS) $(THREADDLLIBS)
 
+TESTS += expandmanytest$(EXEEXT)
+check_PROGRAMS += expandmanytest
+expandmanytest_SOURCES = tests/expandmany.c
+expandmanytest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+
 TESTS += forktest$(EXEEXT)
 check_PROGRAMS += forktest
 forktest_SOURCES = tests/fork.c
@@ -445,6 +450,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f cpptest$(EXEEXT) || ./cpptest$(EXEEXT)
 	test ! -f disclaim_bench$(EXEEXT) || ./disclaim_bench$(EXEEXT)
 	test ! -f disclaimtest$(EXEEXT) || ./disclaimtest$(EXEEXT)
+	test ! -f expandmanytest$(EXEEXT) || ./expandmanytest$(EXEEXT)
 	test ! -f finalstoptest$(EXEEXT) || ./finalstoptest$(EXEEXT)
 	test ! -f finishtest$(EXEEXT) || ./finishtest$(EXEEXT)
 	test ! -f forktest$(EXEEXT) || ./forktest$(EXEEXT)
