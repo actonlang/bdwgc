@@ -320,9 +320,8 @@ defined (except for Windows).
 unmapping is enabled (by defining `USE_MUNMAP` macro).
 
 `MUNMAP_THRESHOLD=<n>` - Sets the default threshold of memory blocks
-unmapping (the number of sequential garbage collections during those
-a candidate block for unmapping should be marked as free).  The special
-value "0" completely disables unmapping.
+unmapping (see `GC_UNMAP_THRESHOLD` in [environment.md](environment.md)).
+The special value "0" completely disables unmapping.
 
 `GC_FORCE_UNMAP_ON_GCOLLECT` - Sets "unmap as much as possible on explicit GC"
 mode on by default.  The mode could be changed at run-time.  Has no effect

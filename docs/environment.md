@@ -276,15 +276,21 @@ refill of a thread-local free list (see `GC_set_tl_refill_max()`).  Values
 bigger than one reduce the allocator lock contention in multi-threaded
 applications at the cost of more memory retained by thread-local free lists.
 
-`GC_UNMAP_THRESHOLD` - Sets the desired threshold of memory blocks unmapping
-(the number of sequential garbage collections during those a candidate block
-for unmapping should be marked as free).  The special value "0" completely
-disables unmapping.
+`GC_UNMAP_THRESHOLD` - Sets the desired threshold of memory blocks unmapping: a
+free block is unmapped after a collection once this many full collections (16 at
+most) have completed since it was freed, and at least this many collections in
+all.  When every collection is full, this is the number of collections for which
+a block must stay free before it is unmapped.  The unmapping keeps mapped as
+much memory as was in use in heap blocks at the end of the marking of any
+collection since the full collection before the oldest one of those counted.
+Values above 65535 act as 65535.  The special value "0" completely disables
+unmapping.
 
 `GC_FORCE_UNMAP_ON_GCOLLECT` - Turns "unmap as much as possible on explicit GC"
 mode on (overrides the default value).  Has no effect on implicitly-initiated
 garbage collections.  Has no effect if memory unmapping is disabled (or not
-compiled in) or if the unmapping threshold is 1.
+compiled in).  Without the incremental mode, it has no effect if the unmapping
+threshold is 1 either.
 
 `GC_FIND_LEAK` - Turns on GC_find_leak and thus leak detection.  Forces a
 collection at program termination to detect leaks that would otherwise occur

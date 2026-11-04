@@ -116,7 +116,7 @@ option(
 option(enable_large_config "Optimize for large heap or root set" OFF)
 option(enable_gc_assertions "Enable collector-internal assertion checking" OFF)
 option(enable_mmap "Use mmap instead of sbrk to expand the heap" OFF)
-option(enable_munmap "Return page to the OS if empty for N collections" ON)
+option(enable_munmap "Return page to the OS if empty for N full collections" ON)
 option(enable_dynamic_loading "Enable tracing of dynamic library data roots" ON)
 option(
     enable_register_main_static_data
