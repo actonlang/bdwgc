@@ -2882,6 +2882,9 @@ GC_INNER ptr_t
 GC_os_get_mem(size_t bytes)
 {
   ptr_t space;
+#ifdef USE_PROC_FOR_LIBRARIES
+  word i;
+#endif
 
   GC_ASSERT(I_HOLD_LOCK());
   space = (ptr_t)GET_MEM(bytes); /*< `HBLKSIZE`-aligned */
@@ -2890,12 +2893,33 @@ GC_os_get_mem(size_t bytes)
   if (UNLIKELY(NULL == space))
     return NULL;
 #ifdef USE_PROC_FOR_LIBRARIES
-  /* Add `HBLKSIZE`-aligned `GET_MEM`-generated block to `GC_our_memory`. */
-  if (GC_n_memory >= MAX_HEAP_SECTS)
-    ABORT("Too many GC-allocated memory sections: Increase MAX_HEAP_SECTS");
-  GC_our_memory[GC_n_memory].hs_start = space;
-  GC_our_memory[GC_n_memory].hs_bytes = bytes;
-  GC_n_memory++;
+  /*
+   * Add `HBLKSIZE`-aligned `GET_MEM`-generated block to `GC_our_memory`,
+   * extending the entry of a block that it adjoins, if any.  The system
+   * maps most blocks directly below (`mmap`) or after (`sbrk`) an earlier
+   * one, and an entry for every block, the chunks of the scratch memory
+   * included, would use up the `MAX_HEAP_SECTS` entries long before the
+   * heap reaches the size which they are meant for.
+   */
+  for (i = 0; i < GC_n_memory; i++) {
+    if (ADDR(GC_our_memory[i].hs_start) + GC_our_memory[i].hs_bytes
+        == ADDR(space)) {
+      GC_our_memory[i].hs_bytes += bytes;
+      break;
+    }
+    if (ADDR(space) + bytes == ADDR(GC_our_memory[i].hs_start)) {
+      GC_our_memory[i].hs_start = space;
+      GC_our_memory[i].hs_bytes += bytes;
+      break;
+    }
+  }
+  if (i == GC_n_memory) {
+    if (GC_n_memory >= MAX_HEAP_SECTS)
+      ABORT("Too many GC-allocated memory sections: Increase MAX_HEAP_SECTS");
+    GC_our_memory[GC_n_memory].hs_start = space;
+    GC_our_memory[GC_n_memory].hs_bytes = bytes;
+    GC_n_memory++;
+  }
 #endif
   GC_our_mem_bytes += bytes;
   GC_VERBOSE_LOG_PRINTF("Got %lu bytes from OS\n", (unsigned long)bytes);
