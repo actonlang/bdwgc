@@ -88,7 +88,8 @@
  * growth must unmap more, so that the two together unmap at least half as
  * many bytes as were freed.  The checks of the unmapping run only where
  * the clock of the collector resolves fractions of a millisecond (see
- * `fine_clock()`).  The trees must stay intact.
+ * `fine_clock()`).  The incremental mode must still be on then, and the
+ * trees must stay intact.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -104,6 +105,17 @@
 #undef GC_DLL
 #ifndef GC_NOT_DLL
 #  define GC_NOT_DLL
+#endif
+/*
+ * With the `mprotect`-based VDB on Linux, a heap growth turns the
+ * incremental mode off once the heap has twice
+ * `GC_UNMAPPED_REGIONS_SOFT_LIMIT` pages (see
+ * `GC_handle_protected_regions_limit()`), and the heap of this test may
+ * grow past that in its checks of the incremental mode.  The collector
+ * included here thus does not count the protected regions.
+ */
+#ifndef DONT_COUNT_PROTECTED_REGIONS
+#  define DONT_COUNT_PROTECTED_REGIONS
 #endif
 #include "private/gc_priv.h"
 
@@ -1230,6 +1242,8 @@ main(void)
                " not checked\n");
       }
 #  endif
+      /* No heap growth of the checks turned the incremental mode off. */
+      CHECK(GC_is_incremental_mode());
       for (t = 0; t < N_TREES; t++)
         CHECK(check_tree(trees[t], (GC_word)t + 1, 0, 0) == nodes_per_tree);
     } else {
