@@ -883,6 +883,7 @@ pub fn build(b: *std.Build) void {
     if (enable_threads) {
         addTest(b, gc, test_step, flags, "atomicopstest", "tests/atomicops.c");
         if (t.os.tag != .windows) {
+            addTest(b, gc, test_step, flags, "expandmanytest", "tests/expandmany.c");
             addTest(b, gc, test_step, flags, "forktest", "tests/fork.c");
             addTest(b, gc, test_step, flags, "forkcountstest", "tests/forkcounts.c");
             addTest(b, gc, test_step, flags, "heapsectstest", "tests/heapsects.c");
