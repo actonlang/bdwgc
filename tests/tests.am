@@ -356,6 +356,11 @@ check_PROGRAMS += liftlimittest
 liftlimittest_SOURCES = tests/liftlimit.c
 liftlimittest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
+TESTS += unmapstabletest$(EXEEXT)
+check_PROGRAMS += unmapstabletest
+unmapstabletest_SOURCES = tests/unmapstable.c
+unmapstabletest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+
 endif
 
 if CPLUSPLUS
@@ -480,6 +485,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f treetest$(EXEEXT) || ./treetest$(EXEEXT)
 	test ! -f uffdwptest$(EXEEXT) || ./uffdwptest$(EXEEXT)
 	test ! -f unmapchunkstest$(EXEEXT) || ./unmapchunkstest$(EXEEXT)
+	test ! -f unmapstabletest$(EXEEXT) || ./unmapstabletest$(EXEEXT)
 	test ! -f wbarverifytest$(EXEEXT) || ./wbarverifytest$(EXEEXT)
 	test ! -f weakmaptest$(EXEEXT) || ./weakmaptest$(EXEEXT)
 	./cordtest$(EXEEXT)
