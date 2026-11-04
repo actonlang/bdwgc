@@ -876,16 +876,21 @@ check_setup_chunks(void)
 
 #  ifdef GC_PTHREADS
 /*
- * Whether the builder has registered itself, and the set-up phase and the
- * world stops that it saw when it left.
+ * Whether the builder has registered itself, whether the set-up phase to
+ * run from is set, and the set-up phase and the world stops that the
+ * builder saw when it left.
  */
 static volatile int builder_entered;
+static volatile int setup_started;
 static volatile int builder_saw_phase;
 static volatile unsigned long builder_saw_stops;
 
 /*
  * A builder of a free list: it registers itself as one, as
- * `GC_generic_malloc_many()` does, and leaves 20 ms later.
+ * `GC_generic_malloc_many()` does, and leaves 20 ms after the set-up
+ * phase to run from is set.  The thread that runs the set-up may get the
+ * processor much later than the builder registers on a loaded machine,
+ * and the builder would then see the set-up phase before it is set.
  */
 static void *
 builder(void *arg)
@@ -897,6 +902,9 @@ builder(void *arg)
   GC_fl_builder_enter();
   UNLOCK();
   builder_entered = 1;
+  while (!setup_started) {
+    /* Empty. */
+  }
   GET_TIME(start);
   wait_us_since(start, 20000);
   builder_saw_phase = setup_phase;
@@ -920,6 +928,7 @@ setup_with_builder(int phase)
 
   set_time_limit(10000, 0);
   builder_entered = 0;
+  setup_started = 0;
   CHECK(pthread_create(&th, NULL, builder, NULL) == 0);
   while (!builder_entered) {
     /* Empty. */
@@ -928,6 +937,7 @@ setup_with_builder(int phase)
   DISABLE_CANCEL(cancel_state);
   stops = n_stops;
   setup_phase = phase;
+  setup_started = 1;
   continue_full_setup();
   CHECK(!SETUP_PENDING());
   RESTORE_CANCEL(cancel_state);
