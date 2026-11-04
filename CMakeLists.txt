@@ -1436,6 +1436,10 @@ if(BUILD_TESTING)
         target_link_libraries(liftlimittest PRIVATE gc ${THREADDLLIBS_LIST})
         add_test(NAME liftlimittest COMMAND liftlimittest)
 
+        add_executable(unmapstabletest tests/unmapstable.c ${NODIST_SRC})
+        target_link_libraries(unmapstabletest PRIVATE gc ${THREADDLLIBS_LIST})
+        add_test(NAME unmapstabletest COMMAND unmapstabletest)
+
         if(NOT WIN32)
             add_executable(expandmanytest tests/expandmany.c ${NODIST_SRC})
             target_link_libraries(
