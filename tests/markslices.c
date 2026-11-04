@@ -4,10 +4,13 @@
  * collections are in progress (storing new objects into old ones), and
  * check every node of their forests.  A node freed while reachable is
  * reused by another allocation, thus its key or check word is wrong.
- * Each thread replaces trees in `N_ROUNDS` rounds and then goes on until
- * a marking completed (at most `MAX_ROUNDS`), since the steps that
- * a collection takes depend on the load of the machine.  Once a thread
- * saw a completed marking, it checks its forest once more before it stops.
+ * Whether a marking completes while the threads replace trees depends on
+ * the speed and the load of the machine, thus each thread, after
+ * `N_ROUNDS` rounds, drives the collection in progress by
+ * `GC_collect_a_little()` without allocation until a marking completed
+ * (for `MAX_DRIVE_S` at most), checking its forest meanwhile.  Then it
+ * replaces trees in `CHECK_EVERY` more rounds, which reuse the nodes that
+ * the collection freed, and checks its forest once more.
  * Unless `NO_INCREMENTAL` is defined, the test turns the incremental mode
  * on with a time limit of 0.1 ms (by `GC_ENABLE_INCREMENTAL` and
  * `GC_PAUSE_TIME_TARGET` environment variables).  With the parallel
@@ -50,6 +53,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #define N_THREADS 4
 
@@ -60,12 +64,19 @@
 #define FANOUT 8
 #define DEPTH 4
 
-/* The least and the most trees (or subtrees) that each thread builds. */
+/* The trees (or subtrees) that each thread builds before it drives. */
 #define N_ROUNDS 300
-#define MAX_ROUNDS (30 * N_ROUNDS)
 
-/* A thread checks its forest after this many rounds. */
+/* A thread checks its forest after this many rounds (or calls). */
 #define CHECK_EVERY 25
+
+/*
+ * The time for which each thread drives the collection in progress at
+ * most, in seconds.  A bound on the calls of `GC_collect_a_little()` would
+ * bound no time where the collector spaces the steps of a caller that
+ * allocates nothing in time, as calls in between run none.
+ */
+#define MAX_DRIVE_S 60
 
 /* The nodes of a tree, set by `main()`. */
 static unsigned long nodes_per_tree;
@@ -193,6 +204,38 @@ check_tree(const struct node *n, GC_word key, int level)
   return count;
 }
 
+/* Check every node of the forest. */
+static void
+check_forest(struct node **forest)
+{
+  unsigned long count = 0;
+  int i;
+
+  for (i = 0; i < N_TREES; i++)
+    count += check_tree(forest[i], (GC_word)i + 1, 0);
+  if (count != N_TREES * nodes_per_tree)
+    fail("node count", 0, 0);
+}
+
+/*
+ * Drive the collection in progress, without allocation, until a marking
+ * completed, and check the forest every `CHECK_EVERY` calls.  Once no
+ * thread allocates, a step is due at each call.
+ */
+static void
+drive_collection(struct node **forest)
+{
+  time_t start = time(NULL);
+  long n;
+
+  for (n = 1; 0 == marks_seen(); n++) {
+    if (difftime(time(NULL), start) >= MAX_DRIVE_S || !GC_collect_a_little())
+      break;
+    if (n % CHECK_EVERY == 0)
+      check_forest(forest);
+  }
+}
+
 #ifdef GC_PTHREADS
 static void *
 run(void *arg)
@@ -204,7 +247,6 @@ run(LPVOID arg)
   unsigned seed = (unsigned)(GC_uintptr_t)arg;
   struct node **forest;
   int round, i;
-  int seen = 0;
 
   forest = (struct node **)GC_MALLOC(N_TREES * sizeof(struct node *));
   if (NULL == forest) {
@@ -215,7 +257,7 @@ run(LPVOID arg)
     forest[i] = make_tree((GC_word)i + 1, 0);
     GC_END_STUBBORN_CHANGE(forest);
   }
-  for (round = 1;; round++) {
+  for (round = 1; round <= N_ROUNDS + CHECK_EVERY; round++) {
     seed = seed * 1103515245U + 12345U;
     i = (int)((seed >> 8) % N_TREES);
     if ((round & 1) != 0) {
@@ -243,18 +285,10 @@ run(LPVOID arg)
       n->child[c] = make_tree(key * FANOUT + (GC_word)c + 1, level + 1);
       GC_END_STUBBORN_CHANGE(n);
     }
-    if (round % CHECK_EVERY == 0) {
-      unsigned long count = 0;
-
-      for (i = 0; i < N_TREES; i++)
-        count += check_tree(forest[i], (GC_word)i + 1, 0);
-      if (count != N_TREES * nodes_per_tree)
-        fail("node count", 0, 0);
-      /* Check the forest once more after a completed marking was seen. */
-      if (round >= MAX_ROUNDS || (round >= N_ROUNDS && seen))
-        break;
-      seen = marks_seen() > 0;
-    }
+    if (round % CHECK_EVERY == 0)
+      check_forest(forest);
+    if (N_ROUNDS == round)
+      drive_collection(forest);
   }
 #ifdef GC_PTHREADS
   return arg;
