@@ -722,7 +722,8 @@ unmap_block(struct hblk *h, hdr *hhdr, size_t index, size_t *pindex,
 }
 
 GC_INNER GC_bool
-GC_unmap_old(unsigned threshold, size_t *pindex, GC_stop_func stop_func)
+GC_unmap_old(unsigned threshold, word keep_mapped, size_t *pindex,
+             GC_stop_func stop_func)
 {
   GC_ASSERT(I_HOLD_LOCK());
   GC_ASSERT(UNMAP_PIECE_BYTES % HBLK_PAGE_SIZE == 0);
@@ -740,8 +741,17 @@ GC_unmap_old(unsigned threshold, size_t *pindex, GC_stop_func stop_func)
     hdr *hhdr;
 
     for (h = GC_hblkfreelist[*pindex]; h != NULL; h = hhdr->hb_next) {
+      word mapped = GC_heapsize - GC_unmapped_bytes;
+
+      if (mapped <= keep_mapped)
+        return TRUE;
       hhdr = HDR(h);
-      if (!IS_MAPPED(hhdr))
+      /*
+       * A block larger than the mapped bytes above `keep_mapped` is not
+       * unmapped.  The rest of a block split at a piece still fits: those
+       * bytes shrink by at most the size of the part split off.
+       */
+      if (!IS_MAPPED(hhdr) || hhdr->hb_sz > mapped - keep_mapped)
         continue;
 
       /*

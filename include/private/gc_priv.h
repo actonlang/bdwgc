@@ -4188,12 +4188,16 @@ GC_INNER void GC_debug_free_inner(void *p);
  * `UNMAP_PIECE_BYTES` of it (a block is unmapped in one piece if
  * `stop_func` is `GC_never_stop_func`).  A block whose unmapping stops is
  * split into its unmapped first part and a mapped rest of the same age.
- * Return whether every such block is unmapped; otherwise `*pindex` is the
- * free list to resume with.  This is the only way blocks are ever
- * unmapped.
+ * A block larger than the mapped part of the heap above `keep_mapped`
+ * bytes is not unmapped, thus the mapped part is not taken below
+ * `keep_mapped` bytes.  Return whether every such block is unmapped or
+ * kept mapped for `keep_mapped`; otherwise `*pindex` is the free list to
+ * resume with.  Besides this, only `GC_merge_unmapped()` unmaps blocks: of
+ * two adjacent free blocks, one mapped and one unmapped, it may unmap the
+ * mapped one to merge them.
  */
-GC_INNER GC_bool GC_unmap_old(unsigned threshold, size_t *pindex,
-                              GC_stop_func stop_func);
+GC_INNER GC_bool GC_unmap_old(unsigned threshold, word keep_mapped,
+                              size_t *pindex, GC_stop_func stop_func);
 
 /*
  * Merge all unmapped blocks that are adjacent to other free blocks.
@@ -4843,6 +4847,10 @@ GC_INNER GC_bool GC_page_was_ever_dirty(const struct hblk *h);
 #ifndef GC_NO_DEINIT
 GC_INNER void GC_reset_freelist(void);
 GC_INNER void GC_reset_obj_kinds(void);
+#  ifdef USE_MUNMAP
+/* Forget the full collections noted for the unmapping. */
+GC_INNER void GC_reset_unmap_history(void);
+#  endif
 #  ifdef CHECKSUMS
 void GC_reset_check_page(void);
 #  endif

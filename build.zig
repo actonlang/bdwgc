@@ -111,7 +111,7 @@ pub fn build(b: *std.Build) void {
     const disable_thread_local_warmup = b.option(bool, "disable_thread_local_warmup", "Let a thread use its thread-local free list of each size from its first allocation of that size") orelse false;
     const enable_gc_assertions = b.option(bool, "enable_gc_assertions", "Enable collector-internal assertion checking") orelse false;
     const enable_mmap = b.option(bool, "enable_mmap", "Use mmap instead of sbrk to expand the heap") orelse false;
-    const enable_munmap = b.option(bool, "enable_munmap", "Return page to the OS if empty for N collections") orelse true;
+    const enable_munmap = b.option(bool, "enable_munmap", "Return page to the OS if empty for N full collections") orelse true;
     const enable_dynamic_loading = b.option(bool, "enable_dynamic_loading", "Enable tracing of dynamic library data roots") orelse true;
     const enable_register_main_static_data = b.option(bool, "enable_register_main_static_data", "Perform the initial guess of data root sets") orelse true;
     const enable_checksums = b.option(bool, "enable_checksums", "Report erroneously cleared dirty bits") orelse false;

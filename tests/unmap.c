@@ -13,10 +13,15 @@
 
 /*
  * Check the coalescing of free blocks (`GC_merge_unmapped()`), the
- * unmapping of old free blocks in pieces (`GC_unmap_old()`) and the
- * counting of unmapped regions for deliberately laid out blocks and
- * ordered free lists.  This test includes the collector source to access
- * the free lists and the block headers, and to count the header lookups.
+ * unmapping of old free blocks in pieces (`GC_unmap_old()`) and the memory
+ * it keeps mapped (`keep_mapped`), and the counting of unmapped regions for
+ * deliberately laid out blocks and ordered free lists.  Then check that the
+ * free block of the arena is unmapped whole by `GC_gcollect_and_unmap()`,
+ * and that, when every collection is full, a block freed by `GC_free()` is
+ * unmapped by the collection `GC_unmap_threshold` collections after the
+ * latest one before the free, and not earlier, at thresholds of 1, 7, 16
+ * and 20.  This test includes the collector source to access the free lists
+ * and the block headers, and to count the header lookups.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -459,7 +464,7 @@ unmap_layout_in_pieces(void)
     ++calls;
     TEST_ASSERT(calls <= 2 * free_count + 1);
     (void)check_layout(FALSE);
-  } while (!GC_unmap_old(2, &index, stop_at_once));
+  } while (!GC_unmap_old(2, 0, &index, stop_at_once));
   for (i = 0; i < piece_count; ++i) {
     if (state[i] != 0) {
       struct hblk *h = piece[i];
@@ -501,7 +506,7 @@ test_unmap_pieces(void)
   make_layout();
   insert_layout(0);
   HDR(piece[1])->hb_last_reclaimed = (unsigned short)(GC_gc_no - 3);
-  TEST_ASSERT(!GC_unmap_old(2, &index, stop_at_once));
+  TEST_ASSERT(!GC_unmap_old(2, 0, &index, stop_at_once));
   (void)check_layout(FALSE);
   hhdr = HDR(piece[1]);
   first_bytes = (size_t)(PTR_ALIGN_UP((ptr_t)piece[1], HBLK_PAGE_SIZE)
@@ -514,10 +519,10 @@ test_unmap_pieces(void)
               && hhdr->hb_sz == blocks * HBLKSIZE - first_bytes);
   TEST_ASSERT(hhdr->hb_last_reclaimed == (unsigned short)(GC_gc_no - 3));
   TEST_ASSERT(index <= GC_hblk_fl_from_blocks(divHBLKSZ(hhdr->hb_sz)));
-  TEST_ASSERT(!GC_unmap_old(2, &index, stop_at_once));
+  TEST_ASSERT(!GC_unmap_old(2, 0, &index, stop_at_once));
   (void)check_layout(FALSE);
   TEST_ASSERT(!IS_MAPPED(HDR(rest)));
-  TEST_ASSERT(GC_unmap_old(2, &index, stop_at_once));
+  TEST_ASSERT(GC_unmap_old(2, 0, &index, stop_at_once));
   clear_layout();
 
   append_piece(1, 0);
@@ -533,6 +538,46 @@ test_unmap_pieces(void)
   clear_layout();
 }
 
+/*
+ * Check that the unmapping leaves mapped a block larger than the mapped
+ * part of the heap above `keep_mapped` bytes.  Of two old free blocks of
+ * the same size, each holding whole pages, none must be unmapped if all of
+ * the mapped part or a byte less is kept, one if the size of a block less
+ * is kept, and the other one if nothing is kept.
+ */
+static void
+test_unmap_keep(void)
+{
+  size_t blocks = 2 * GC_page_size / HBLKSIZE + 2;
+  size_t index = 0;
+  word mapped;
+
+  append_piece(1, 0);
+  append_piece(blocks, 1);
+  append_piece(1, 0);
+  append_piece(blocks, 1);
+  append_piece(1, 0);
+  make_layout();
+  insert_layout(0);
+  HDR(piece[1])->hb_last_reclaimed = (unsigned short)(GC_gc_no - 3);
+  HDR(piece[3])->hb_last_reclaimed = (unsigned short)(GC_gc_no - 3);
+  mapped = GC_heapsize - GC_unmapped_bytes;
+  TEST_ASSERT(GC_unmap_old(2, mapped, &index, GC_never_stop_func));
+  TEST_ASSERT(IS_MAPPED(HDR(piece[1])) && IS_MAPPED(HDR(piece[3])));
+  index = 0;
+  TEST_ASSERT(GC_unmap_old(2, mapped - 1, &index, GC_never_stop_func));
+  TEST_ASSERT(IS_MAPPED(HDR(piece[1])) && IS_MAPPED(HDR(piece[3])));
+  index = 0;
+  TEST_ASSERT(GC_unmap_old(2, mapped - HDR(piece[1])->hb_sz, &index,
+                           GC_never_stop_func));
+  TEST_ASSERT(IS_MAPPED(HDR(piece[1])) != IS_MAPPED(HDR(piece[3])));
+  index = 0;
+  TEST_ASSERT(GC_unmap_old(2, 0, &index, GC_never_stop_func));
+  TEST_ASSERT(!IS_MAPPED(HDR(piece[1])) && !IS_MAPPED(HDR(piece[3])));
+  (void)check_layout(FALSE);
+  clear_layout();
+}
+
 static void
 test_layouts(void)
 {
@@ -541,6 +586,7 @@ test_layouts(void)
 
   test_merge_order();
   test_unmap_pieces();
+  test_unmap_keep();
   for (permutation = 0; permutation < 3; ++permutation) {
     /* Empty free lists. */
     append_piece(1, 0);
@@ -598,6 +644,46 @@ test_layouts(void)
     append_piece(1, 0);
   }
   run_layout(1);
+}
+
+/* The blocks of the free block whose unmapping age is checked. */
+#  define AGE_BLOCKS 256
+
+/*
+ * Check that when every collection is full (as without the incremental
+ * mode), a block freed by `GC_free()` is unmapped by the collection
+ * `threshold` collections after the latest one before the free, and not
+ * earlier, also for a threshold above the 16 full collections that the
+ * collector counts in the age of a free block.  A collection finds the
+ * block in use before it is freed.
+ */
+static void
+test_unmap_age(unsigned threshold)
+{
+  void *p;
+  size_t unmapped;
+  unsigned saved_threshold, i;
+
+  p = GC_malloc_uncollectable(AGE_BLOCKS * HBLKSIZE - EXTRA_BYTES);
+  TEST_ASSERT(p != NULL);
+  LOCK();
+  saved_threshold = GC_unmap_threshold;
+  GC_unmap_threshold = threshold;
+  UNLOCK();
+  GC_gcollect();
+  GC_free(p);
+  unmapped = GC_get_unmapped_bytes();
+  for (i = 1; i < threshold; ++i) {
+    GC_gcollect();
+    TEST_ASSERT(GC_get_unmapped_bytes()
+                < unmapped + (size_t)AGE_BLOCKS * HBLKSIZE / 2);
+  }
+  GC_gcollect();
+  TEST_ASSERT(GC_get_unmapped_bytes() + 2 * GC_page_size
+              >= unmapped + (size_t)AGE_BLOCKS * HBLKSIZE);
+  LOCK();
+  GC_unmap_threshold = saved_threshold;
+  UNLOCK();
 }
 
 int
@@ -668,6 +754,10 @@ main(void)
     *(volatile unsigned char *)(arena + i) = MARK_BYTE;
   GC_free(arena);
   GC_gcollect();
+  test_unmap_age(1);
+  test_unmap_age(7);
+  test_unmap_age(16);
+  test_unmap_age(20);
   printf("SUCCEEDED\n");
   return 0;
 }
