@@ -1053,7 +1053,8 @@ AC_ARG_ENABLE(mmap,
 AC_ARG_ENABLE(munmap,
     [AS_HELP_STRING([--enable-munmap=N],
                     [return page to the OS if page is marked as empty during
-                     N collections (default: 7)])],
+                     N full collections (16 at most) and N collections in all
+                     (default: 7)])],
     MUNMAP_THRESHOLD=$enableval)
 if test x$enable_munmap != xno; then
     AC_DEFINE([USE_MMAP], 1,
@@ -1067,8 +1068,8 @@ if test x$enable_munmap != xno; then
       MUNMAP_THRESHOLD=7
     fi
     AC_DEFINE_UNQUOTED([MUNMAP_THRESHOLD], [${MUNMAP_THRESHOLD}],
-        [Number of sequential garbage collections during those a candidate
-         block for unmapping should be marked as free.])
+        [Number of full collections (16 at most), and of collections in
+         all, for which a candidate block for unmapping should be free.])
 else
     if test "${gc_use_mmap}" = "yes"; then
       AC_DEFINE([USE_MMAP], 1,

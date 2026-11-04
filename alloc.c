@@ -1040,14 +1040,120 @@ start_mark(void)
      && LIKELY(GC_gc_no != 1)) /*< do not unmap during `GC_init` */
 
 /*
- * Unmap the free blocks old enough (see `GC_unmap_old()`) from the free
- * list `*pindex` on, until `stop_func` returns true.  Return whether all
- * of them are unmapped.
+ * The age of a free block for the unmapping after a collection counts full
+ * collections: a block is old enough once `GC_unmap_threshold` full
+ * collections (`MAX_UNMAP_HISTORY` at most) have completed since it was
+ * freed, and at least `GC_unmap_threshold` collections in all.  The unmapping
+ * also keeps mapped the most bytes in use in heap blocks (the heap size minus
+ * the free blocks) at the end of the marking of any collection since the full
+ * collection before the oldest one counted.  Thus memory that the client
+ * needs again between two full collections (after many minor ones in the
+ * generational mode) is not returned to the system and mapped again
+ * meanwhile.  When every collection is full, a block is old enough after
+ * `GC_unmap_threshold` collections.  The memory kept mapped can then keep
+ * a block old enough mapped only after `GC_merge_unmapped()` has unmapped
+ * memory in use at a counted collection, and for at most
+ * min(`GC_unmap_threshold`, `MAX_UNMAP_HISTORY`) - 1 collections.
+ * `GC_gcollect_and_unmap()` (and `GC_force_unmap_on_gcollect`) unmaps every
+ * free block freed before its collection (`unmap_all`), and the unmapping
+ * before a heap growth (`unmap_before_growth()`) counts no age and keeps
+ * nothing mapped.  Below: the collection numbers of the latest
+ * `MAX_UNMAP_HISTORY` full collections, most recent first, and for each of
+ * them the most bytes in use at the end of the marking of a collection since
+ * the full collection before it; the number of entries; the most bytes in use
+ * at the end of the marking of a collection since the latest full collection;
+ * whether every free block freed before the collection is unmapped.
+ * Protected by the allocator lock.
+ */
+#  define MAX_UNMAP_HISTORY 16
+static word full_gc_nos[MAX_UNMAP_HISTORY];
+static word full_peaks[MAX_UNMAP_HISTORY];
+static unsigned n_full_history = 0;
+static word peak_since_full = 0;
+static GC_bool unmap_all = FALSE;
+
+/*
+ * Note the bytes in use in heap blocks at the end of the marking of the
+ * collection numbered `GC_gc_no`, and, if `full`, its number and the most
+ * such bytes since the full collection before it.
+ */
+static void
+note_heap_need(GC_bool full)
+{
+  word in_use = GC_heapsize - GC_large_free_bytes;
+  unsigned i;
+
+  GC_ASSERT(I_HOLD_LOCK());
+  if (in_use > peak_since_full)
+    peak_since_full = in_use;
+  if (!full)
+    return;
+  for (i = MAX_UNMAP_HISTORY - 1; i > 0; i--) {
+    full_gc_nos[i] = full_gc_nos[i - 1];
+    full_peaks[i] = full_peaks[i - 1];
+  }
+  full_gc_nos[0] = GC_gc_no;
+  full_peaks[0] = peak_since_full;
+  peak_since_full = 0;
+  if (n_full_history < MAX_UNMAP_HISTORY)
+    n_full_history++;
+}
+
+#  ifndef GC_NO_DEINIT
+GC_INNER void
+GC_reset_unmap_history(void)
+{
+  BZERO(full_gc_nos, sizeof(full_gc_nos));
+  BZERO(full_peaks, sizeof(full_peaks));
+  n_full_history = 0;
+  peak_since_full = 0;
+}
+#  endif
+
+/*
+ * Unmap the free blocks old enough (see `GC_unmap_old()` and above) from
+ * the free list `*pindex` on, until `stop_func` returns true.  Return
+ * whether each of them is unmapped, or kept mapped since the mapped part of
+ * the heap would get smaller than the memory kept mapped.
  */
 static GC_bool
 unmap_old_blocks(size_t *pindex, GC_stop_func stop_func)
 {
-  return GC_unmap_old(GC_unmap_threshold, pindex, stop_func);
+  unsigned threshold = GC_unmap_threshold;
+  word keep = 0;
+
+  GC_ASSERT(threshold > 0);
+  if (!unmap_all) {
+    unsigned n_full
+        = threshold < MAX_UNMAP_HISTORY ? threshold : MAX_UNMAP_HISTORY;
+    word age;
+    unsigned i;
+
+    /* Nothing is old enough before so many full collections. */
+    if (n_full > n_full_history)
+      return TRUE;
+    /*
+     * A block freed by a collection numbered below that of the oldest
+     * full collection counted has been free for `n_full` full ones.  The
+     * collection number of a free block is kept in 16 bits
+     * (`hb_last_reclaimed`), thus nothing is unmapped while more than
+     * 0xffff collections lie between the oldest full one counted and the
+     * current one, both included: the comparison modulo 0x10000 would also
+     * take blocks freed after the oldest one.
+     */
+    age = GC_gc_no - full_gc_nos[n_full - 1] + 1;
+    if (age > 0xffff)
+      return TRUE;
+    if (age < threshold)
+      age = threshold;
+    threshold = age < 0xffff ? (unsigned)age : 0xffff;
+    keep = peak_since_full;
+    for (i = 0; i < n_full; i++) {
+      if (full_peaks[i] > keep)
+        keep = full_peaks[i];
+    }
+  }
+  return GC_unmap_old(threshold, keep, pindex, stop_func);
 }
 #endif
 
@@ -1616,8 +1722,8 @@ STATIC word GC_clear_fl_marks(ptr_t *pq, GC_bool clear_links,
  *   - `FINISH_REST`: the rest of the finish (the logging, the trigger of
  *     the next collection);
  *   - `FINISH_UNMAP`: the unmapping of the free blocks old enough, from
- *     the free list `unmap_list` (see `GC_unmap_old()`); the allocator and
- *     the heap growth work as without a pending finish meanwhile.
+ *     the free list `unmap_list` (see `unmap_old_blocks()`); the allocator
+ *     and the heap growth work as without a pending finish meanwhile.
  * The walk (from `FINISH_WALK_START`), the rest and the unmapping each
  * start in the chunk that completes the phase before if less than half of
  * the time limit has passed, else in the next chunk.  Until the
@@ -3262,6 +3368,9 @@ GC_finish_collection(void)
   if (GC_print_stats)
     GET_TIME(finish_start_time);
 #endif
+#ifdef USE_MUNMAP
+  note_heap_need(full);
+#endif
   if (GC_on_collection_event)
     GC_on_collection_event(GC_EVENT_RECLAIM_START);
 
@@ -3484,16 +3593,20 @@ GC_try_to_collect_general(GC_stop_func stop_func, GC_bool force_unmap)
   DISABLE_CANCEL(cancel_state);
 #ifdef USE_MUNMAP
   old_unmap_threshold = GC_unmap_threshold;
-  if (force_unmap || (GC_force_unmap_on_gcollect && old_unmap_threshold > 0))
-    GC_unmap_threshold = 1; /*< unmap as much as possible */
+  if (force_unmap || (GC_force_unmap_on_gcollect && old_unmap_threshold > 0)) {
+    /* Unmap as much as possible. */
+    GC_unmap_threshold = 1;
+    unmap_all = TRUE;
+  }
 #endif
   /* Minimize junk left in my registers. */
   GC_noop6(0, 0, 0, 0, 0, 0);
   result = GC_try_to_collect_inner(stop_func != 0 ? stop_func
                                                   : GC_default_stop_func);
 #ifdef USE_MUNMAP
-  /* Restore it. */
+  /* Restore them. */
   GC_unmap_threshold = old_unmap_threshold;
+  unmap_all = FALSE;
 #endif
   RESTORE_CANCEL(cancel_state);
   UNLOCK();
@@ -4097,7 +4210,7 @@ unmap_before_growth(void)
     stop_func = unmap_stop_func;
   }
 #  endif
-  (void)GC_unmap_old(0, &index, stop_func);
+  (void)GC_unmap_old(0, 0, &index, stop_func);
 }
 #endif
 

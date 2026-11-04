@@ -18,24 +18,25 @@
  * a region (two objects larger than the most memory unmapped before a chunk
  * can stop, whose unmapping is thus split, and many objects of 1 MiB, each
  * allocated before a keeper, see `KEEPER_BYTES`), frees the region's objects
- * explicitly, runs a full collection, and runs collections with small
- * objects, each freed at once (see `run_round()`), until it sees the
- * unmapping pending.  Then, until the part ends, it allocates a large object
- * in every round (of a size between 128 KiB and 1 MiB, kept in a ring, and
- * freed explicitly at times), so that the allocator takes the free blocks
- * being unmapped and their parts, an object larger than the region's 1 MiB
- * blocks and smaller than its large ones, and an object larger than every
- * block of the region (which may grow the heap).  Every page of each kept
- * object holds its key: memory unmapped while in use reads as zeros or
- * faults.  The unmapping was pending if the unmapped bytes grew (by free
- * blocks of the region or others) in a round in which no finish of a
- * collection ended and the heap did not grow; it must be seen pending in
- * every part, unless the write-barrier checker runs (then the finish runs at
- * once), the build lacks the parallel marker (only with it the unmapping
- * runs in chunks), or the test runs on Windows or with `BSD_TIME` (see
- * `UNMAP_CHUNKS`).  Without the manual VDB mode, memory unmapping or the
- * clock, if `NO_INCREMENTAL` is defined, or on 32-bit Windows (see the
- * `main()` that skips the test), the test is skipped.
+ * explicitly, runs a full collection, and runs collections, every other one
+ * full (the age of a free block counts full collections), with small objects,
+ * each freed at once (see `run_round()`), until it sees the unmapping
+ * pending.  Then, until the part ends, it allocates a large object in every
+ * round (of a size between 128 KiB and 1 MiB, kept in a ring, and freed
+ * explicitly at times), so that the allocator takes the free blocks being
+ * unmapped and their parts, an object larger than the region's 1 MiB blocks
+ * and smaller than its large ones, and an object larger than every block of
+ * the region (which may grow the heap).  Every page of each kept object holds
+ * its key: memory unmapped while in use reads as zeros or faults.  The
+ * unmapping was pending if the unmapped bytes grew (by free blocks of the
+ * region or others) in a round in which no finish of a collection ended and
+ * the heap did not grow; it must be seen pending in every part, unless the
+ * write-barrier checker runs (then the finish runs at once), the build lacks
+ * the parallel marker (only with it the unmapping runs in chunks), or the
+ * test runs on Windows or with `BSD_TIME` (see `UNMAP_CHUNKS`).  Without the
+ * manual VDB mode, memory unmapping or the clock, if `NO_INCREMENTAL` is
+ * defined, or on 32-bit Windows (see the `main()` that skips the test), the
+ * test is skipped.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -44,6 +45,7 @@
 
 #include "gc.h"
 #include "gc/gc_inline.h"
+#include "gc/gc_mark.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -102,14 +104,15 @@
 #  define N_RING 8
 
 /*
- * The rounds of a part at most, the collections to wait for the unmapping at
- * most, and the collections while it is busy.  The waiting rounds free what
- * they allocate, of which the collector counts only an eighth toward the
- * next collection (see `GC_adj_bytes_allocd()`): a collection takes
- * thousands of rounds then, and more with more data in use.
+ * The rounds of a part at most, the full collections to wait for the
+ * unmapping at most (the age of a free block counts full collections), and
+ * the collections while it is busy.  The waiting rounds free what they
+ * allocate, of which the collector counts only an eighth toward the next
+ * collection (see `GC_adj_bytes_allocd()`): a collection takes thousands of
+ * rounds then, and more with more data in use.
  */
 #  define MAX_ROUNDS 20000000UL
-#  define MAX_WAIT_COLLECTIONS 40
+#  define MAX_WAIT_FULL_COLLECTIONS 40
 #  define N_COLLECTIONS 8
 
 struct kept {
@@ -133,6 +136,15 @@ static GC_word next_key = 1;
 
 /* The finishes of collections that ended.  Updated holding the lock. */
 static volatile unsigned long n_finish_ends;
+
+/* The full collections started.  Updated holding the lock. */
+static volatile unsigned long n_full_starts;
+
+static void GC_CALLBACK
+on_full_start(void)
+{
+  n_full_starts++;
+}
 
 static void GC_CALLBACK
 on_event(GC_EventType e)
@@ -261,8 +273,8 @@ static unsigned long
 run_part(int part)
 {
   GC_word start;
-  unsigned long round, n_pending = 0;
-  int i;
+  unsigned long round, full_start, n_pending = 0;
+  int i, full_freq;
 
   for (i = 0; i < N_REGION; i++) {
     size_t bytes = i < N_SPLIT ? SPLIT_BYTES : REGION_OBJ_BYTES;
@@ -292,10 +304,17 @@ run_part(int part)
   }
   GC_gcollect();
 
-  start = GC_get_gc_no();
+  /*
+   * The age of a free block counts full collections: while the region ages,
+   * every other collection is full.
+   */
+  full_freq = GC_get_full_freq();
+  if (full_freq > 1)
+    GC_set_full_freq(1);
+  full_start = n_full_starts;
   for (round = 1; 0 == n_pending; round++) {
     CHECK(round < MAX_ROUNDS);
-    if (GC_get_gc_no() - start > MAX_WAIT_COLLECTIONS) {
+    if (n_full_starts - full_start > MAX_WAIT_FULL_COLLECTIONS) {
 #  if UNMAP_CHUNKS
       if (NULL == getenv("GC_WBAR_VERIFY")) {
         fprintf(stderr, "The unmapping was never pending (part %d)\n", part);
@@ -307,6 +326,7 @@ run_part(int part)
     if (run_round(round, part, 0))
       n_pending++;
   }
+  GC_set_full_freq(full_freq);
   start = GC_get_gc_no();
   for (; GC_get_gc_no() - start < N_COLLECTIONS; round++) {
     CHECK(round < MAX_ROUNDS);
@@ -353,6 +373,7 @@ main(void)
   ballast = GC_MALLOC_ATOMIC(BALLAST_BYTES);
   CHECK(ballast != NULL);
   GC_set_on_collection_event(on_event);
+  GC_set_start_callback(on_full_start);
   for (part = 0; part < N_PARTS; part++)
     n_pending += run_part(part);
   printf("SUCCEEDED (the unmapping pending in %lu rounds)\n", n_pending);

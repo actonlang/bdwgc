@@ -1854,6 +1854,9 @@ GC_deinit(void)
   GC_reset_obj_kinds();
   GC_n_mark_procs = GC_RESERVED_MARK_PROCS;
   GC_reset_freelist();
+#  ifdef USE_MUNMAP
+  GC_reset_unmap_history();
+#  endif
 #  ifdef CHECKSUMS
   GC_reset_check_page();
 #  endif
