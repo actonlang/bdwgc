@@ -1407,6 +1407,13 @@ if(BUILD_TESTING)
         add_test(NAME liftlimittest COMMAND liftlimittest)
 
         if(NOT WIN32)
+            add_executable(expandmanytest tests/expandmany.c ${NODIST_SRC})
+            target_link_libraries(
+                expandmanytest
+                PRIVATE gc ${THREADDLLIBS_LIST}
+            )
+            add_test(NAME expandmanytest COMMAND expandmanytest)
+
             add_executable(forktest tests/fork.c ${NODIST_SRC})
             target_link_libraries(
                 forktest
