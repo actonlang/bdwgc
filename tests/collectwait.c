@@ -22,11 +22,17 @@
  * and then allocates again until the next collection marks and calls
  * `GC_finish_and_disable()`.  Both hold the allocator lock meanwhile, so
  * no client allocates from the heap, and spacing the steps would only keep
- * the lock held with the world running: from the first stop of that
- * marking to the one that completes it, the world may run for at most
- * a quarter of the time it is stopped.  Without the manual VDB mode, the
- * parallel marker (only with it the marking runs in steps) or the clock,
- * or if `NO_INCREMENTAL` is defined, the test is skipped.
+ * the lock held with the world running.  Where the collector spaces work
+ * in time rather than by the bytes allocated, the spacing is a quarter of
+ * the time limit at least (the final mark and the chunks of a set-up are
+ * spaced by the time limit, the chunks of a finish by a quarter of it).
+ * Thus, from the first stop of that marking to the one that completes it,
+ * at least half of the times between two stops are under a quarter of the
+ * time limit.  Not all of them: such a time also counts any wait of the
+ * thread for a processor, or for a marker thread which waits for one,
+ * which on a loaded host may last longer than a step.  Without the manual
+ * VDB mode, the parallel marker (only with it the marking runs in steps)
+ * or the clock, or if `NO_INCREMENTAL` is defined, the test is skipped.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -49,6 +55,9 @@
 
 /* The nodes of the live tree, of 4 words each (32 MiB on 64-bit targets). */
 #define N_NODES (1 << 20)
+
+/* The time limit, in milliseconds. */
+#define TIME_LIMIT_MS 1
 
 /* The world stops timed at most. */
 #define MAX_STOPS 10000
@@ -144,25 +153,34 @@ allocate_until_marking(void)
 
 /*
  * Check the stops from `first` until the one that completed the marking:
- * the world ran for at most a quarter of the time it was stopped.
+ * at least half of the times between two of them are under a quarter of
+ * the time limit.
  */
 static void
 check_back_to_back(const char *what, int first)
 {
   double stopped = 0, running = 0;
-  int i;
+  int i, n_gaps = 0, n_long = 0;
 
   for (i = first; i < n_stops; i++) {
     stopped += stop_end[i] - stop_start[i];
     if (completes[i])
       break;
-    if (i + 1 < n_stops)
-      running += stop_start[i + 1] - stop_end[i];
+    if (i + 1 < n_stops) {
+      double gap = stop_start[i + 1] - stop_end[i];
+
+      running += gap;
+      n_gaps++;
+      if (gap >= TIME_LIMIT_MS * 1000.0 / 4)
+        n_long++;
+    }
   }
-  printf("%s: %d stops, %.0f us stopped, %.0f us running\n", what,
-         i - first + 1, stopped, running);
+  printf("%s: %d stops, %.0f us stopped, %.0f us running,"
+         " %d of %d times between stops at least %d us\n",
+         what, i - first + 1, stopped, running, n_long, n_gaps,
+         TIME_LIMIT_MS * 1000 / 4);
   CHECK(i < n_stops);
-  CHECK(running <= stopped / 4);
+  CHECK(2 * n_long <= n_gaps);
 }
 
 int
@@ -178,7 +196,7 @@ main(void)
            " test skipped\n");
     return 0;
   }
-  GC_set_time_limit(1);
+  GC_set_time_limit(TIME_LIMIT_MS);
   GC_set_full_freq(0);
   root = build(0, N_NODES);
   GC_gcollect();
