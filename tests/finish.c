@@ -598,10 +598,14 @@ main(void)
       fins[i / (N_OLD / N_FIN)] = new_fin(FIN_KEY(i / (N_OLD / N_FIN)));
     olds[i] = new_old(i);
   }
+  /*
+   * Complete the collection work left before setting the callbacks:
+   * a collection in progress could pass for a set-up, and `on_event()`
+   * would count the end of a pending finish without its start.
+   */
+  GC_gcollect();
   GC_set_on_collection_event(on_event);
   GC_set_start_callback(on_full_start);
-  /* Complete the collection in progress, which could pass for a set-up. */
-  collect();
   n_pending_setup = run(N_COLLECTIONS);
   set_time_limit_us(2000);
   n_pending_full = run(N_COLLECTIONS);
