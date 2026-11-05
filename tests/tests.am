@@ -337,6 +337,11 @@ check_PROGRAMS += unmapchunkstest
 unmapchunkstest_SOURCES = tests/unmapchunks.c
 unmapchunkstest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
+TESTS += liftlimittest$(EXEEXT)
+check_PROGRAMS += liftlimittest
+liftlimittest_SOURCES = tests/liftlimit.c
+liftlimittest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+
 endif
 
 if CPLUSPLUS
@@ -445,6 +450,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f forktest$(EXEEXT) || ./forktest$(EXEEXT)
 	test ! -f heapsectstest$(EXEEXT) || ./heapsectstest$(EXEEXT)
 	test ! -f initfromthreadtest$(EXEEXT) || ./initfromthreadtest$(EXEEXT)
+	test ! -f liftlimittest$(EXEEXT) || ./liftlimittest$(EXEEXT)
 	test ! -f markercounttest$(EXEEXT) || ./markercounttest$(EXEEXT)
 	test ! -f markslicestest$(EXEEXT) || ./markslicestest$(EXEEXT)
 	test ! -f stackunmaptest$(EXEEXT) || ./stackunmaptest$(EXEEXT)
