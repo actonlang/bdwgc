@@ -2024,10 +2024,18 @@ test_long_mult(void)
 
 static size_t initial_heapsize;
 
+/*
+ * The sum, in KiB, of the heap growths reported by the warnings "Heap
+ * grown by ... KiB while GC was disabled".  The collector issues them with
+ * the allocator lock held, so the lock protects this counter.
+ */
+static size_t disabled_gc_growth_kib;
+
 static void
 check_heap_stats(void)
 {
   size_t max_heap_sz;
+  size_t disabled_gc_growth;
   size_t init_heap_sz = initial_heapsize;
   int i;
 #if !defined(GC_NO_FINALIZATION) && defined(FINALIZE_ON_DEMAND)
@@ -2187,12 +2195,21 @@ check_heap_stats(void)
     GC_printf("Incorrect execution - missed some allocations\n");
     FAIL;
   }
+  /*
+   * The bound limits the heap growth that the collector chooses, so add
+   * the growth made while GC was disabled to it.
+   */
+  GC_alloc_lock();
+  disabled_gc_growth = disabled_gc_growth_kib << 10;
+  GC_alloc_unlock();
+  max_heap_sz += disabled_gc_growth;
   if (GC_get_heap_size() + GC_get_unmapped_bytes() > max_heap_sz
       && !GC_get_find_leak()) {
     GC_printf("Unexpected heap growth - collector may be broken"
-              " (heapsize: %lu, expected: %lu)\n",
+              " (heapsize: %lu, expected: %lu, of which grown while GC"
+              " was disabled: %lu)\n",
               (unsigned long)(GC_get_heap_size() + GC_get_unmapped_bytes()),
-              (unsigned long)max_heap_sz);
+              (unsigned long)max_heap_sz, (unsigned long)disabled_gc_growth);
     FAIL;
   }
 #ifdef USE_MUNMAP
@@ -2246,6 +2263,10 @@ static void GC_CALLBACK
 warn_proc(const char *msg, GC_uintptr_t arg)
 {
   GC_printf(msg, arg);
+  if (strcmp(msg, "GC Warning: Heap grown by %" WARN_PRIuPTR
+                  " KiB while GC was disabled\n")
+      == 0)
+    disabled_gc_growth_kib += (size_t)arg;
   /* `FAIL;` */
 }
 
