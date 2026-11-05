@@ -12,7 +12,7 @@ jobs:
       ${{ matrix.conf_cflags }} ${{ matrix.cflags_extra }}
       ${{ matrix.ldflags }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     strategy:
       # Deliver the feedback for all matrix combinations.

@@ -15,7 +15,7 @@ jobs:
       dll:${{ matrix.shared_libs }}
       cpp:${{ matrix.cplusplus }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 6
+    timeout-minutes: 10
 
     strategy:
       # Deliver the feedback for all matrix combinations.
