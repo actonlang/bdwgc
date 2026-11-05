@@ -1402,6 +1402,10 @@ if(BUILD_TESTING)
         target_link_libraries(unmapchunkstest PRIVATE gc ${THREADDLLIBS_LIST})
         add_test(NAME unmapchunkstest COMMAND unmapchunkstest)
 
+        add_executable(liftlimittest tests/liftlimit.c ${NODIST_SRC})
+        target_link_libraries(liftlimittest PRIVATE gc ${THREADDLLIBS_LIST})
+        add_test(NAME liftlimittest COMMAND liftlimittest)
+
         if(NOT WIN32)
             add_executable(forktest tests/fork.c ${NODIST_SRC})
             target_link_libraries(
