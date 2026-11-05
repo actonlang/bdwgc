@@ -918,7 +918,8 @@ pace_next_slice(void)
  * the time limit, due after the allocation volume between two steps, and
  * at the latest the time limit after the end of the previous chunk (a call of
  * `GC_collect_a_little_inner()` with nothing allocated since the previous one
- * makes a step due, not a chunk).  The phases:
+ * makes a step due, not a chunk).  If the time limit is set to
+ * `GC_TIME_UNLIMITED` meanwhile, the next chunk is due at once.  The phases:
  *   - `SETUP_SWEEP`: the blocks of the reclaim lists are swept, also by
  *     the allocator, as the mark bits are still those of the previous
  *     collection;
@@ -1074,7 +1075,8 @@ setup_chunk_due(void)
 {
   word allocd = allocd_now();
 
-  return allocd - allocd_at_slice >= slice_bytes || allocd < allocd_at_slice
+  return GC_TIME_UNLIMITED == GC_time_limit
+         || allocd - allocd_at_slice >= slice_bytes || allocd < allocd_at_slice
          || us_since(setup_chunk_end) >= time_limit_us();
 }
 
@@ -1130,11 +1132,12 @@ STATIC word GC_clear_fl_marks(ptr_t *pq, GC_bool clear_links,
  * memory the collection found free, thus the chunks run closer together
  * than the steps of the marking.  A chunk of the unmapping is due the time
  * limit after the end of the previous one, so that the client keeps at
- * least half of the time.  No collection starts while the finish is
- * pending, except that a collection that is due ends the unmapping after
- * its first chunk (the blocks left are unmapped after a later
- * collection); `GC_try_to_collect_inner()` completes the finish at once.
- * Protected by the allocator lock.
+ * least half of the time.  If the time limit is set to `GC_TIME_UNLIMITED`
+ * meanwhile, the next chunk is due at once.  No collection starts while
+ * the finish is pending, except that a collection that is due ends the
+ * unmapping after its first chunk (the blocks left are unmapped after
+ * a later collection); `GC_try_to_collect_inner()` completes the finish at
+ * once.  Protected by the allocator lock.
  */
 #  define FINISH_NONE 0
 #  define FINISH_CLEAR 1
@@ -1379,6 +1382,8 @@ finish_chunk_due(void)
 {
   word allocd = allocd_now();
 
+  if (GC_TIME_UNLIMITED == GC_time_limit)
+    return TRUE;
 #  ifdef USE_MUNMAP
   if (FINISH_UNMAP == finish_phase)
     return us_since(setup_chunk_end) >= time_limit_us();
