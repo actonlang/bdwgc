@@ -64,8 +64,9 @@
 /*
  * Whether the unmapping after a collection spans several chunks.  Only
  * with the parallel marker it runs in chunks.  The clock of the collector
- * counts milliseconds on Windows (`GetTickCount64()`), thus a time limit
- * lasts until the next tick there, and the unmapping may end in one chunk.
+ * counts milliseconds on Windows (`GetTickCount64()` or `GetTickCount()`),
+ * thus a time limit lasts until the next tick there, and the unmapping may
+ * end in one chunk.
  * With `BSD_TIME` it reads the user time of the process (`getrusage()`),
  * which leaves out the time that the kernel spends unmapping, so there too
  * the unmapping may end in one chunk.

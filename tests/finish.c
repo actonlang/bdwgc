@@ -115,9 +115,9 @@
 /*
  * The calls of `GC_collect_a_little()` that a set-up, or a finish with the
  * collections disabled, takes at most.  The clock of the collector counts
- * milliseconds on Windows (`GetTickCount64()`): a chunk that only the time
- * limit makes due runs once the clock advances, up to 15.6 ms or several
- * hundred thousand calls later.
+ * milliseconds on Windows (`GetTickCount64()` or `GetTickCount()`): a chunk
+ * that only the time limit makes due runs once the clock advances, up to
+ * 15.6 ms or several hundred thousand calls later.
  */
 #  ifdef _WIN32
 #    define MAX_WAIT_CALLS 100000000UL
@@ -129,8 +129,8 @@
  * Whether a set-up or a finish spans several chunks.  Only with the
  * parallel marker a collection is marked in steps, set up and finished in
  * chunks.  The clock of the collector counts milliseconds on Windows
- * (`GetTickCount64()`), thus a time limit lasts until the next tick there,
- * and a set-up or a finish seldom spans two chunks.
+ * (`GetTickCount64()` or `GetTickCount()`), thus a time limit lasts until
+ * the next tick there, and a set-up or a finish seldom spans two chunks.
  */
 #  if defined(PARALLEL_MARK) && !defined(_WIN32)
 #    define IN_CHUNKS 1

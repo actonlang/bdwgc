@@ -1245,11 +1245,11 @@ time_limit_us(void)
  * `steps_room()` and `slice_gap_passed()`), in microseconds.  A slice
  * measured as 0 us ended before the clock of the collector advanced by
  * a microsecond: where the clock counts milliseconds (with `GetTickCount64()`
- * on Windows) or reads the user time of the process (with `BSD_TIME`),
- * a slice that ends before the next tick reads so, however long it ran.  It
- * counts as long as the time limit, the length of a step that ends at it,
- * instead of leaving no room and no gap before the next slice.  Without
- * a time limit, it counts as 0.
+ * or `GetTickCount()` on Windows) or reads the user time of the process
+ * (with `BSD_TIME`), a slice that ends before the next tick reads so,
+ * however long it ran.  It counts as long as the time limit, the length of
+ * a step that ends at it, instead of leaving no room and no gap before the
+ * next slice.  Without a time limit, it counts as 0.
  */
 static unsigned long
 paced_slice_us(void)
