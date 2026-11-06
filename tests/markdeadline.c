@@ -1425,9 +1425,10 @@ check_setup_chunks(void)
 #  if !defined(_WIN32) && !defined(BSD_TIME)
   /*
    * The clock of the collector counts milliseconds on Windows
-   * (`GetTickCount64()`), and with `BSD_TIME` it reads the user time of the
-   * process (`getrusage()`), which may stay the same over several reads,
-   * thus a time limit of 1 ns lasts until the clock advances there.
+   * (`GetTickCount64()` or `GetTickCount()`), and with `BSD_TIME` it reads
+   * the user time of the process (`getrusage()`), which may stay the same
+   * over several reads, thus a time limit of 1 ns lasts until the clock
+   * advances there.
    */
   CHECK(SETUP_SWEEP == setup_phase || SETUP_CLEAR == setup_phase);
 #  endif

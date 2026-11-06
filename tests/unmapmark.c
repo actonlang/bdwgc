@@ -97,8 +97,8 @@
  * `GC_collect_a_little()` in between do nothing, so a bound on their
  * number would not bound the time, and a slice that stops the world for
  * long (e.g. on a loaded machine) would exhaust it.  The clock of the
- * collector counts milliseconds on Windows (`GetTickCount64()`), so there
- * a wait lasts until a later tick of it.
+ * collector counts milliseconds on Windows (`GetTickCount64()` or
+ * `GetTickCount()`), so there a wait lasts until a later tick of it.
  */
 #define MAX_WAIT_S 60
 
