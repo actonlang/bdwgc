@@ -599,6 +599,27 @@ main(void)
   }
   set_time_limit_us(10);
   GC_set_full_freq(0);
+#  if defined(PARALLEL_MARK) && defined(_WIN32)
+  /*
+   * The clock of the collector counts milliseconds on Windows, in ticks of
+   * about 15.6 ms (`GetTickCount64()`, or `GetTickCount()` where `GC_WINNT` is
+   * not defined, as in 32-bit builds by MinGW GCC or clang).  A step of the
+   * marking waits after the latest slice for a spacing that this clock reads
+   * as passed only at its next tick, thus away from the heap cap a step starts
+   * at most once per tick, and the marking falls behind the allocation.
+   * Without an allocation budget, the heap cap is the live data plus half of
+   * the distance from it to the heap ceiling, about 1.5 GiB in a 32-bit
+   * process with 4 GiB of memory or more, and the heap of this test grows far
+   * beyond its live data.  Every request of memory from the system takes one
+   * of the `MAX_HEAP_SECTS` slots there, 512 in a 32-bit build without
+   * `LARGE_CONFIG` and `SMALL_CONFIG`, and the collector aborts once they run
+   * out.  A budget of 100% puts the cap at twice the live data, and near the
+   * cap the marking and the finish complete in one stop, thus the finish is
+   * seldom pending here.  Elsewhere the test runs without a budget, as it
+   * checks there that the finish was pending (see `IN_CHUNKS`).
+   */
+  GC_set_alloc_budget_percent(100);
+#  endif
   for (i = 0; i < N_OLD; i++) {
     if (i % (N_OLD / N_FIN) == 0)
       fins[i / (N_OLD / N_FIN)] = new_fin(FIN_KEY(i / (N_OLD / N_FIN)));
