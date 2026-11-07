@@ -4270,6 +4270,26 @@ GC_collect_or_expand(word needed_blocks, unsigned flags, GC_bool retry)
     }
   }
 
+  /*
+   * Without a time limit, outside the manual VDB mode (see `steps_on()`),
+   * a collection is marked in one world-stopped mark, and a marking is in
+   * progress only if a stop function abandoned that mark (or the time
+   * limit was lifted during the marking).  The allocation advances such
+   * a marking only in its calls of `GC_collect_a_little_inner()` (`GC_rate`
+   * units of `GC_mark_some()` per block), and every shortage of blocks
+   * until it completes would grow the heap.  Thus the first attempt
+   * completes the marking instead, and the caller retries the allocation,
+   * which may grow the heap.  If the stop function of the client
+   * (`GC_default_stop_func`) stops the completion, then the marking stays
+   * in progress, and the heap grows below.
+   */
+  if (GC_incremental && GC_time_limit == GC_TIME_UNLIMITED && !GC_manual_vdb
+      && !GC_dont_gc && !retry && GC_collection_in_progress()
+      && GC_complete_marking(GC_default_stop_func, 1)) {
+    RESTORE_CANCEL(cancel_state);
+    return TRUE;
+  }
+
   max_increment = max_heap_increment();
   blocks_to_get
       = target != 0
