@@ -41,10 +41,9 @@
  * load than those before them, while with a window of the allocation rate
  * that starts at the finish of the previous collection, every run fails.
  * Where the clock of the collector reads the processor time of the process
- * (`clock()` where the collector reads no clock of the elapsed time, as in
- * the CMake and autotools builds on macOS, and the user time with
- * `BSD_TIME`), it does not advance while the client idles, and the check
- * holds with any window.
+ * (`clock()` where the collector reads no clock of the elapsed time, and the
+ * user time with `BSD_TIME`), it does not advance while the client idles,
+ * and the check holds with any window.
  *
  * This test includes the collector source to read the pacing state.
  * Without the manual VDB mode, the parallel marker, the clock or a known
