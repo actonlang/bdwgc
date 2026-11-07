@@ -1060,6 +1060,10 @@ if(BUILD_TESTING)
         target_compile_options(gctest PRIVATE /wcd=201)
     endif()
 
+    add_executable(abandonedmarktest tests/abandonedmark.c ${NODIST_SRC})
+    target_link_libraries(abandonedmarktest PRIVATE gc)
+    add_test(NAME abandonedmarktest COMMAND abandonedmarktest)
+
     add_executable(allocbudgettest tests/allocbudget.c ${NODIST_SRC})
     target_link_libraries(allocbudgettest PRIVATE gc)
     add_test(NAME allocbudgettest COMMAND allocbudgettest)

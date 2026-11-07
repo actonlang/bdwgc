@@ -34,6 +34,11 @@ gctest_html_SOURCES = $(gctest_SOURCES)
 gctest_html_LDADD = $(gctest_LDADD)
 endif
 
+TESTS += abandonedmarktest$(EXEEXT)
+check_PROGRAMS += abandonedmarktest
+abandonedmarktest_SOURCES = tests/abandonedmark.c
+abandonedmarktest_LDADD = $(test_ldadd)
+
 TESTS += allocbudgettest$(EXEEXT)
 check_PROGRAMS += allocbudgettest
 allocbudgettest_SOURCES = tests/allocbudget.c
@@ -430,6 +435,7 @@ endif
 check-without-test-driver: export GC_PROMPT_DISABLED=1
 check-without-test-driver: $(TESTS)
 	./gctest$(EXEEXT)
+	./abandonedmarktest$(EXEEXT)
 	./allocbudgettest$(EXEEXT)
 	./cpucounttest$(EXEEXT)
 	./dbgfunctest$(EXEEXT)
