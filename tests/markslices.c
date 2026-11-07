@@ -81,8 +81,9 @@
  * bound no time, as the collector spaces the steps of a caller that
  * allocates nothing in time, and the calls in between run none.  In a slow
  * build on a loaded machine, stopping the world takes longer than the time
- * limit, which counts from before the stop, so that a step marks little,
- * and the next step waits as long again.
+ * limit, which counts from when the world is stopped, and the next step
+ * waits until the world has run for as long as the previous one stopped it,
+ * the stop included, thus the steps mark for a small part of the time.
  */
 #define MAX_DRIVE_S 180
 

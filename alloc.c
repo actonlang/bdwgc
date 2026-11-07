@@ -3023,9 +3023,10 @@ GC_stopped_mark(GC_stop_func stop_func)
 /*
  * Run a step of the collection in progress (see `steps_on()`): stop the
  * world, mark (in parallel if possible) until the mark stack is empty or,
- * unless `unlimited`, the time limit passes, and restart the world.  Unlike
- * `GC_stopped_mark()`, this reads no dirty bits.  Return whether the mark
- * stack is empty (a final mark follows).
+ * unless `unlimited`, the time limit has passed since the world was
+ * stopped, and restart the world.  Unlike `GC_stopped_mark()`, this reads
+ * no dirty bits.  Return whether the mark stack is empty (a final mark
+ * follows).
  */
 STATIC GC_bool
 GC_parallel_mark_step(GC_bool unlimited)
@@ -3041,8 +3042,7 @@ GC_parallel_mark_step(GC_bool unlimited)
   /* Builders of free lists read the mark bits outside the lock. */
   if (GC_parallel)
     GC_wait_for_reclaim();
-  GET_TIME(GC_start_time);
-  slice_start = GC_start_time;
+  GET_TIME(slice_start);
 #  ifdef THREADS
   if (GC_on_collection_event)
     GC_on_collection_event(GC_EVENT_PRE_STOP_WORLD);
@@ -3055,11 +3055,16 @@ GC_parallel_mark_step(GC_bool unlimited)
   GC_world_stopped = TRUE;
 #    endif
 #  endif
+  /*
+   * The time limit counts from here, so that the step has it for marking
+   * however long stopping the world took.
+   */
+  GET_TIME(GC_start_time);
   if (!unlimited) {
     current_time_limit(&limit_ms, &limit_ns);
     GC_set_mark_deadline(limit_ms, limit_ns);
   }
-  /* Make progress even if stopping the world took the whole time limit. */
+  /* Make progress even if `GC_timeout_stop_func()` returns true at once. */
   do {
     if (GC_mark_some(cold_gc_frame)) {
       stack_empty = TRUE;
