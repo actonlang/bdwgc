@@ -162,6 +162,39 @@ jobs:
           find .zig-cache/o -name '*.gc.log' -newer build.zig
           -printf '=== %p\n' -exec cat {} \;
 
+  console-log:
+    name: ${{ matrix.os }} ${{ matrix.linkage }} console log
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        zig_version: ["0.17.0"]
+        os: [windows-latest]
+        linkage: [static, dynamic]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ matrix.zig_version }}
+
+      - name: Build and run tests
+        # With these macros, the collector writes its messages to stdout
+        # and stderr, as on the other systems, and shows no message box on
+        # a fatal error. Then the runs of wbarverifytest that must exit with
+        # status 70 run on Windows too.
+        run: >
+          zig build
+          "-DCFLAGS_EXTRA=-DCONSOLE_LOG -DNO_MSGBOX_ON_ERROR"
+          -Dlinkage=${{ matrix.linkage }}
+          -Denable_gc_assertions
+          -Denable_werror
+          test
+
   acton-options:
     name: >-
       ${{ matrix.os }} Acton options block_size:${{ matrix.block_size }}
