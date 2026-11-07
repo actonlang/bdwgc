@@ -107,11 +107,12 @@
  * reads no clock of the elapsed time.  It reads the tick count or the
  * performance counter on Windows, and `clock_gettime()` with
  * `HAVE_CLOCK_GETTIME`, which `include/private/gcconfig.h` also defines on
- * Cosmopolitan and Haiku, and with `_POSIX_TIMERS` on Cygwin and on Linux
- * with glibc (`__USE_POSIX199309`).
+ * Darwin, Cosmopolitan and Haiku, and with `_POSIX_TIMERS` on Cygwin and on
+ * Linux with glibc (`__USE_POSIX199309`).
  */
 #if defined(BSD_TIME)                                       \
     || !(defined(_WIN32) || defined(HAVE_CLOCK_GETTIME)     \
+         || (defined(__APPLE__) && defined(__MACH__))       \
          || defined(__COSMOPOLITAN__) || defined(__HAIKU__) \
          || (defined(_POSIX_TIMERS)                         \
              && (defined(__CYGWIN__)                        \

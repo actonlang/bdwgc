@@ -894,6 +894,14 @@ extern int _end[];
 #  define DATASTART ((ptr_t)get_etext())
 #  define DATAEND ((ptr_t)get_end())
 #  define USE_MMAP_ANON
+/*
+ * `clock_gettime()` is available since macOS 10.12, iOS 10, tvOS 10 and
+ * watchOS 3.  Without `HAVE_CLOCK_GETTIME`, `GET_TIME()` reads `clock()`,
+ * the processor time of all threads of the process, not the elapsed time.
+ */
+#  ifndef HAVE_CLOCK_GETTIME
+#    define HAVE_CLOCK_GETTIME 1
+#  endif
 /* There seems to be some issues with try-lock hanging on Darwin. */
 /* TODO: This should be looked into some more. */
 #  define NO_PTHREAD_TRYLOCK
