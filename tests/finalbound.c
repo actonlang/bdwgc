@@ -48,7 +48,12 @@
  * function of the first part leaves the rule to
  * `GC_get_max_prior_attempts()` (1): each collection takes 3 marks.  It lets
  * a step mark to the end of the marking: without thread-local allocation,
- * the steps run only before the heap grows.
+ * the steps run only before the heap grows, except on Windows.  There the
+ * client calls `GC_collect_a_little()` once every 1024 allocations, as every
+ * request of memory from the system takes one of the `MAX_HEAP_SECTS` slots,
+ * 512 in a 32-bit build without `LARGE_CONFIG` and `SMALL_CONFIG`, the scratch
+ * chunks for the block headers included, and the heap growth after each slice
+ * that leaves the marking unfinished, 4 per collection, can use them all up.
  *
  * Fourth, as the first part but with the heap cap, the time limit of a final
  * mark grows with each one abandoned, also by the stop function of the
@@ -421,6 +426,12 @@ run_part(int p, unsigned marks, unsigned max_marks)
       CHECK(big != NULL);
       big_for = n_counted;
     }
+#ifdef _WIN32
+    if (3 == p && i % 1024 == 0) {
+      /* See the third part at the top of this file. */
+      (void)GC_collect_a_little();
+    }
+#endif
     if (i % 1024 == 0 && GC_get_heap_size() > MAX_HEAP) {
       fprintf(stderr, "Heap %lu MiB after %lu collections\n",
               (unsigned long)(GC_get_heap_size() / MiB),
