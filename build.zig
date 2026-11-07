@@ -611,12 +611,18 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    // Extra user-defined flags (if any) to pass to the compiler.
+    // Extra user-defined flags (if any) to pass to the compiler.  With
+    // `-DCONSOLE_LOG` among them, the collector writes its log to stderr on
+    // Windows too (see `wbarverifytest` below).
+    var console_log = false;
     if (cflags_extra.len > 0) {
         // Split it up on a space and append each part to flags separately.
         var tokenizer = std.mem.tokenizeScalar(u8, cflags_extra, ' ');
         while (tokenizer.next()) |token| {
             flags.append(b.allocator, token) catch unreachable;
+            if (std.mem.eql(u8, token, "-DCONSOLE_LOG")) {
+                console_log = true;
+            }
         }
     }
 
@@ -902,12 +908,12 @@ pub fn build(b: *std.Build) void {
         // matched) or while the report waits for a full collection
         // (`lost-at-exit`).  The manual VDB mode is not built with the
         // malloc redirection or the back pointers of `enable_gc_debug`, and
-        // on Windows the checker aborts instead and the collector logs to
-        // a file.  Every run gets `GC_WBAR_VERIFY` from the environment:
-        // the test sets it itself, but with msvc and dynamic linkage the
-        // program links its own static copy of the C library (see
-        // `cordtest` above), whose environment the collector DLL does not
-        // read.
+        // on Windows the collector logs the `WBVERIFY` lines to a file
+        // unless `CFLAGS_EXTRA` holds `-DCONSOLE_LOG`.  Every run gets
+        // `GC_WBAR_VERIFY` from the environment: the test sets it itself,
+        // but with msvc and dynamic linkage the program links its own static
+        // copy of the C library (see `cordtest` above), whose environment
+        // the collector DLL does not read.
         const wbar_failing_runs = [_]FailingRun{
             .{ .arg = "lost", .exit_code = 70, .stderr_match = "WBVERIFY LOST " },
             .{ .arg = "missed", .exit_code = 70, .stderr_match = "WBVERIFY MISSED " },
@@ -922,7 +928,7 @@ pub fn build(b: *std.Build) void {
             // parallel marker builds.
             .{ .arg = "final-lost", .exit_code = 70, .stderr_match = "WBVERIFY LOST " },
         };
-        const n_wbar_failing_runs: usize = if (t.os.tag == .windows or enable_redirect_malloc or enable_gc_debug) 0 else if (enable_parallel_mark) wbar_failing_runs.len else wbar_failing_runs.len - 1;
+        const n_wbar_failing_runs: usize = if ((t.os.tag == .windows and !console_log) or enable_redirect_malloc or enable_gc_debug) 0 else if (enable_parallel_mark) wbar_failing_runs.len else wbar_failing_runs.len - 1;
         addTestExt(b, gc, test_step, flags, "wbarverifytest", "tests/wbarverify.c", .{
             .env = &.{.{ .name = "GC_WBAR_VERIFY", .value = "1" }},
             .failing_runs = wbar_failing_runs[0..n_wbar_failing_runs],
