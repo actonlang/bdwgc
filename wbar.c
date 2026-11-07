@@ -53,7 +53,7 @@
       && defined(THREAD_LOCAL_ALLOC)
 #    include "private/pthread_support.h"
 #  endif
-#  if defined(UNIX_LIKE) || defined(DARWIN) || defined(LINUX)
+#  if defined(UNIX_LIKE) || defined(DARWIN) || defined(LINUX) || defined(WASI)
 #    include <unistd.h>
 #  endif
 
@@ -81,11 +81,22 @@ static size_t n_pending;
 /*
  * Exit at once with status 70.  The allocator lock may be held, so
  * a crash handler that forks would wait for it in the at-fork handler.
+ * On Windows, `_exit()` ends the process by `ExitProcess()`, which
+ * detaches the DLLs, and a collector DLL runs its at-exit handlers then.
+ * So `_exit()` would run `wbar_atexit()`, which may collect, with the lock
+ * held, and in `wbar_atexit()` called as `exit()` detaches the DLL, it
+ * would leave the status that `exit()` passed.  `TerminateProcess()` runs
+ * no handler and sets the status.  The other targets (e.g. WinCE, Cygwin,
+ * Emscripten and OS/2), on which this is not tested, abort.
  */
 static void
 wbar_exit(void)
 {
-#  if defined(UNIX_LIKE) || defined(DARWIN) || defined(LINUX)
+#  ifdef MSWIN32
+  (void)TerminateProcess(GetCurrentProcess(), 70);
+#  endif
+#  if defined(UNIX_LIKE) || defined(DARWIN) || defined(LINUX) \
+      || defined(WASI) || defined(MSWIN32)
   _exit(70);
 #  else
   ABORT("GC_WBAR_VERIFY: pointer stores without a write barrier");
