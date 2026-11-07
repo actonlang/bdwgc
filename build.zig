@@ -791,6 +791,7 @@ pub fn build(b: *std.Build) void {
             });
         }
     }
+    addTest(b, gc, test_step, flags, "abandonedmarktest", "tests/abandonedmark.c");
     addTest(b, gc, test_step, flags, "allocbudgettest", "tests/allocbudget.c");
     // `cpucounttest` includes the collector source, thus it is not linked
     // with `gc` library.
