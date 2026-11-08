@@ -891,6 +891,38 @@ test_heap_cap_trigger(void)
 #endif
 }
 
+#ifdef MSWIN32
+/*
+ * Exclude from the roots the writable data of the loaded modules other
+ * than the program.  `GC_register_dynamic_libraries()` registers the
+ * committed writable regions of all module images as roots, which it
+ * finds by the same walk of the address space.  In a 32-bit address
+ * space, some constant words in the data of the system DLLs fall inside
+ * the heap, and the blocks that they point to are black-listed.  A large
+ * object which may hold pointers is not allocated in a run of free blocks
+ * that holds a black-listed block, thus the heap grows instead, and in
+ * the steps with large objects it may exceed twice the target.  The test
+ * keeps no pointers to collectable objects in those modules, and the
+ * malloc redirection does not reach the allocations of the C library DLL.
+ */
+static void
+exclude_other_modules_data(void)
+{
+  ptr_t program = (ptr_t)GetModuleHandle(NULL);
+  ptr_t p = (ptr_t)GC_sysinfo.lpMinimumApplicationAddress;
+
+  while (ADDR_LT(p, (ptr_t)GC_sysinfo.lpMaximumApplicationAddress)) {
+    MEMORY_BASIC_INFORMATION buf;
+
+    TEST_ASSERT(VirtualQuery(p, &buf, sizeof(buf)) == sizeof(buf));
+    if (buf.State == MEM_COMMIT && buf.Type == MEM_IMAGE
+        && is_writable(buf.Protect) && (ptr_t)buf.AllocationBase != program)
+      GC_exclude_static_roots(p, p + buf.RegionSize);
+    p += buf.RegionSize;
+  }
+}
+#endif
+
 int
 main(void)
 {
@@ -898,6 +930,9 @@ main(void)
   test_cgroup_trees();
 #endif
   test_memory_limit();
+#ifdef MSWIN32
+  exclude_other_modules_data();
+#endif
   test_heap_sizing();
   test_heap_cap_trigger();
   printf("SUCCEEDED\n");
