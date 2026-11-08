@@ -155,7 +155,11 @@ now_us(void)
 #  else
   struct timespec ts;
 
+#    if defined(__APPLE__) && defined(__MACH__)
+  (void)clock_gettime(CLOCK_UPTIME_RAW, &ts);
+#    else
   (void)clock_gettime(CLOCK_MONOTONIC, &ts);
+#    endif
   return (double)ts.tv_sec * 1e6 + (double)ts.tv_nsec / 1e3;
 #  endif
 }
