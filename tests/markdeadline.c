@@ -53,17 +53,19 @@
  * At last, with the parallel marker, the test turns the incremental mode on
  * (`GC_enable_incremental()`), with every collection full.  Between its checks
  * it completes each collection by calling `GC_collect_a_little()` with nothing
- * allocated, which must end within a minute, also at time limits of 0.1 ms and
- * 10 us.  With a time limit of 50 ms, a world-stopped mark of a collection
- * must run a parallel mark phase (`GC_mark_no` advances).  With a time limit
- * of 0.1 ms, the world-stopped mark that starts a collection is abandoned, and
- * it must leave no deadline set.  With a time limit of 1 ms, a step must keep
- * it up to a share of half of the time for which the world must be stopped,
- * then up to 4 times it at a share of 0.9; a final mark must keep the limit of
- * a step, or 1.25 times the final mark of the previous collection or twice the
- * longest final mark abandoned if that is more, but at most 4 times it, and
- * run without a limit once it needs more while a caller holds the allocator
- * lock until the marking completes, without the steps, after 4 final marks
+ * allocated, which must end within a minute plus twice the time spent stopping
+ * and restarting the world, and after no more world-stopped marks than
+ * a collection takes, also at time limits of 0.1 ms and 10 us.  With a time
+ * limit of 50 ms, a world-stopped mark of a collection must run a parallel
+ * mark phase (`GC_mark_no` advances).  With a time limit of 0.1 ms, the
+ * world-stopped mark that starts a collection is abandoned, and it must leave
+ * no deadline set.  With a time limit of 1 ms, a step must keep it up to
+ * a share of half of the time for which the world must be stopped, then up to
+ * 4 times it at a share of 0.9; a final mark must keep the limit of a step, or
+ * 1.25 times the final mark of the previous collection or twice the longest
+ * final mark abandoned if that is more, but at most 4 times it, and run
+ * without a limit once it needs more while a caller holds the allocator lock
+ * until the marking completes, without the steps, after 4 final marks
  * abandoned at that bound, or with nothing allocated since the latest of them;
  * a slice must wait until the world has run for as long as the latest slice
  * stopped it (as long as the time limit if that measured 0 us, not at all
@@ -137,7 +139,9 @@
  * many bytes as were freed.  The checks of the unmapping run only where
  * the clock of the collector resolves fractions of a millisecond (see
  * `fine_clock()`).  The incremental mode must still be on then, and the
- * trees must stay intact.
+ * trees must stay intact.  Throughout, a step that leaves the marking
+ * unfinished must keep the world stopped for at least its time limit after
+ * stopping it.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -632,8 +636,9 @@ mark_with_deadlines(unsigned long far_ms)
 
 /*
  * The time a collection takes at most, in microseconds, with nothing
- * allocated: its steps are spaced by the pacing, and the calls of
- * `GC_collect_a_little()` in between do nothing.
+ * allocated, not counting twice the time spent stopping and restarting the
+ * world (see `wait_for_marking()`): its steps are spaced by the pacing, and
+ * the calls of `GC_collect_a_little()` in between do nothing.
  */
 #  define MAX_COLLECT_US 60000000UL
 
@@ -661,11 +666,56 @@ static unsigned long stop_limit_us;
 /* If nonzero, the next world stop lasts at least this many microseconds. */
 static unsigned long stop_spin_us;
 
+/*
+ * The time spent stopping and restarting the world in microseconds, summed by
+ * `on_collection_event()` too (from `GC_EVENT_PRE_STOP_WORLD` to
+ * `GC_EVENT_POST_STOP_WORLD`, and from `GC_EVENT_PRE_START_WORLD`, after the
+ * spin of `stop_spin_us`, to `GC_EVENT_POST_START_WORLD`), the start of the
+ * stop or restart in progress, and the end of the latest stop.
+ */
+static unsigned long stop_restart_us;
+static CLOCK_TYPE stop_restart_start;
+static CLOCK_TYPE stop_end;
+
+/*
+ * Check that a step (a world stop without a world-stopped mark) that leaves
+ * the marking unfinished kept the world stopped for at least its time limit
+ * after stopping it: the step marks from there until the time limit has
+ * passed, unless the mark stack empties (see `GC_parallel_mark_step()`).
+ * Called by `on_collection_event()` before the world is restarted after every
+ * such step, however long stopping the world took.  A step that marks nothing
+ * thus fails the test.  Once the world is stopped, a step that counts its time
+ * limit from before the stop keeps it stopped for that limit less the time
+ * that stopping the world took, plus the time by which the step overruns the
+ * limit, so it fails the test only when stopping the world took longer than
+ * the step then overran its limit.
+ */
+static void
+check_step_time(void)
+{
+  unsigned long us = us_since(stop_end);
+  unsigned long limit_us
+      = stop_limit_us != 0 ? stop_limit_us : time_limit_us();
+
+  if (us < limit_us) {
+    fprintf(stderr,
+            "Step at a time limit of %lu us ended after %lu us with the world"
+            " stopped, the marking not complete\n",
+            limit_us, us);
+  }
+  CHECK(us >= limit_us);
+}
+
 static void GC_CALLBACK
 on_collection_event(GC_EventType e)
 {
   switch (e) {
+  case GC_EVENT_PRE_STOP_WORLD:
+    GET_TIME(stop_restart_start);
+    break;
   case GC_EVENT_POST_STOP_WORLD:
+    stop_restart_us += us_since(stop_restart_start);
+    GET_TIME(stop_end);
     n_stops++;
     stop_limit_us = slice_limit_us;
     break;
@@ -674,6 +724,8 @@ on_collection_event(GC_EventType e)
     mark_no_at_mark_start = GC_mark_no;
     break;
   case GC_EVENT_PRE_START_WORLD:
+    if (!in_stopped_mark && GC_collection_in_progress())
+      check_step_time();
     if (stop_spin_us != 0) {
       CLOCK_TYPE start;
 
@@ -689,6 +741,10 @@ on_collection_event(GC_EventType e)
       if (GC_mark_no != mark_no_at_mark_start)
         n_parallel_stopped_marks++;
     }
+    GET_TIME(stop_restart_start);
+    break;
+  case GC_EVENT_POST_START_WORLD:
+    stop_restart_us += us_since(stop_restart_start);
     break;
   default:
     break;
@@ -733,20 +789,70 @@ start_collection(void)
 }
 
 /*
- * Call `GC_collect_a_little()` with nothing allocated until the marking of
- * the collection in progress, if any, completes, for at most
- * `MAX_COLLECT_US`: a final mark that needs more than 4 times the time
- * limit runs without a limit once one at that bound was abandoned (see
- * `final_limit_us()`).
+ * Call `GC_collect_a_little()` with nothing allocated until the marking of the
+ * collection in progress, if any, completes, for at most `MAX_COLLECT_US` plus
+ * twice the time spent stopping and restarting the world meanwhile, and with
+ * at most as many world-stopped marks as a collection takes: its first one,
+ * and the final marks, of which at most 2 are abandoned below the bound of
+ * their time limit (4 times the time limit), `MAX_ABANDONED_AT_BOUND` at it
+ * and one runs without a limit (see `final_limit_us()`), or, without a heap
+ * cap, `MAX_ABANDONED_FINALS` are abandoned and one runs without a limit.
+ * With nothing allocated, a final mark that needs more than the bound runs
+ * without a limit once one at the bound was abandoned.  A slice counts from
+ * before the world is stopped until it is restarted (see `end_slice()`), and
+ * the next slice waits until the world has run for as long, or for less above
+ * a share of half (see `slice_gap_passed()`).  The time spent stopping and
+ * restarting the world thus counts at most twice in the wait.  The system
+ * decides how long that takes: a few microseconds for a stop or a restart on
+ * an idle machine, up to milliseconds on a loaded one, where the marking at
+ * a time limit of 10 us takes thousands of steps.  The marking with the world
+ * stopped, its share of the gaps between the slices and the calls in between
+ * still count.  With the check of the steps (see `check_step_time()`), the
+ * test thus fails:
+ *   - at a step that leaves the marking unfinished, having kept the world
+ *     stopped for less than its time limit after stopping it, e.g. one that
+ *     marks nothing, or one that counts its time limit from before the stop
+ *     when stopping the world took longer than the step then overran its
+ *     limit;
+ *   - at a world-stopped mark more than a collection takes, e.g. when the
+ *     final marks are abandoned at the bound forever;
+ *   - once the elapsed time less twice the time spent stopping and restarting
+ *     the world reaches `MAX_COLLECT_US`, e.g. when no slice runs, or when the
+ *     steps mark for their time limit but never empty the mark stack: each
+ *     step then adds about twice the time it marks to that difference, thus
+ *     where stopping and restarting the world takes much longer than that, the
+ *     test fails only after many times `MAX_COLLECT_US`.
+ * How long stopping and restarting the world takes is not bounded.
  */
 static void
 wait_for_marking(void)
 {
   CLOCK_TYPE start;
+  unsigned long stops = n_stops, marks = n_stopped_marks;
+  unsigned long stop_restart_at_start = stop_restart_us;
+  unsigned long max_marks;
 
+  LOCK();
+  max_marks = heap_cap() != 0 ? MAX_ABANDONED_AT_BOUND + 4
+                              : MAX_ABANDONED_FINALS + 2;
+  UNLOCK();
   GET_TIME(start);
-  while (GC_collect_a_little() && !FINISH_PENDING())
-    CHECK(us_since(start) < MAX_COLLECT_US);
+  while (GC_collect_a_little() && !FINISH_PENDING()) {
+    unsigned long us = us_since(start);
+    unsigned long stop_restart = stop_restart_us - stop_restart_at_start;
+    unsigned long bound_us = MAX_COLLECT_US + 2 * stop_restart;
+
+    if (us >= bound_us || n_stopped_marks - marks > max_marks) {
+      fprintf(stderr,
+              "Marking at a time limit of %lu us not complete after %lu us,"
+              " with %lu world stops (%lu world-stopped marks) and %lu us"
+              " spent stopping and restarting the world\n",
+              time_limit_us(), us, n_stops - stops, n_stopped_marks - marks,
+              stop_restart);
+    }
+    CHECK(n_stopped_marks - marks <= max_marks);
+    CHECK(us < bound_us);
+  }
 }
 
 /* Complete the collection in progress, if any, and its finish. */
