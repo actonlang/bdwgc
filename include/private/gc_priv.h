@@ -678,19 +678,26 @@ EXTERN_C_END
 #    include <time.h>
 #    define CLOCK_TYPE struct timespec
 #    define CLOCK_TYPE_INITIALIZER C_INITIALIZER_BEGIN 0, 0 C_INITIALIZER_END
-#    if defined(_POSIX_MONOTONIC_CLOCK) && !defined(NINTENDO_SWITCH)
-#      define GET_TIME(x)                               \
-        do {                                            \
-          if (clock_gettime(CLOCK_MONOTONIC, &x) == -1) \
-            ABORT("clock_gettime failed");              \
-        } while (0)
+#    ifdef DARWIN
+/*
+ * On Darwin, `CLOCK_MONOTONIC` is the calendar time less the boot time.
+ * A step of the calendar time (`settimeofday()`) updates the calendar time
+ * first and the boot time after it, thus `CLOCK_MONOTONIC` goes back by
+ * the size of the step at one of the two updates.  It also counts the time
+ * while the system sleeps.  `CLOCK_UPTIME_RAW` reads `mach_absolute_time()`,
+ * which never goes back and does not advance while the system sleeps.
+ */
+#      define GET_TIME_CLOCK_ID CLOCK_UPTIME_RAW
+#    elif defined(_POSIX_MONOTONIC_CLOCK) && !defined(NINTENDO_SWITCH)
+#      define GET_TIME_CLOCK_ID CLOCK_MONOTONIC
 #    else
-#      define GET_TIME(x)                              \
-        do {                                           \
-          if (clock_gettime(CLOCK_REALTIME, &x) == -1) \
-            ABORT("clock_gettime failed");             \
-        } while (0)
+#      define GET_TIME_CLOCK_ID CLOCK_REALTIME
 #    endif
+#    define GET_TIME(x)                                 \
+      do {                                              \
+        if (clock_gettime(GET_TIME_CLOCK_ID, &x) == -1) \
+          ABORT("clock_gettime failed");                \
+      } while (0)
 #    define MS_TIME_DIFF(a, b)                                            \
       /* `a.tv_nsec - b.tv_nsec` is in range -1e9 to 1e9, exclusively. */ \
       ((unsigned long)((a).tv_nsec + (1000000L * 1000 - (b).tv_nsec))     \
