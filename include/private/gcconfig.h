@@ -884,9 +884,10 @@ extern int _end[];
 #  define DATAEND ((ptr_t)get_end())
 #  define USE_MMAP_ANON
 /*
- * `clock_gettime()` is available since macOS 10.12, iOS 10, tvOS 10 and
- * watchOS 3.  Without `HAVE_CLOCK_GETTIME`, `GET_TIME()` reads `clock()`,
- * the processor time of all threads of the process, not the elapsed time.
+ * `clock_gettime()` and `CLOCK_UPTIME_RAW` are available since macOS 10.12,
+ * iOS 10, tvOS 10 and watchOS 3.  Without `HAVE_CLOCK_GETTIME`,
+ * `GET_TIME()` reads `clock()`, the processor time of all threads of the
+ * process, not the elapsed time.
  */
 #  ifndef HAVE_CLOCK_GETTIME
 #    define HAVE_CLOCK_GETTIME 1

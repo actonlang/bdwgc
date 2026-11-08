@@ -257,9 +257,10 @@ sleep_ms(unsigned ms)
 }
 
 /*
- * The time in microseconds, by the tick count on Windows and by the
- * monotonic clock elsewhere, wrapping around (only the differences of the
- * values are used).
+ * The time in microseconds, by the tick count on Windows, by
+ * `CLOCK_UPTIME_RAW` on Darwin (see `GET_TIME()` in
+ * `include/private/gc_priv.h`) and by `CLOCK_MONOTONIC` elsewhere, wrapping
+ * around (only the differences of the values are used).
  */
 static unsigned long
 now_us(void)
@@ -273,7 +274,11 @@ now_us(void)
 #else
   struct timespec ts;
 
+#  if defined(__APPLE__) && defined(__MACH__)
+  (void)clock_gettime(CLOCK_UPTIME_RAW, &ts);
+#  else
   (void)clock_gettime(CLOCK_MONOTONIC, &ts);
+#  endif
   return (unsigned long)ts.tv_sec * 1000000UL
          + (unsigned long)(ts.tv_nsec / 1000);
 #endif
