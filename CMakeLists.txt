@@ -1483,12 +1483,16 @@ if(BUILD_TESTING)
                 PRIVATE gc ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
             )
             if(enable_cplusplus AND NOT (BORLAND OR MSVC OR WATCOM))
-                # Compiled as C++ (by `-x c++` above), the test gets
-                # `pthread_cleanup_push()` of `glibc` as an object whose
-                # destructor runs on unwinding, which needs the C++ runtime.
-                set_target_properties(
-                    threadexittest
-                    PROPERTIES LINKER_LANGUAGE CXX
+                # Compile the test as C (`-x c` comes after `-x c++` above).
+                # In C++, `pthread_cleanup_push()` of `glibc` makes the
+                # cleanup handler the destructor of an object, which runs
+                # only if the unwinding of the thread exit gets through the
+                # frames of the collector, and these have no unwind tables
+                # where the compiler emits none by default (e.g. on ARM,
+                # MIPS, OpenRISC and SPARC).
+                set_source_files_properties(
+                    tests/threadexit.c
+                    PROPERTIES COMPILE_FLAGS "-x c"
                 )
             endif()
             add_test(NAME threadexittest COMMAND threadexittest)

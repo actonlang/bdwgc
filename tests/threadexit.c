@@ -29,7 +29,10 @@
  * suspend the thread by `GC_suspend_thread()`, and 100 ms more.  The main
  * thread then checks that the thread makes no progress while suspended,
  * calls `GC_gcollect()` and resumes the thread.  The test fails if this
- * does not complete within a time limit (60 s by default).
+ * does not complete within a time limit (60 s by default).  The test also
+ * fails if the main thread waits for the exiting thread (e.g. until the
+ * latter is in its cleanup handler) longer than a time limit (60 s by
+ * default).
  * A thread which a collection stops is counted once, even if the
  * collector sends the suspend signal to it again.  In the leak detection
  * mode, the disappearing link and the heap growth are not checked, and
@@ -120,6 +123,14 @@
  */
 #  ifndef SUSPEND_TIMEOUT
 #    define SUSPEND_TIMEOUT 60
+#  endif
+
+/*
+ * The time limit (in seconds) of each wait of the main thread for the
+ * exiting thread.
+ */
+#  ifndef EXITING_THREAD_TIMEOUT
+#    define EXITING_THREAD_TIMEOUT 60
 #  endif
 
 /*
@@ -292,6 +303,38 @@ sleep_ms(long ms)
   }
 }
 
+static long
+elapsed_ms(const struct timespec *since)
+{
+  struct timespec now;
+
+  TEST_ASSERT(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+  return (long)(now.tv_sec - since->tv_sec) * 1000
+         + (now.tv_nsec - since->tv_nsec) / 1000000;
+}
+
+/*
+ * Wait until the exiting thread of the case sets the flag, which tells
+ * that the thread is `what`.  Exit with failure if this takes longer than
+ * `EXITING_THREAD_TIMEOUT` seconds.
+ */
+static void
+wait_for_exiting_thread(const struct exit_case *c, const volatile AO_t *flag,
+                        const char *what)
+{
+  struct timespec start;
+
+  TEST_ASSERT(clock_gettime(CLOCK_MONOTONIC, &start) == 0);
+  while (!AO_load_acquire(flag)) {
+    if (elapsed_ms(&start) >= EXITING_THREAD_TIMEOUT * 1000L) {
+      fprintf(stderr, "%s: exiting thread not %s after %d s\n", c->name, what,
+              EXITING_THREAD_TIMEOUT);
+      exit(1);
+    }
+    sleep_ms(1);
+  }
+}
+
 /* Collect and return the number of the threads the collection stopped. */
 static unsigned
 count_stopped_threads(void)
@@ -346,16 +389,6 @@ overwrite_stack(void)
 }
 
 #  ifdef TEST_SUSPEND_IN_DL_ITERATE_PHDR
-static long
-elapsed_ms(const struct timespec *since)
-{
-  struct timespec now;
-
-  TEST_ASSERT(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
-  return (long)(now.tv_sec - since->tv_sec) * 1000
-         + (now.tv_nsec - since->tv_nsec) / 1000000;
-}
-
 /*
  * The callback of `dl_iterate_phdr()`.  `glibc` holds a lock meanwhile,
  * which a collection acquires before it stops the world.  Wait until the
@@ -405,8 +438,8 @@ collect_while_suspended(pthread_t t)
 {
   AO_t progress;
 
-  while (!AO_load_acquire(&in_dl_iterate_phdr))
-    sleep_ms(1);
+  wait_for_exiting_thread(current_case, &in_dl_iterate_phdr,
+                          "inside the callback of dl_iterate_phdr");
   TEST_ASSERT(signal(SIGALRM, on_alarm) != SIG_ERR);
   (void)alarm(SUSPEND_TIMEOUT);
   AO_store_release(&suspending, 1);
@@ -548,16 +581,14 @@ run_exiting_thread(struct exit_case *c, unsigned stopped_before)
 #  endif
   TEST_ASSERT(GC_pthread_create(&t, NULL, exiting_thread, (void *)c) == 0);
   if (BY_CANCEL == c->kind) {
-    while (!AO_load(&ready_to_cancel))
-      sleep_ms(1);
+    wait_for_exiting_thread(c, &ready_to_cancel, "ready to be canceled");
     TEST_ASSERT(CANCEL_THREAD(t) == 0);
   }
 #  ifdef TEST_SUSPEND_IN_DL_ITERATE_PHDR
   if (c->suspend)
     collect_while_suspended(t);
 #  endif
-  while (!AO_load_acquire(&in_window))
-    sleep_ms(1);
+  wait_for_exiting_thread(c, &in_window, "in its cleanup handler");
 
   /*
    * The other thread is exiting and waits in its cleanup handler.
@@ -582,8 +613,8 @@ run_exiting_thread(struct exit_case *c, unsigned stopped_before)
    * A cancellation request for the thread after it is unregistered must
    * not disable the collection.
    */
-  while (!AO_load_acquire(&unregistered))
-    sleep_ms(1);
+  wait_for_exiting_thread(
+      c, &unregistered, "unregistered by its thread-specific data destructor");
   (void)CANCEL_THREAD(t);
   TEST_ASSERT(GC_pthread_join(t, &status) == 0);
   failed = 0;
