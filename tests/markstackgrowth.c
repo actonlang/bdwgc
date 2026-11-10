@@ -73,6 +73,12 @@
 #endif
 #include "private/gc_priv.h"
 
+/*
+ * The test refuses a request of memory from the OS only with
+ * `GROW_MARK_RING`, which `mark.c` (included below) defines under this
+ * condition.
+ */
+#if defined(PARALLEL_MARK) && defined(STEAL_MARK_STACK_RANGES)
 /* Whether to refuse the next request of memory from the OS. */
 static GC_bool refuse_next_get_mem;
 
@@ -90,8 +96,9 @@ get_test_memory(size_t bytes)
   return (ptr_t)GET_MEM(bytes);
 }
 
-#undef GET_MEM
-#define GET_MEM(bytes) get_test_memory(bytes)
+#  undef GET_MEM
+#  define GET_MEM(bytes) get_test_memory(bytes)
+#endif
 
 #if defined(CPPCHECK) && GC_GNUC_PREREQ(12, 0)
 /*
@@ -188,10 +195,10 @@ static word n_no_room;
 #ifdef GROW_MARK_RING
 /* The growths of the ring during the parallel mark phases of a collection. */
 static word n_ring_grown;
-#endif
 
 /* The overflows of the global mark stack which dropped entries. */
 static word n_overflows;
+#endif
 
 #if defined(PARALLEL_MARK) && defined(STEAL_MARK_STACK_RANGES)
 #  define CHECK_RING
@@ -221,8 +228,8 @@ on_collection_event(GC_EventType e)
   case GC_EVENT_MARK_END:
     /* `GC_after_marking()`, which clears the counter, is not called yet. */
     n_no_room += GC_mark_stack_events.n_no_room;
-    n_overflows += GC_mark_stack_events.n_overflows;
 #ifdef GROW_MARK_RING
+    n_overflows += GC_mark_stack_events.n_overflows;
     n_ring_grown += GC_mark_stack_events.n_ring_grown;
 #endif
 #ifdef CHECK_RING
