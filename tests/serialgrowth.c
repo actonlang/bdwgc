@@ -176,7 +176,7 @@ get_test_memory(size_t bytes)
  */
 #  define MAX_ROUNDS 4
 
-/* The number of the stack bytes cleared after the data is made. */
+/* The number of the stack bytes cleared, below which the data is made. */
 #  define CLEAR_STACK_BYTES 32768
 
 /* The number of the words of each frame of `clear_stack()`. */
@@ -360,10 +360,20 @@ on_mark_stack_empty(struct GC_ms_entry *mark_stack_top,
 static void GC_CALLBACK
 push_roots(void)
 {
+  size_t i;
+
   if (old_push_other_roots != 0)
     old_push_other_roots();
-  /* Push an entry per payload, as the eager root scan does. */
-  GC_push_all_eager(root_items, root_items + n_items);
+  /*
+   * Push an entry per payload, as the eager root scan does.  Each one is
+   * pushed by itself: a scan of the whole range at an `ALIGNMENT` smaller
+   * than a pointer (2 on m68k) would also read the words made of the
+   * halves of two adjacent payload addresses.  Some of these point into
+   * the array of `test_fin_array()`, and an eager scan takes an address
+   * anywhere in a large object as a pointer to that object.
+   */
+  for (i = 0; i < n_items; i++)
+    GC_push_all_eager(&root_items[i], &root_items[i + 1]);
   if (invalidate_in_push && GC_next_mark_stack != NULL) {
     /*
      * A fault while pushing the roots invalidates the mark state, as
@@ -552,9 +562,9 @@ check_fin_list(void *obj, void *cd)
 
 /*
  * Allocate a list and an object with a finalizer referring to it.
- * Nothing else refers to the object.  Called through a pointer (see
- * below), so that no pointer to the object or to the list remains in
- * the frame of the caller.
+ * Nothing else refers to the object.  Called by `clear_stack()` (see
+ * below), so that no pointer to the object or to the list remains where
+ * a later collection finds it.
  */
 static void
 make_holder(void)
@@ -614,7 +624,7 @@ check_fin_array(void *obj, void *cd)
 /*
  * Allocate an array of `fin_array_len` payloads with a finalizer which
  * ignores self-pointers.  Nothing else refers to the array or to the
- * payloads.  Called through a pointer, as `make_holder()`.
+ * payloads.  Called by `clear_stack()`, as `make_holder()`.
  */
 static void
 make_fin_array(void)
@@ -634,22 +644,28 @@ make_fin_array(void)
   n_bad_fin_leaves = 0;
 }
 
-static GC_word clear_stack(size_t bytes);
+static GC_word clear_stack(size_t bytes, void (*make)(void));
 
-/* These are called through pointers to prevent inlining. */
-static void (*volatile make_holder_p)(void) = make_holder;
-static void (*volatile make_fin_array_p)(void) = make_fin_array;
-static GC_word (*volatile clear_stack_p)(size_t) = clear_stack;
+/* This is called through a pointer to prevent inlining. */
+static GC_word (*volatile clear_stack_p)(size_t, void (*)(void)) = clear_stack;
 
 /*
  * Overwrite `bytes` bytes of the stack below the frame of the caller,
- * where the data was made, so that the collector does not find stale
- * pointers there.  This calls itself, each frame overwriting
- * `CLEAR_FRAME_WORDS` words, to keep the frames small.  The returned
- * value is not used.
+ * then call `make` below them to make the data.  A collection by the
+ * caller uses less stack than that, thus it does not scan the frames of
+ * the making, where copies of pointers to the data may remain, and the
+ * slots of these bytes which this recursion does not write (padding)
+ * hold no such copy.  On SPARC this recursion has at least as many
+ * frames as the processor has register windows (8 on SPARC V9), thus
+ * each window that the making uses is filled again with the registers
+ * of a frame of this recursion on the return, and no window keeps such
+ * a copy in a register that a later callee of the caller leaves unused
+ * (the collection saves the registers of each window in its frame).
+ * This calls itself, each frame overwriting `CLEAR_FRAME_WORDS` words,
+ * to keep the frames small.  The returned value is not used.
  */
 static GC_word
-clear_stack(size_t bytes)
+clear_stack(size_t bytes, void (*make)(void))
 {
   volatile GC_word words[CLEAR_FRAME_WORDS];
   size_t i;
@@ -657,8 +673,11 @@ clear_stack(size_t bytes)
   for (i = 0; i < CLEAR_FRAME_WORDS; i++)
     words[i] = 0;
   /* The result is stored, thus this is not a tail call. */
-  if (bytes > sizeof(words))
-    words[0] = clear_stack_p(bytes - sizeof(words));
+  if (bytes > sizeof(words)) {
+    words[0] = clear_stack_p(bytes - sizeof(words), make);
+  } else {
+    make();
+  }
   return words[0];
 }
 
@@ -796,8 +815,7 @@ test_growth(void)
 
   for (round = 1; round <= MAX_ROUNDS; round++) {
     reset_mark_stack();
-    make_holder_p();
-    (void)clear_stack_p(CLEAR_STACK_BYTES);
+    (void)clear_stack_p(CLEAR_STACK_BYTES, make_holder);
     count_unmarked_nodes = TRUE;
     for (i = 1; i <= MAX_FIN_COLLECTIONS && 0 == n_finalized; i++) {
       size_t size_before = GC_mark_stack_size;
@@ -875,8 +893,7 @@ test_fin_array(void)
                       ? 3 * GC_mark_stack_size
                       : MAX_FIN_LIST_LEN;
   for (round = 1; round <= MAX_ROUNDS; round++) {
-    make_fin_array_p();
-    (void)clear_stack_p(CLEAR_STACK_BYTES);
+    (void)clear_stack_p(CLEAR_STACK_BYTES, make_fin_array);
     for (i = 1; i <= MAX_FIN_COLLECTIONS && 0 == n_finalized; i++) {
       n_drops = 0;
       /* A node marked from twice would tell of a scan after a drop. */
@@ -934,8 +951,7 @@ test_refuse_all(void)
 
   for (round = 1; round <= MAX_ROUNDS; round++) {
     reset_mark_stack();
-    make_holder_p();
-    (void)clear_stack_p(CLEAR_STACK_BYTES);
+    (void)clear_stack_p(CLEAR_STACK_BYTES, make_holder);
     for (i = 1; i <= MAX_FIN_COLLECTIONS; i++) {
       n_moves = 0;
       n_drops = 0;
