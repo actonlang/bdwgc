@@ -1044,7 +1044,11 @@ if(BUILD_TESTING)
         else()
             set_source_files_properties(tests/gctest.c PROPERTIES LANGUAGE CXX)
             # To avoid "treating 'c' input as 'c++' when in C++ mode" Clang warning.
-            add_compile_options(-x c++)
+            # Only C and C++ sources get the option, as it would make the
+            # compiler read an assembly source (`sparc_mach_dep.S`) as C++.
+            add_compile_options(
+                "$<$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>:-x;c++>"
+            )
         endif()
     endif(enable_cplusplus)
 
