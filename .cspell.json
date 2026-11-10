@@ -428,6 +428,7 @@
     "WORDER",
     "WORDSZ",
     "WPASYNC",
+    "wqthread",
     "writeprotect",
     "wthread",
     "XGETDATASTART",

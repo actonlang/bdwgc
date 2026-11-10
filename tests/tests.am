@@ -366,6 +366,11 @@ check_PROGRAMS += unmapstabletest
 unmapstabletest_SOURCES = tests/unmapstable.c
 unmapstabletest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
+TESTS += neverrunthreadtest$(EXEEXT)
+check_PROGRAMS += neverrunthreadtest
+neverrunthreadtest_SOURCES = tests/neverrunthread.c
+neverrunthreadtest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+
 endif
 
 if CPLUSPLUS
@@ -479,6 +484,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f liftlimittest$(EXEEXT) || ./liftlimittest$(EXEEXT)
 	test ! -f markercounttest$(EXEEXT) || ./markercounttest$(EXEEXT)
 	test ! -f markslicestest$(EXEEXT) || ./markslicestest$(EXEEXT)
+	test ! -f neverrunthreadtest$(EXEEXT) || ./neverrunthreadtest$(EXEEXT)
 	test ! -f pacingtest$(EXEEXT) || ./pacingtest$(EXEEXT)
 	test ! -f stackunmaptest$(EXEEXT) || ./stackunmaptest$(EXEEXT)
 	test ! -f subthreadcreatetest$(EXEEXT) || ./subthreadcreatetest$(EXEEXT)
