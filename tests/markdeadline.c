@@ -565,11 +565,16 @@ mark_with_deadlines(unsigned long far_ms)
   for (;;) {
     GC_bool phase = GC_mark_state == MS_ROOTS_PUSHED && GC_parallel
                     && GC_phase_markers > 1;
-    word ring_grown, grown, no_room;
+    word grown, no_room;
+#  ifdef STEAL_MARK_STACK_RANGES
+    word ring_grown;
+#  endif
 
     if (phase && 0 == far_ms)
       shrink_mark_stack();
+#  ifdef STEAL_MARK_STACK_RANGES
     ring_grown = GC_mark_stack_events.n_ring_grown;
+#  endif
     grown = GC_mark_stack_events.n_grown;
     no_room = GC_mark_stack_events.n_no_room;
     GET_TIME(GC_start_time);
@@ -619,7 +624,6 @@ mark_with_deadlines(unsigned long far_ms)
 #  else
     if (GC_mark_stack_events.n_grown != grown)
       n_grown_in_stopped++;
-    (void)ring_grown;
 #  endif
   }
   for (t = 0; t < N_TREES; t++)
