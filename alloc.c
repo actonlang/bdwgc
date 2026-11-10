@@ -2484,8 +2484,9 @@ GC_collect_a_little_inner(size_t n_blocks)
       final_mark_no = n_final_abandoned + 1;
       final_mark_unlimited = stop_func != GC_timeout_stop_func
                              || GC_time_limit == GC_TIME_UNLIMITED;
-#endif
-#ifndef NO_CLOCK
+      if (!final_mark_unlimited)
+        GET_TIME(GC_start_time);
+#elif !defined(NO_CLOCK)
       if (GC_time_limit != GC_TIME_UNLIMITED
           && stop_func == GC_timeout_stop_func)
         GET_TIME(GC_start_time);
