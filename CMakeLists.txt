@@ -1511,6 +1511,17 @@ if(BUILD_TESTING)
             add_executable(uffdwptest tests/uffdwp.c ${NODIST_SRC})
             target_link_libraries(uffdwptest PRIVATE gc ${THREADDLLIBS_LIST})
             add_test(NAME uffdwptest COMMAND uffdwptest)
+
+            add_executable(
+                neverrunthreadtest
+                tests/neverrunthread.c
+                ${NODIST_SRC}
+            )
+            target_link_libraries(
+                neverrunthreadtest
+                PRIVATE gc ${THREADDLLIBS_LIST}
+            )
+            add_test(NAME neverrunthreadtest COMMAND neverrunthreadtest)
         endif()
     endif(enable_threads)
 

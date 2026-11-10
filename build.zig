@@ -965,6 +965,7 @@ pub fn build(b: *std.Build) void {
             addTest(b, gc, test_step, flags, "stackunmaptest", "tests/stackunmap.c");
             addTest(b, gc, test_step, flags, "threadkeytest", "tests/threadkey.c");
             addTest(b, gc, test_step, flags, "uffdwptest", "tests/uffdwp.c");
+            addTest(b, gc, test_step, flags, "neverrunthreadtest", "tests/neverrunthread.c");
         }
     }
     if (enable_cplusplus) {

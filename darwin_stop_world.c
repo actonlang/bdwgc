@@ -293,7 +293,17 @@ GC_stack_range_for(ptr_t *phi, thread_act_t thread, GC_thread p,
 #  elif defined(AARCH64)
     lo = (ptr_t)state.THREAD_FLD(sp);
 #    ifdef DARWIN_PARSE_STACK
-    *phi = GC_FindTopOfStack(state.THREAD_FLD(fp));
+    /*
+     * A new thread has the zero frame pointer until the 4th instruction
+     * of `_pthread_start()` sets it (a work queue thread has it in
+     * `start_wqthread()` and until the 5th instruction of
+     * `_pthread_wqthread()`), and `GC_FindTopOfStack(0)` would walk the
+     * frames of the current thread.  Such a thread has no frames yet: its
+     * stack range is empty, and the registers pushed below hold all its
+     * pointers, such as the argument of its start routine.
+     */
+    *phi = state.THREAD_FLD(fp) != 0 ? GC_FindTopOfStack(state.THREAD_FLD(fp))
+                                     : lo;
 #    endif
     {
       int j;
