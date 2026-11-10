@@ -78,10 +78,13 @@
 
 /*
  * The cycles to run, and the cycles at most while the case is not reached
- * (e.g. if the large objects are not adjacent).
+ * (e.g. if the large objects are not adjacent).  A cycle that sets the
+ * case up but does not reach it neither frees the scanned object while the
+ * collection marks nor merges the free blocks, and the large objects of
+ * the cycles after it may then not be adjacent for several cycles.
  */
 #define N_CYCLES 3
-#define MAX_CYCLES 8
+#define MAX_CYCLES 40
 
 /* The largest block size: a smaller gap between objects holds no block. */
 #define MAX_BLOCK (64 * 1024)
@@ -147,11 +150,12 @@ on_event(GC_EventType e)
 }
 
 /*
- * The cycles that found the scanned object next to an unmapped block, and
- * the cycles whose marking was still in progress after the step that
- * started it.
+ * The cycles that found the scanned object next to an unmapped block, the
+ * cycles of these whose marking was still in progress after the step that
+ * started it, and the cycles of these that found the tail object marked
+ * while the marking was in progress.
  */
-static int n_set_up, n_spanned;
+static int n_set_up, n_spanned, n_tail_marked;
 
 /*
  * Run a cycle with `steps` steps before the scanned object is freed.
@@ -206,10 +210,18 @@ run_cycle(int steps)
     CHECK(difftime(time(NULL), start) < MAX_WAIT_S);
     (void)GC_collect_a_little();
   }
-  reached = n_mark_starts == starts + 1 && n_mark_ends == ends
-            && NULL
-                   == GC_call_with_alloc_lock(is_marked,
-                                              (void *)scanned[TAIL_INDEX]);
+  /*
+   * A final mark starts only once a step has emptied the mark stack, and
+   * one abandoned at the time limit leaves the marking in progress.
+   */
+  reached = n_mark_ends == ends;
+  if (reached
+      && GC_call_with_alloc_lock(is_marked, (void *)scanned[TAIL_INDEX])
+             != NULL) {
+    /* The tail object is marked already. */
+    n_tail_marked++;
+    reached = 0;
+  }
   if (reached) {
     size_t unmapped, total;
     void *big;
@@ -289,10 +301,22 @@ main(void)
     return 0;
   }
   if (0 == n_reached && MARK_STEPS) {
-    fprintf(stderr, "No object was freed while marking\n");
+    /*
+     * Every cycle that was set up missed the case, either with the tail
+     * object marked or with the marking ended.
+     */
+    fprintf(stderr,
+            "No object was freed while marking in %d cycles: %d set up,"
+            " %d of them marked over more than one step, the tail object"
+            " marked in %d and the marking ended in %d\n",
+            cycle, n_set_up, n_spanned, n_tail_marked,
+            n_set_up - n_tail_marked);
     return 1;
   }
-  printf("SUCCEEDED (freed while marking in %d of %d cycles)\n", n_reached,
-         cycle);
+  printf("SUCCEEDED (freed while marking in %d of %d cycles: %d set up,"
+         " %d of them marked over more than one step, the tail object"
+         " marked in %d and the marking ended in %d)\n",
+         n_reached, cycle, n_set_up, n_spanned, n_tail_marked,
+         n_set_up - n_reached - n_tail_marked);
   return 0;
 }
