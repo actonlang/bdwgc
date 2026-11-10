@@ -23,9 +23,11 @@
  * memory controller, a missing list and a path too long.  Then, after
  * the collector initialization, check that the size of the physical
  * memory is found on Linux, macOS and Windows, and that it matches
- * `/proc/meminfo` pseudo-file on Linux and `hw.memsize` on macOS, that
- * the memory limit is the smaller one of it and of the cgroup limit, and
- * that `GC_set_memory_limit()` lowers the limit and cannot raise it.
+ * `/proc/meminfo` pseudo-file on Linux (modulo 4 GiB where `sysinfo()`
+ * gives it so, as qemu-user does for 32-bit programs) and `hw.memsize` on
+ * macOS, that the memory limit is the smaller one of it and of the cgroup
+ * limit, and that `GC_set_memory_limit()` lowers the limit and cannot
+ * raise it.
  * Then check the heap sizing by the memory limit, with an allocation
  * budget of 200% and a memory limit of 64 MiB (the heap ceiling is
  * 48 MiB): as the live data grows step by step from 2 MiB to 52 MiB,
@@ -89,6 +91,9 @@
 
 #ifdef DARWIN
 #  include <sys/sysctl.h>
+#endif
+#ifdef LINUX
+#  include <sys/sysinfo.h>
 #endif
 
 #define TEST_ASSERT(e)                                                      \
@@ -326,7 +331,11 @@ test_cgroup_trees(void)
 /*
  * Return the size of the physical memory given by `MemTotal` line of
  * `/proc/meminfo` pseudo-file, in bytes, saturated at `GC_WORD_MAX` (as
- * the collector saturates it).
+ * the collector saturates it), or modulo 4 GiB where `sysinfo()` gives it
+ * so (`sysconf()` derives the size from `sysinfo()`).  A kernel gives
+ * a size that does not fit in the `totalram` field in larger units
+ * (`mem_unit`), but qemu-user copies the size of a 64-bit host, in bytes,
+ * into the 32-bit field of a 32-bit program, which keeps it modulo 4 GiB.
  */
 static word
 meminfo_total(void)
@@ -334,6 +343,7 @@ meminfo_total(void)
   char line[256];
   FILE *f = fopen("/proc/meminfo", "r");
   unsigned long kib = 0;
+  struct sysinfo si;
 
   TEST_ASSERT(f != NULL);
   while (fgets(line, sizeof(line), f) != NULL) {
@@ -342,7 +352,16 @@ meminfo_total(void)
   }
   TEST_ASSERT(fclose(f) == 0);
   TEST_ASSERT(kib > 0);
-  return (word)kib > GC_WORD_MAX >> 10 ? GC_WORD_MAX : (word)kib << 10;
+  if ((word)kib <= GC_WORD_MAX >> 10)
+    return (word)kib << 10;
+  if (sysinfo(&si) == 0 && 1 == si.mem_unit
+      && si.totalram == (word)kib << 10) {
+    printf("sysinfo() gives the size of the physical memory modulo 4 GiB:"
+           " %lu MiB\n",
+           (unsigned long)(si.totalram >> 20));
+    return (word)si.totalram;
+  }
+  return GC_WORD_MAX;
 }
 
 #endif /* LINUX */
