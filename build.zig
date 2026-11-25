@@ -850,6 +850,7 @@ pub fn build(b: *std.Build) void {
         .filename2 = if (t.abi == .msvc) "extra/msvc_dbg.c" else null,
         .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
     });
+    addTest(b, gc, test_step, flags, "sectionstarttest", "tests/sectionstart.c");
     // Likewise, `serialgrowthtest` includes the collector source.
     addTestExt(b, gc, test_step, flags, "serialgrowthtest", "tests/serialgrowth.c", .{
         .link_gc = false,

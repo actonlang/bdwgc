@@ -1242,6 +1242,10 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME rescuetest COMMAND rescuetest)
 
+    add_executable(sectionstarttest tests/sectionstart.c ${NODIST_SRC})
+    target_link_libraries(sectionstarttest PRIVATE gc)
+    add_test(NAME sectionstarttest COMMAND sectionstarttest)
+
     # Likewise, the test includes the collector source.
     add_executable(serialgrowthtest tests/serialgrowth.c ${NODIST_SRC})
     if(MSVC)

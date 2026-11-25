@@ -152,6 +152,11 @@ rescuetest_SOURCES = tests/rescue.c
 rescuetest_LDADD = $(nodist_libgc_la_OBJECTS) $(EXTRA_TEST_LIBS) \
                    @addobjs@ $(THREADDLLIBS) $(UNWINDLIBS) $(ATOMIC_OPS_LIBS)
 
+TESTS += sectionstarttest$(EXEEXT)
+check_PROGRAMS += sectionstarttest
+sectionstarttest_SOURCES = tests/sectionstart.c
+sectionstarttest_LDADD = $(test_ldadd)
+
 # Likewise, the test includes the collector source.
 TESTS += serialgrowthtest$(EXEEXT)
 check_PROGRAMS += serialgrowthtest
@@ -456,6 +461,7 @@ check-without-test-driver: $(TESTS)
 	./realloctest$(EXEEXT)
 	./reallocfreetest$(EXEEXT)
 	./rescuetest$(EXEEXT)
+	./sectionstarttest$(EXEEXT)
 	./serialgrowthtest$(EXEEXT)
 	./sizemaptest$(EXEEXT)
 	./smashtest$(EXEEXT)
