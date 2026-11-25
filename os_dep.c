@@ -2775,7 +2775,17 @@ GC_unix_mmap_get_mem(size_t bytes)
 {
   void *result;
   size_t map_len;
-  static word last_addr = HEAP_START;
+  /*
+   * The complement of the end of the memory mapped by the latest call, or
+   * 0 before the first call.  `mmap()` is asked to map the next memory at
+   * that end.  The end is kept complemented because the collector scans
+   * its own static data as a root: where new mappings are placed just
+   * below the previous ones, as Linux does by default, the end is often
+   * the start of a heap section, thus the address itself would keep the
+   * first object of that section alive.
+   */
+  static word hidden_last_addr = 0;
+  word last_addr = 0 == hidden_last_addr ? HEAP_START : ~hidden_last_addr;
 
 #      ifndef USE_MMAP_ANON
   static GC_bool initialized = FALSE;
@@ -2865,6 +2875,7 @@ GC_unix_mmap_get_mem(size_t bytes)
     ABORT("Memory returned by mmap is not aligned to HBLKSIZE");
   last_addr = ADDR(result) + bytes;
   GC_ASSERT((last_addr & (GC_page_size - 1)) == 0);
+  hidden_last_addr = ~last_addr;
   return result;
 }
 #    endif /* !MSWIN_XBOX1 */
