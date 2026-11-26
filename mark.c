@@ -156,6 +156,14 @@ STATIC GC_VAR_ATTR GC_bool GC_rescue_pass_ended = FALSE;
 STATIC GC_VAR_ATTR word GC_n_rescued_pages = 0;
 
 /*
+ * Whether `GC_push_next_marked_dirty()` has pushed all marked objects of
+ * a block, as the incremental mode was turned off in the course of the
+ * collection, since the previous call of `GC_after_marking()`, for the
+ * latter to log.  Protected by the allocator lock.
+ */
+STATIC GC_VAR_ATTR GC_bool GC_dirty_pass_fell_back = FALSE;
+
+/*
  * The index of `GC_rescue_block_proc` in `GC_mark_procs`, or
  * `GC_MAX_MARK_PROCS` until a collection in the incremental mode registers
  * it.
@@ -3325,6 +3333,10 @@ GC_after_marking(void)
     GC_COND_LOG_PRINTF("Marked from %lu dirty pages\n",
                        (unsigned long)GC_n_rescued_pages);
   }
+  if (GC_dirty_pass_fell_back) {
+    GC_dirty_pass_fell_back = FALSE;
+    GC_COND_LOG_PRINTF("Dirty bits not set up: scanning all marked pages\n");
+  }
 #endif
 #ifdef PARALLEL_MARK
   log_marker_decisions();
@@ -4325,7 +4337,7 @@ GC_push_next_marked_dirty(struct hblk *h)
      * simply push objects from all marked pages (as done by a fully
      * non-incremental collection) instead of aborting.
      */
-    GC_COND_LOG_PRINTF("Dirty bits not set up: scanning all marked pages\n");
+    GC_dirty_pass_fell_back = TRUE;
     return GC_push_next_marked(h);
   }
   for (;; h += OBJ_SZ_TO_BLOCKS(hhdr->hb_sz)) {
