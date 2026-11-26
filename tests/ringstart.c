@@ -51,9 +51,15 @@
  * a black-listed page only for pointer-free objects of up to two blocks and
  * for uncollectable objects.  The test is skipped without the parallel
  * marker (or `STEAL_MARK_STACK_RANGES`), without disappearing links, in the
- * leak detection mode, where no collection marks in a parallel mark phase,
- * and where the object does not start where the old mark stack starts and
- * the collector does not recognize interior pointers.
+ * leak detection mode, where `INCLUDE_LINUX_THREAD_DESCR` is defined (with
+ * threads and `malloc()` redirected), where no collection marks in
+ * a parallel mark phase, and where the object does not start where the old
+ * mark stack starts and the collector does not recognize interior pointers.
+ * With `INCLUDE_LINUX_THREAD_DESCR`, the collector adds the mapping that
+ * holds the thread-local storage of the main thread as a root, and that
+ * mapping can include the memory where the collector keeps the headers of
+ * the blocks and records the start of each heap section.  The header of
+ * a block holds the address of the block.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -103,7 +109,7 @@
 #endif
 
 #if defined(PARALLEL_MARK) && defined(STEAL_MARK_STACK_RANGES) \
-    && !defined(GC_NO_FINALIZATION)
+    && !defined(GC_NO_FINALIZATION) && !defined(INCLUDE_LINUX_THREAD_DESCR)
 
 #  define CHECK(e)                                                            \
     do {                                                                      \
@@ -173,13 +179,17 @@ static void *static_ref;
  * thread that `GC_mark_some()` saves in the static `GC_jmp_buf` before it
  * pushes the roots (with `WRAP_MARK_SOME` and `NO_SEH_AVAILABLE`).
  */
+static GC_bool
+in_register_copy(ptr_t p)
+{
 #  if defined(WRAP_MARK_SOME) && defined(NO_SEH_AVAILABLE)
-#    define IN_REGISTER_COPY(p)      \
-      (ADDR_GE(p, (ptr_t)GC_jmp_buf) \
-       && ADDR_LT(p, (ptr_t)GC_jmp_buf + sizeof(GC_jmp_buf)))
+  return ADDR_GE(p, (ptr_t)GC_jmp_buf)
+         && ADDR_LT(p, (ptr_t)GC_jmp_buf + sizeof(GC_jmp_buf));
 #  else
-#    define IN_REGISTER_COPY(p) FALSE
+  UNUSED_ARG(p);
+  return FALSE;
 #  endif
+}
 
 /*
  * Return the address of the first word in `[bottom, top)` that points
@@ -188,7 +198,7 @@ static void *static_ref;
  * `GC_push_all_eager()` reads them, and are compared hidden: a word
  * points into the object if its hidden value is in `(obj - bytes, obj]`.
  * The words of the copy of the registers in `GC_jmp_buf` do not count
- * (see `IN_REGISTER_COPY()`).
+ * (see `in_register_copy()`).
  */
 GC_ATTR_NO_SANITIZE_ADDR_MEM_THREAD
 static void *
@@ -204,7 +214,7 @@ range_pointing_into(ptr_t bottom, ptr_t top, GC_hidden_pointer obj,
 
     LOAD_PTR_OR_CONTINUE(q, p);
     h = GC_HIDE_POINTER(q);
-    if (h <= obj && obj - h < bytes && !IN_REGISTER_COPY(p))
+    if (h <= obj && obj - h < bytes && !in_register_copy(p))
       return p;
   }
   return NULL;
@@ -478,8 +488,10 @@ main(void)
 {
 #  ifdef GC_NO_FINALIZATION
   printf("test skipped (no disappearing links)\n");
-#  else
+#  elif !defined(PARALLEL_MARK) || !defined(STEAL_MARK_STACK_RANGES)
   printf("test skipped (no parallel mark phase uses a ring)\n");
+#  else
+  printf("test skipped (INCLUDE_LINUX_THREAD_DESCR)\n");
 #  endif
   return 0;
 }
