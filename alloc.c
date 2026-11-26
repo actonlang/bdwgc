@@ -60,7 +60,7 @@ GC_VAR_ATTR word GC_non_gc_bytes = 0;
 GC_VAR_ATTR word GC_gc_no = 0;
 
 #if !defined(GC_DISABLE_INCREMENTAL) && !defined(NO_MANUAL_VDB)
-GC_INNER GC_bool GC_final_mark_due = FALSE;
+GC_INNER GC_VAR_ATTR GC_bool GC_final_mark_due = FALSE;
 #elif defined(PARALLEL_MARK_DEADLINE)
 static GC_bool GC_final_mark_due = FALSE;
 #endif
@@ -154,10 +154,10 @@ int GC_parallel = FALSE; /*< parallel collection is off by default */
 #endif
 GC_VAR_ATTR int GC_full_freq = FULL_FREQ_INIT;
 
-GC_INNER int GC_gen_full_live_pct = 50;
+GC_INNER GC_VAR_ATTR int GC_gen_full_live_pct = 50;
 
 /* Bytes in use (marked) after the latest full collection, 0 before one. */
-STATIC word GC_in_use_after_full = 0;
+STATIC GC_VAR_ATTR word GC_in_use_after_full = 0;
 
 #ifdef THREAD_LOCAL_ALLOC
 GC_INNER GC_bool GC_world_stopped = FALSE;
@@ -506,10 +506,10 @@ current_time_limit(unsigned long *pms, unsigned long *pns)
  * a lock held by a stopped thread (e.g. the locale lock taken by `vsnprintf`
  * on macOS).  Protected by the allocator lock.
  */
-static GC_bool timeout_stopped = FALSE;
-static unsigned long timeout_stop_ms = 0;
-static unsigned long timeout_stop_ns = 0;
-static int timeout_stop_attempt = 0;
+static GC_VAR_ATTR GC_bool timeout_stopped = FALSE;
+static GC_VAR_ATTR unsigned long timeout_stop_ms = 0;
+static GC_VAR_ATTR unsigned long timeout_stop_ns = 0;
+static GC_VAR_ATTR int timeout_stop_attempt = 0;
 
 static void
 log_timeout_stop(void)
@@ -573,7 +573,7 @@ static GC_VAR_ATTR size_t min_bytes_allocd_minimum = 1;
 #  define GC_ALLOC_BUDGET_PERCENT 0
 #endif
 
-GC_INNER word GC_alloc_budget_percent = GC_ALLOC_BUDGET_PERCENT;
+GC_INNER GC_VAR_ATTR word GC_alloc_budget_percent = GC_ALLOC_BUDGET_PERCENT;
 
 GC_API void GC_CALL
 GC_set_alloc_budget_percent(GC_word value)
@@ -592,13 +592,13 @@ GC_get_alloc_budget_percent(void)
 #endif
 
 /* The memory limit set by the client, 0 if none. */
-static word explicit_memory_limit = GC_MEMORY_LIMIT;
+static GC_VAR_ATTR word explicit_memory_limit = GC_MEMORY_LIMIT;
 
 /* The memory limit found by `GC_init_memory_limit()`, 0 if unknown. */
-static word detected_memory_limit = 0;
+static GC_VAR_ATTR word detected_memory_limit = 0;
 
 /* The smaller one of the two limits above, 0 if both are unknown. */
-static word memory_limit = GC_MEMORY_LIMIT;
+static GC_VAR_ATTR word memory_limit = GC_MEMORY_LIMIT;
 
 /* Return the smaller one of `a` and `b`, ignoring a zero one. */
 static word
@@ -628,7 +628,7 @@ GC_get_memory_limit(void)
  * The heap ceiling as a percentage of the memory limit, 0 for no heap
  * ceiling (thus the heap is not sized by the memory limit).
  */
-static word heap_ceiling_percent = GC_HEAP_CEILING_PERCENT;
+static GC_VAR_ATTR word heap_ceiling_percent = GC_HEAP_CEILING_PERCENT;
 
 GC_API void GC_CALL
 GC_set_heap_ceiling_percent(GC_word value)
@@ -1071,11 +1071,11 @@ start_mark(void)
  * Protected by the allocator lock.
  */
 #  define MAX_UNMAP_HISTORY 16
-static word full_gc_nos[MAX_UNMAP_HISTORY];
-static word full_peaks[MAX_UNMAP_HISTORY];
-static unsigned n_full_history = 0;
-static word peak_since_full = 0;
-static GC_bool unmap_all = FALSE;
+static GC_VAR_ATTR word full_gc_nos[MAX_UNMAP_HISTORY];
+static GC_VAR_ATTR word full_peaks[MAX_UNMAP_HISTORY];
+static GC_VAR_ATTR unsigned n_full_history = 0;
+static GC_VAR_ATTR word peak_since_full = 0;
+static GC_VAR_ATTR GC_bool unmap_all = FALSE;
 
 /*
  * Note the bytes in use in heap blocks at the end of the marking of the
@@ -2306,7 +2306,7 @@ GC_get_max_prior_attempts(void)
  * The final marks of the collection in progress that were abandoned.
  * Protected by the allocator lock.
  */
-static unsigned n_final_abandoned = 0;
+static GC_VAR_ATTR unsigned n_final_abandoned = 0;
 #endif
 
 /*
@@ -3365,8 +3365,8 @@ GC_compute_heap_usage_percent(void)
  * for its log line.  Protected by the allocator lock.
  */
 #ifndef NO_CLOCK
-static CLOCK_TYPE finish_start_time;
-static CLOCK_TYPE finish_finalize_time;
+static GC_VAR_ATTR CLOCK_TYPE finish_start_time;
+static GC_VAR_ATTR CLOCK_TYPE finish_finalize_time;
 #endif
 
 /*
@@ -3943,11 +3943,12 @@ GC_scratch_recycle_inner(void *ptr, size_t sz)
 }
 
 #ifdef GC_HEAP_GROWTH_DIVISOR
-STATIC word GC_heap_growth_divisor = GC_HEAP_GROWTH_DIVISOR;
+#  define HEAP_GROWTH_DIVISOR_INIT (GC_HEAP_GROWTH_DIVISOR)
 #else
 /* Zero means the maximum heap increment does not depend on heap size. */
-STATIC word GC_heap_growth_divisor = 0;
+#  define HEAP_GROWTH_DIVISOR_INIT 0
 #endif
+STATIC GC_VAR_ATTR word GC_heap_growth_divisor = HEAP_GROWTH_DIVISOR_INIT;
 
 GC_API void GC_CALL
 GC_set_heap_growth_divisor(GC_word value)

@@ -35,9 +35,15 @@
 
 #define GC_SINGLE_OBJ_BUILD
 
-#ifndef __cplusplus
+#if !defined(__cplusplus) && !defined(GC_VAR_ATTR)
 /* `static` is desirable here for more efficient linkage. */
 /* TODO: Enable this in case of the compilation as C++ code. */
+/*
+ * Not if `GC_VAR_ATTR` is defined: it may be `__thread`, and since C23
+ * a declaration of a thread-local variable without `extern` is
+ * a definition, thus the `GC_EXTERN` declaration of such a variable in
+ * a private header and its `GC_INNER` definition would define it twice.
+ */
 #  define GC_INNER STATIC
 #  define GC_EXTERN GC_INNER
 /* Note: `STATIC` macro is defined in `gcconfig.h` file. */

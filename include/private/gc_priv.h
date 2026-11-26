@@ -3232,7 +3232,7 @@ GC_INNER void GC_invalidate_mark_stack(void);
  * the global mark stack at the next call of
  * `GC_switch_to_next_mark_stack()`.  Protected by the allocator lock.
  */
-GC_EXTERN mse *GC_next_mark_stack;
+GC_EXTERN GC_VAR_ATTR mse *GC_next_mark_stack;
 
 /*
  * Make the next mark stack the global one: append the entries of the
@@ -3302,7 +3302,7 @@ GC_INNER GC_bool GC_collection_in_progress(void);
  * manual VDB mode, dirtied the blocks of the objects the stacks reference
  * and of the thread-local free lists).  Protected by the allocator lock.
  */
-GC_EXTERN word GC_roots_pushes;
+GC_EXTERN GC_VAR_ATTR word GC_roots_pushes;
 
 /*
  * Push contents of the symbol residing in the static roots area excluded
@@ -3566,7 +3566,7 @@ GC_INNER void GC_mark_and_push_stack(ptr_t p);
 #define IS_PTRFREE(hhdr) (0 == (hhdr)->hb_descr)
 
 /* See `GC_GEN_FULL_LIVE_PCT` in `docs/environment.md` file. */
-GC_EXTERN int GC_gen_full_live_pct;
+GC_EXTERN GC_VAR_ATTR int GC_gen_full_live_pct;
 
 /* Clear all mark bits in the header. */
 GC_INNER void GC_clear_hdr_marks(hdr *hhdr);
@@ -4335,7 +4335,7 @@ GC_INNER GC_bool GC_block_was_dirty(const struct hblk *h, const hdr *hhdr);
  * whether or not it is dirty: uncollectable objects are marked from birth,
  * and a client fills a new object without a write barrier.
  */
-GC_EXTERN word GC_wbar_always_kinds;
+GC_EXTERN GC_VAR_ATTR word GC_wbar_always_kinds;
 #    define GC_wbar_always_rescanned(hhdr)       \
       (GC_manual_vdb                             \
        && (IS_UNCOLLECTABLE((hhdr)->hb_obj_kind) \
@@ -4345,13 +4345,13 @@ GC_EXTERN word GC_wbar_always_kinds;
  * `GC_WBAR_VERIFY`: run the write-barrier checker at the reads of the
  * dirty bits that follow a complete mark.
  */
-GC_EXTERN GC_bool GC_wbar_verify;
+GC_EXTERN GC_VAR_ATTR GC_bool GC_wbar_verify;
 
 /*
  * Whether the write-barrier checker has reports waiting for a full
  * collection, which `GC_maybe_gc()` then runs next.
  */
-GC_EXTERN GC_bool GC_wbar_need_full;
+GC_EXTERN GC_VAR_ATTR GC_bool GC_wbar_need_full;
 
 /*
  * Whether the final mark of the collection in progress is due after a
@@ -4360,7 +4360,7 @@ GC_EXTERN GC_bool GC_wbar_need_full;
  * meanwhile, but the collection is in progress: allocation still dirties
  * the blocks it hands out.  Protected by the allocator lock.
  */
-GC_EXTERN GC_bool GC_final_mark_due;
+GC_EXTERN GC_VAR_ATTR GC_bool GC_final_mark_due;
 
 /*
  * Whether the collections clear every dead object for the checker: the
@@ -4687,7 +4687,7 @@ GC_INNER void GC_err_puts(const char *s);
  * percentage of the data live at the latest collection (instead of being
  * derived from `GC_free_space_divisor`).  Defined in `alloc.c` file.
  */
-GC_EXTERN word GC_alloc_budget_percent;
+GC_EXTERN GC_VAR_ATTR word GC_alloc_budget_percent;
 
 /*
  * Find the memory limit of the process (the smaller one of the size of
@@ -4701,7 +4701,7 @@ GC_INNER void GC_init_memory_limit(void);
  * collector (instead of freeing it) after moving the object contents to
  * a new location.  Defined in `mallocx.c` file.
  */
-GC_EXTERN GC_bool GC_realloc_no_free;
+GC_EXTERN GC_VAR_ATTR GC_bool GC_realloc_no_free;
 
 /*
  * If set, then a thread registered afterwards uses its thread-local free
@@ -4709,7 +4709,7 @@ GC_EXTERN GC_bool GC_realloc_no_free;
  * allocating the first objects of each size globally).  Defined in
  * `misc.c` file.
  */
-GC_EXTERN GC_bool GC_no_thread_local_warmup;
+GC_EXTERN GC_VAR_ATTR GC_bool GC_no_thread_local_warmup;
 
 #ifdef USE_MUNMAP
 GC_EXTERN GC_VAR_ATTR unsigned GC_unmap_threshold;

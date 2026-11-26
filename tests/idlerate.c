@@ -56,7 +56,7 @@
 #endif
 
 #define GC_SINGLE_OBJ_BUILD
-#ifndef __cplusplus
+#if !defined(__cplusplus) && !defined(GC_VAR_ATTR)
 #  define GC_INNER STATIC
 #  define GC_EXTERN GC_INNER
 #endif

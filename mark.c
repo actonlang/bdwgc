@@ -152,15 +152,15 @@ STATIC GC_VAR_ATTR word GC_n_rescuing_pages = 0;
  * `GC_mark_some()`, thus maybe with the world stopped.  Protected by the
  * allocator lock.
  */
-STATIC GC_bool GC_rescue_pass_ended = FALSE;
-STATIC word GC_n_rescued_pages = 0;
+STATIC GC_VAR_ATTR GC_bool GC_rescue_pass_ended = FALSE;
+STATIC GC_VAR_ATTR word GC_n_rescued_pages = 0;
 
 /*
  * The index of `GC_rescue_block_proc` in `GC_mark_procs`, or
  * `GC_MAX_MARK_PROCS` until a collection in the incremental mode registers
  * it.
  */
-STATIC unsigned GC_rescue_proc_index = GC_MAX_MARK_PROCS;
+STATIC GC_VAR_ATTR unsigned GC_rescue_proc_index = GC_MAX_MARK_PROCS;
 
 STATIC struct GC_ms_entry *GC_CALLBACK GC_rescue_block_proc(
     word *addr, struct GC_ms_entry *msp, struct GC_ms_entry *msl, word env);
@@ -239,7 +239,7 @@ GC_collection_in_progress(void)
   return GC_mark_state != MS_NONE;
 }
 
-GC_INNER word GC_roots_pushes = 0;
+GC_INNER GC_VAR_ATTR word GC_roots_pushes = 0;
 
 GC_INNER void
 GC_clear_hdr_marks(hdr *hhdr)
@@ -614,7 +614,7 @@ static GC_bool GC_no_room_at_deadline = FALSE;
  * with the world stopped.  Protected by the allocator lock, except as
  * noted.
  */
-STATIC struct {
+STATIC GC_VAR_ATTR struct {
   /* The overflows of the global mark stack which dropped entries. */
   word n_overflows;
 
@@ -701,7 +701,7 @@ struct outgrown_mark_stack {
   size_t bytes;
 };
 
-STATIC struct outgrown_mark_stack *GC_outgrown_mark_stacks = NULL;
+STATIC GC_VAR_ATTR struct outgrown_mark_stack *GC_outgrown_mark_stacks = NULL;
 
 /* Put a mark stack of `n` entries on the list of the outgrown ones. */
 static void
@@ -715,13 +715,13 @@ add_outgrown_mark_stack(mse *stack, size_t n)
   GC_outgrown_mark_stacks = old;
 }
 
-GC_INNER mse *GC_next_mark_stack = NULL;
+GC_INNER GC_VAR_ATTR mse *GC_next_mark_stack = NULL;
 
 /* The size of `GC_next_mark_stack`, in entries. */
-STATIC size_t GC_next_mark_stack_size = 0;
+STATIC GC_VAR_ATTR size_t GC_next_mark_stack_size = 0;
 
 /* The number of the entries moved to `GC_next_mark_stack`. */
-STATIC size_t GC_n_moved_entries = 0;
+STATIC GC_VAR_ATTR size_t GC_n_moved_entries = 0;
 
 static void
 push_roots_and_advance(GC_bool push_all, ptr_t cold_gc_frame)

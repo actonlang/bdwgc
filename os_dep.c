@@ -1250,14 +1250,14 @@ GC_INNER GC_VAR_ATTR JMP_BUF GC_jmp_buf;
  * installed from `GC_init` to `GC_deinit` because adding and removing it
  * costs more than a typical `GC_mark_some` call.
  */
-static PVOID fault_veh_handle;
+static GC_VAR_ATTR PVOID fault_veh_handle;
 
 /*
  * The identifier of the thread which has set up the fault handler (while
  * holding the allocator lock), or zero if the fault handler is not set up.
  * The handler ignores the exceptions of all other threads.
  */
-static volatile DWORD fault_handler_thread_id;
+static GC_VAR_ATTR volatile DWORD fault_handler_thread_id;
 
 STATIC void
 GC_fault_recover(void)

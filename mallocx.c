@@ -72,10 +72,11 @@ GC_generic_or_special_malloc(size_t lb, int kind)
 }
 
 #ifdef GC_REALLOC_NO_FREE
-GC_INNER GC_bool GC_realloc_no_free = TRUE;
+#  define REALLOC_NO_FREE_INIT TRUE
 #else
-GC_INNER GC_bool GC_realloc_no_free = FALSE;
+#  define REALLOC_NO_FREE_INIT FALSE
 #endif
+GC_INNER GC_VAR_ATTR GC_bool GC_realloc_no_free = REALLOC_NO_FREE_INIT;
 
 GC_API void GC_CALL
 GC_set_realloc_no_free(int value)
@@ -349,7 +350,7 @@ GC_get_expl_freed_bytes_since_gc(void)
  * The maximum number of heap blocks taken by a single refill of
  * a thread-local free list.
  */
-STATIC unsigned GC_tl_refill_max = GC_TL_REFILL_MAX;
+STATIC GC_VAR_ATTR unsigned GC_tl_refill_max = GC_TL_REFILL_MAX;
 
 GC_API void GC_CALL
 GC_set_tl_refill_max(unsigned value)

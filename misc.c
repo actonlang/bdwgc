@@ -165,10 +165,12 @@ GC_INNER GC_VAR_ATTR GC_bool GC_force_unmap_on_gcollect
     = FORCE_UNMAP_ON_GCOLLECT_INIT;
 
 #ifdef GC_NO_THREAD_LOCAL_WARMUP
-GC_INNER GC_bool GC_no_thread_local_warmup = TRUE;
+#  define NO_THREAD_LOCAL_WARMUP_INIT TRUE
 #else
-GC_INNER GC_bool GC_no_thread_local_warmup = FALSE;
+#  define NO_THREAD_LOCAL_WARMUP_INIT FALSE
 #endif
+GC_INNER GC_VAR_ATTR GC_bool GC_no_thread_local_warmup
+    = NO_THREAD_LOCAL_WARMUP_INIT;
 
 #ifndef NO_BLACK_LISTING
 #  ifndef GC_LARGE_ALLOC_WARN_INTERVAL

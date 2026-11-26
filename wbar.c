@@ -57,13 +57,15 @@
 #    include <unistd.h>
 #  endif
 
-GC_INNER GC_bool GC_wbar_verify = FALSE;
-GC_INNER word GC_wbar_always_kinds = 0;
-GC_INNER GC_bool GC_wbar_need_full = FALSE;
+GC_INNER GC_VAR_ATTR GC_bool GC_wbar_verify = FALSE;
+GC_INNER GC_VAR_ATTR word GC_wbar_always_kinds = 0;
+GC_INNER GC_VAR_ATTR GC_bool GC_wbar_need_full = FALSE;
 
-static const char *(GC_CALLBACK *wbar_describe_fn)(const void *, size_t) = 0;
+static GC_VAR_ATTR const char *(GC_CALLBACK *wbar_describe_fn)(const void *,
+                                                               size_t)
+    = 0;
 
-static struct GC_wbar_totals_s tot;
+static GC_VAR_ATTR struct GC_wbar_totals_s tot;
 
 /*
  * Whether a collection is open (its first world-stopped mark has read the
@@ -72,11 +74,11 @@ static struct GC_wbar_totals_s tot;
  * from its first world-stopped mark and added to the totals when it
  * completes.
  */
-static GC_bool coll_open, coll_minor;
-static word coll_lost, coll_missed;
+static GC_VAR_ATTR GC_bool coll_open, coll_minor;
+static GC_VAR_ATTR word coll_lost, coll_missed;
 
 /* The number of reports waiting for the next full collection. */
-static size_t n_pending;
+static GC_VAR_ATTR size_t n_pending;
 
 /*
  * Exit at once with status 70.  The allocator lock may be held, so
@@ -271,19 +273,19 @@ struct wbar_report {
   word check_no; /*< the collection that confirmed or discarded it */
 };
 
-static struct wbar_cand *cands;
-static size_t n_cands;
+static GC_VAR_ATTR struct wbar_cand *cands;
+static GC_VAR_ATTR size_t n_cands;
 /* The candidates the table had no room for, since the latest check. */
-static word n_dropped;
+static GC_VAR_ATTR word n_dropped;
 /* Open-addressed set of the targets of the candidates: index + 1 or 0. */
-static size_t *cand_hash;
-static unsigned char *cand_stack_held;
-static struct wbar_cand *deferred;
-static size_t n_deferred;
-static struct wbar_report *reports;
-static size_t n_reports;
-static struct wbar_report *pending;
-static GC_bool verify_tables_failed = FALSE;
+static GC_VAR_ATTR size_t *cand_hash;
+static GC_VAR_ATTR unsigned char *cand_stack_held;
+static GC_VAR_ATTR struct wbar_cand *deferred;
+static GC_VAR_ATTR size_t n_deferred;
+static GC_VAR_ATTR struct wbar_report *reports;
+static GC_VAR_ATTR size_t n_reports;
+static GC_VAR_ATTR struct wbar_report *pending;
+static GC_VAR_ATTR GC_bool verify_tables_failed = FALSE;
 
 static GC_bool
 alloc_verify_tables(void)

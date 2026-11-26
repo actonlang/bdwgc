@@ -35,7 +35,7 @@
 /* Unmap in pieces that the arena holds several times with any block size. */
 #define UNMAP_PIECE_BYTES ((size_t)1 << 20)
 #define GC_SINGLE_OBJ_BUILD
-#ifndef __cplusplus
+#if !defined(__cplusplus) && !defined(GC_VAR_ATTR)
 #  define GC_INNER STATIC
 #  define GC_EXTERN GC_INNER
 #endif
