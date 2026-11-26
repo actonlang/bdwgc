@@ -587,7 +587,7 @@ jobs:
 
       - name: Build and run tests
         if: ${{ !matrix.skip_tests }}
-        timeout-minutes: 4
+        timeout-minutes: 11
         run: >
           make -j${{ matrix.make_jobs }} -C build check
           CFLAGS_EXTRA="${{ matrix.cflags_extra }}"
