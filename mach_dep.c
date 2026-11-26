@@ -96,6 +96,20 @@ GC_with_callee_saves_pushed(GC_with_callee_saves_func fn, ptr_t arg)
        */
     } else {
       context = (ptr_t)&ctxt;
+#      if defined(S390) && CPP_WORDSZ == 64
+      /*
+       * `getcontext()` saves all the floating-point registers.  The 64-bit
+       * ABI does not preserve `f0`-`f7` across calls, thus at this call
+       * they hold no live value of any caller.  They are the leftmost
+       * halves of the vector registers `v0`-`v7`, which the compiler also
+       * uses for integer code, such as a vectorized loop over heap blocks.
+       * Few instructions write them, thus an address left there could
+       * keep an object alive for many collections.  Clear them before the
+       * context is scanned.
+       */
+      BZERO(ctxt.uc_mcontext.fpregs.fprs,
+            8 * sizeof(ctxt.uc_mcontext.fpregs.fprs[0]));
+#      endif
     }
     if (UNLIKELY(0 == getcontext_works))
       getcontext_works = context != NULL ? 1 : -1;
