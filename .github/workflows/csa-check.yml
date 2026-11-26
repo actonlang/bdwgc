@@ -54,6 +54,7 @@ jobs:
           clang --analyze -Xanalyzer -analyzer-output=text -Werror
           -I include ${{ join(matrix.cflags_extra, ' ') }}
           `find . \( -name '*.c' -o -name '*.cc' \)
+          ! -path ./tests/chunkstart.c
           ! -path ./tests/cpucount.c ! -path ./tests/expandfail.c
           ! -path ./tests/finalbound.c ! -path ./tests/fulllive.c
           ! -path ./tests/idlerate.c ! -path ./tests/markdeadline.c

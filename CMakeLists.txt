@@ -1109,6 +1109,20 @@ if(BUILD_TESTING)
     add_test(NAME allocbudgettest COMMAND allocbudgettest)
 
     # The test includes the collector source instead of linking `gc`.
+    add_executable(chunkstarttest tests/chunkstart.c ${NODIST_SRC})
+    if(MSVC)
+        target_sources(chunkstarttest PRIVATE extra/msvc_dbg.c)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+        target_sources(chunkstarttest PRIVATE sparc_mach_dep.S)
+    endif()
+    target_link_libraries(
+        chunkstarttest
+        PRIVATE gc_build_flags ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+    )
+    add_test(NAME chunkstarttest COMMAND chunkstarttest)
+
+    # The test includes the collector source instead of linking `gc`.
     add_executable(cpucounttest tests/cpucount.c ${NODIST_SRC})
     if(MSVC)
         target_sources(cpucounttest PRIVATE extra/msvc_dbg.c)

@@ -793,8 +793,14 @@ pub fn build(b: *std.Build) void {
     }
     addTest(b, gc, test_step, flags, "abandonedmarktest", "tests/abandonedmark.c");
     addTest(b, gc, test_step, flags, "allocbudgettest", "tests/allocbudget.c");
-    // `cpucounttest` includes the collector source, thus it is not linked
+    // `chunkstarttest` includes the collector source, thus it is not linked
     // with `gc` library.
+    addTestExt(b, gc, test_step, flags, "chunkstarttest", "tests/chunkstart.c", .{
+        .link_gc = false,
+        .filename2 = if (t.abi == .msvc) "extra/msvc_dbg.c" else null,
+        .sysLibName = if (linkage == .dynamic and t.abi == .msvc) "user32" else null,
+    });
+    // Likewise, `cpucounttest` includes the collector source.
     addTestExt(b, gc, test_step, flags, "cpucounttest", "tests/cpucount.c", .{
         .link_gc = false,
         .filename2 = if (t.abi == .msvc) "extra/msvc_dbg.c" else null,

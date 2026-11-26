@@ -45,6 +45,13 @@ allocbudgettest_SOURCES = tests/allocbudget.c
 allocbudgettest_LDADD = $(test_ldadd)
 
 # The test includes the collector source instead of linking `libgc`.
+TESTS += chunkstarttest$(EXEEXT)
+check_PROGRAMS += chunkstarttest
+chunkstarttest_SOURCES = tests/chunkstart.c
+chunkstarttest_LDADD = $(nodist_libgc_la_OBJECTS) $(EXTRA_TEST_LIBS) \
+                       @addobjs@ $(THREADDLLIBS) $(UNWINDLIBS) $(ATOMIC_OPS_LIBS)
+
+# Likewise, the test includes the collector source.
 TESTS += cpucounttest$(EXEEXT)
 check_PROGRAMS += cpucounttest
 cpucounttest_SOURCES = tests/cpucount.c
@@ -457,6 +464,7 @@ check-without-test-driver: $(TESTS)
 	./gctest$(EXEEXT)
 	./abandonedmarktest$(EXEEXT)
 	./allocbudgettest$(EXEEXT)
+	./chunkstarttest$(EXEEXT)
 	./cpucounttest$(EXEEXT)
 	./dbgfunctest$(EXEEXT)
 	./endpaddingtest$(EXEEXT)
