@@ -1246,7 +1246,7 @@ move_to_next_mark_stack(const mse *msp)
  * after the pushes outside `GC_mark_some()` (by the mark procedure of
  * a finalizable object in `GC_mark_fo()`, and of the marked objects of
  * a block in `GC_rescan_marked_objects()`), and in
- * `GC_invalidate_mark_state()`.  The memory of the next mark stack is
+ * `GC_invalidate_mark_stack()`.  The memory of the next mark stack is
  * thus obtained from the OS during the marking, maybe with the world
  * stopped and inside a client mark procedure, and the procedure set by
  * `GC_set_on_os_get_mem()` is called there.
