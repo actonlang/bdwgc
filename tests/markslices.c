@@ -84,8 +84,16 @@
  * limit, which counts from when the world is stopped, and the next step
  * waits until the world has run for as long as the previous one stopped it,
  * the stop included, thus the steps mark for a small part of the time.
+ * Under qemu-user, beside three other tests on four processors, a step and
+ * the wait after it take about 20 ms, and a drive may need two passes of
+ * a few thousand steps each: one until the mark stack is empty, after which
+ * a final mark at its bound is abandoned, and one over the dirty blocks and
+ * the roots that this mark began to push, after which the final mark
+ * without a time limit completes the marking.  On half as many processors,
+ * a step and the wait after it take about 35 ms, and such a drive takes up
+ * to about 6 minutes.
  */
-#define MAX_DRIVE_S 180
+#define MAX_DRIVE_S 600
 
 /* The nodes of a tree, set by `main()`. */
 static unsigned long nodes_per_tree;
