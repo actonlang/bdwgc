@@ -5312,9 +5312,12 @@ GC_INNER void GC_redo_mark_clearing(void);
  * the lowest address if `NULL`), in the ascending order of addresses,
  * until `stop_func` returns true (called once per `GC_HDR_WALK_CHECK`
  * entries of the header index).  Return whether every such block was
- * visited; otherwise store the first block not visited into `*pnext`, for
- * a later call, which skips the blocks allocated below it in between.
- * `fn` should not modify the headers of the blocks not visited yet.
+ * visited.  If so, store `NULL` into `*pnext`, as the callers keep
+ * `*pnext` in static data, which the collector scans as a root: a block
+ * address left there would keep the object at that address alive.
+ * Otherwise, store the first block not visited into `*pnext`, for a later
+ * call, which skips the blocks allocated below it in between.  `fn`
+ * should not modify the headers of the blocks not visited yet.
  */
 GC_INNER GC_bool GC_apply_to_hdrs_from(struct hblk **pnext, GC_walk_hdr_fn fn,
                                        void *client_data,

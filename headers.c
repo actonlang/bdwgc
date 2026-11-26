@@ -447,6 +447,7 @@ GC_apply_to_hdrs_from(struct hblk **pnext, GC_walk_hdr_fn fn,
       }
     }
   }
+  *pnext = NULL;
   return TRUE;
 }
 #endif

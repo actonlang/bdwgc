@@ -1222,7 +1222,10 @@ pace_next_slice(void)
 #  define SETUP_MARK 3
 static int setup_phase = SETUP_NONE;
 
-/* In the `SETUP_CLEAR` phase, the first block not cleared yet. */
+/*
+ * In the `SETUP_CLEAR` phase, the first block not cleared yet, else `NULL`
+ * (see `GC_apply_to_hdrs_from()`).
+ */
 static struct hblk *clear_next = NULL;
 
 /* The end of the latest chunk of the set-up. */
@@ -1763,7 +1766,10 @@ static size_t unmap_list = 0;
 static GC_bool unmap_chunk_ran = FALSE;
 #  endif
 
-/* In the `FINISH_WALK` phase, the first block not visited yet. */
+/*
+ * In the `FINISH_WALK` phase, the first block not visited yet, else `NULL`
+ * (see `GC_apply_to_hdrs_from()`).
+ */
 static struct hblk *walk_next = NULL;
 
 /* Whether the collection of the pending finish is a full one. */
@@ -2206,6 +2212,7 @@ GC_try_to_collect_inner(GC_stop_func stop_func)
    * is left only if the incremental mode was turned off.
    */
   setup_phase = SETUP_NONE;
+  clear_next = NULL;
   GC_final_mark_due = FALSE;
 #endif
   SAVE_CALLERS_TO_LAST_STACK();
