@@ -98,7 +98,7 @@ make_free_list(void)
   CHECK(hblk_bytes <= MAX_HBLK_BYTES);
   GC_disable();
   do {
-    void *p;
+    const void *p;
     GC_word block;
 
     if (n_objs == MAX_OBJS) {
