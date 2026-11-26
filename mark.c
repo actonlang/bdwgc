@@ -2015,8 +2015,9 @@ copy_mark_entries(mse *to, mse *from, size_t n)
 
 /*
  * The base-2 logarithm of the size of the ring of the current parallel
- * mark phase, and the rings of the phase by that logarithm.  Written by
- * the collecting thread holding the mark lock (see above).
+ * mark phase, and the rings of the phase by that logarithm, which are
+ * `NULL` between the phases (see `GC_do_parallel_mark()`).  Written by the
+ * collecting thread holding the mark lock (see above).
  */
 STATIC volatile AO_t GC_mark_ring_log2 = 0;
 STATIC mse *GC_mark_ring_bases[CPP_WORDSZ];
@@ -2025,9 +2026,9 @@ STATIC mse *GC_mark_ring_bases[CPP_WORDSZ];
  * The rings outgrown during the current parallel mark phase.  A marker
  * may read such a ring until the end of the phase, thus it is put on the
  * list of the outgrown mark stacks (which reuses its first slot) only
- * then, by `GC_do_parallel_mark()`.  Every growth at least doubles the
- * size, thus a phase outgrows fewer than `CPP_WORDSZ` rings.  Accessed by
- * the collecting thread only.
+ * then, by `GC_do_parallel_mark()`, which clears its address here.  Every
+ * growth at least doubles the size, thus a phase outgrows fewer than
+ * `CPP_WORDSZ` rings.  Accessed by the collecting thread only.
  */
 STATIC struct {
   mse *stack;
@@ -3042,7 +3043,14 @@ GC_do_parallel_mark(void)
   GC_VERBOSE_LOG_PRINTF("Finished marking for mark phase number %lu\n",
                         (unsigned long)GC_mark_no);
 #  ifdef GROW_MARK_RING
-  /* No marker reads the rings outgrown in the phase any more. */
+  /*
+   * No marker reads the rings of the phase any more, thus their addresses
+   * are cleared.  `GC_after_marking()` recycles the outgrown rings into
+   * the heap, and the global mark stack too once a larger one replaces
+   * it.  The collector scans its own static data as a root, thus an
+   * address of a ring kept here would keep the object at the start of the
+   * recycled memory alive.
+   */
   GC_ASSERT(0 == AO_load(&GC_mark_ring_room_wanted)
             && 0 == GC_mark_ring_waiters);
   while (GC_n_phase_outgrown_rings > 0) {
@@ -3050,7 +3058,9 @@ GC_do_parallel_mark(void)
     add_outgrown_mark_stack(
         GC_phase_outgrown_rings[GC_n_phase_outgrown_rings].stack,
         GC_phase_outgrown_rings[GC_n_phase_outgrown_rings].n);
+    GC_phase_outgrown_rings[GC_n_phase_outgrown_rings].stack = NULL;
   }
+  BZERO(GC_mark_ring_bases, sizeof(GC_mark_ring_bases));
 #  endif
   GC_mark_no++;
   GC_release_mark_lock();
