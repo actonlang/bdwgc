@@ -378,7 +378,7 @@ collection_in_progress(void)
 #    endif
 
 GC_INNER_WIN32THREAD void
-GC_wait_for_gc_completion(void)
+GC_wait_for_gc_completion(GC_bool wait_for_all)
 {
 #    if !defined(THREAD_SANITIZER) || !defined(CAN_CALL_ATFORK)
   /*
@@ -389,10 +389,8 @@ GC_wait_for_gc_completion(void)
 #    endif
   ASSERT_CANCEL_DISABLED();
   if (GC_incremental && collection_in_progress()) {
-    /*
-     * Make sure that no part of our stack is still on the mark stack,
-     * since it is about to be unmapped.
-     */
+    word old_gc_no = GC_gc_no;
+
 #    ifdef LINT2
     /*
      * Note: do not transform this `if`-`do`-`while` construction into
@@ -414,7 +412,8 @@ GC_wait_for_gc_completion(void)
       sched_yield();
 #    endif
       LOCK();
-    } while (GC_incremental && collection_in_progress());
+    } while (GC_incremental && collection_in_progress()
+             && (wait_for_all || old_gc_no == GC_gc_no));
   }
 }
 #  endif
@@ -729,7 +728,7 @@ GC_start_mark_threads_inner(void)
     /* Skip if parallel markers disabled or already started (or starting). */
     return;
   }
-  GC_wait_for_gc_completion();
+  GC_wait_for_gc_completion(TRUE);
 
 #    ifdef CAN_HANDLE_FORK
   /*
@@ -1948,7 +1947,7 @@ fork_prepare_proc(void)
   registered = is_thread_registered_inner();
   if (registered) {
     /* `fork()` is called from a thread registered in the collector. */
-    GC_wait_for_gc_completion();
+    GC_wait_for_gc_completion(TRUE);
   }
   /*
    * `GC_wait_for_gc_completion()` might release the allocator lock
@@ -2945,10 +2944,20 @@ GC_unregister_my_thread(void)
   DISABLE_CANCEL(cancel_state);
   LOCK();
   /*
-   * Wait until no collection is in progress (and, hence, no part of our
-   * stack is still on the mark stack) before we remove this thread.
+   * Wait until the marking of the collection in progress, if any,
+   * completes, or `GC_collection_in_progress()` is false (see
+   * `GC_wait_for_gc_completion()`).  Our stack needs no wait: in the
+   * incremental mode, thread stacks are scanned at once (see
+   * `GC_push_all_stack()`), and the mark stack never holds a range of
+   * them.  The wait guarantees that, after this thread is removed, the
+   * collection in progress at this call reads no range that it pushed
+   * while the thread was registered, such as memory of this thread that
+   * a procedure set by `GC_set_push_other_roots()` pushed with
+   * `GC_push_all()`.  A collection that another thread starts meanwhile
+   * is not waited for: a wait until no collection is in progress might
+   * never end while other threads start collections back to back.
    */
-  GC_wait_for_gc_completion();
+  GC_wait_for_gc_completion(FALSE);
   me = GC_self_thread_inner();
   GC_ASSERT(THREAD_ID_EQUAL(me->id, thread_id_self()));
   GC_unregister_my_thread_inner(me);
@@ -3170,7 +3179,8 @@ GC_thread_exit_proc(void *arg)
    */
   DISABLE_CANCEL(cancel_state);
   LOCK();
-  GC_wait_for_gc_completion();
+  /* See the comment in `GC_unregister_my_thread()`. */
+  GC_wait_for_gc_completion(FALSE);
   GC_unregister_my_thread_inner(me);
   UNLOCK();
   RESTORE_CANCEL(cancel_state);

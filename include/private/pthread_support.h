@@ -532,11 +532,19 @@ GC_INNER void GC_win32_unprotect_thread(GC_thread);
 
 #    ifndef GC_DISABLE_INCREMENTAL
 /*
- * Wait until no collection is in progress.  We hold the allocator lock and
- * repeatedly release it in order to wait. We exit with the allocator lock
- * held.
+ * Wait until no collection is in progress (the marker state is `MS_NONE`,
+ * see `GC_collection_in_progress()`), or, if `wait_for_all` is false,
+ * until `GC_gc_no` changes, that is, until the marking of the collection
+ * in progress completes.  We hold the allocator lock and repeatedly
+ * release it in order to wait, and run the marking meanwhile with
+ * `GC_collect_a_little_inner()`.  We exit with the allocator lock held.
+ * The wait also ends if the incremental mode is off.  With world-stopped
+ * steps (see `steps_on()`), the marker state is `MS_NONE` from the step
+ * that empties the mark stack until the final mark (see
+ * `GC_final_mark_due`), so the wait may end while the final mark of the
+ * collection is still due.
  */
-GC_INNER void GC_wait_for_gc_completion(void);
+GC_INNER void GC_wait_for_gc_completion(GC_bool wait_for_all);
 #    endif
 
 #  else
@@ -544,7 +552,7 @@ GC_INNER void GC_wait_for_gc_completion(void);
 #  endif /* !GC_WIN32_THREADS */
 
 #  ifdef GC_DISABLE_INCREMENTAL
-#    define GC_wait_for_gc_completion() (void)0
+#    define GC_wait_for_gc_completion(wait_for_all) (void)0
 #  endif
 
 #  ifdef GC_PTHREADS
