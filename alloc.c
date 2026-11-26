@@ -1729,21 +1729,22 @@ STATIC word GC_clear_fl_marks(ptr_t *pq, GC_bool clear_links,
  *   - `FINISH_UNMAP`: the unmapping of the free blocks old enough, from
  *     the free list `unmap_list` (see `unmap_old_blocks()`); the allocator
  *     and the heap growth work as without a pending finish meanwhile.
- * The walk (from `FINISH_WALK_START`), the rest and the unmapping each
- * start in the chunk that completes the phase before if less than half of
- * the time limit has passed, else in the next chunk.  Until the
- * unmapping, a chunk is due after a quarter of the allocation volume
- * between two steps, and at the latest a quarter of the time limit after
- * the end of the previous chunk: meanwhile the allocator cannot reuse the
- * memory the collection found free, thus the chunks run closer together
- * than the steps of the marking.  A chunk of the unmapping is due the time
- * limit after the end of the previous one, so that the client keeps at
- * least half of the time.  If the time limit is set to `GC_TIME_UNLIMITED`
- * meanwhile, the next chunk is due at once.  No collection starts while
- * the finish is pending, except that a collection that is due ends the
- * unmapping after its first chunk (the blocks left are unmapped after
- * a later collection); `GC_try_to_collect_inner()` completes the finish at
- * once.  Protected by the allocator lock.
+ * The walk (from `FINISH_WALK_START`), the rest and the unmapping each start
+ * in the chunk that completes the phase before if less than half of the time
+ * limit has passed, else in the next chunk, which always runs the phase it
+ * starts in (see `phase_may_start()`).  Until the unmapping, a chunk is due
+ * after a quarter of the allocation volume between two steps, and at the
+ * latest a quarter of the time limit after the end of the previous chunk:
+ * meanwhile the allocator cannot reuse the memory the collection found free,
+ * thus the chunks run closer together than the steps of the marking.  A
+ * chunk of the unmapping is due the time limit after the end of the previous
+ * one, so that the client keeps at least half of the time.  If the time
+ * limit is set to `GC_TIME_UNLIMITED` meanwhile, the next chunk is due at
+ * once.  No collection starts while the finish is pending, except that
+ * a collection that is due ends the unmapping after its first chunk (the
+ * blocks left are unmapped after a later collection);
+ * `GC_try_to_collect_inner()` completes the finish at once.  Protected by
+ * the allocator lock.
  */
 #  define FINISH_NONE 0
 #  define FINISH_CLEAR 1
@@ -1902,6 +1903,27 @@ half_limit_left(GC_bool unlimited)
   return unlimited || 2 * us_since(GC_start_time) < time_limit_us();
 }
 
+/*
+ * Whether the phase `finish_phase` may start in the chunk in progress of
+ * the pending finish, which started in the phase `first`: always if it is
+ * that phase, else if `half_limit_left(unlimited)`.  Half of the time limit
+ * may have passed since `GC_start_time` before a chunk does any work: at
+ * any reading of the clock with a time limit under a microsecond, and
+ * where the thread loses the processor, or runs slowly (e.g. under an
+ * emulator), between the reading of the clock into `GC_start_time` and the
+ * one of the check.  Every phase does some work in each chunk that runs
+ * it: `setup_stop_func()`, the stop function of the emptying of the lists
+ * and of the walk, reads the clock only from its `SETUP_MIN_CALLS`-th call
+ * in the chunk on, `unmap_stop_func()` is called after a call of
+ * `GC_unmap()`, and the rest of the finish runs whole.  Thus every chunk
+ * makes progress, and the finish completes.
+ */
+static GC_bool
+phase_may_start(int first, GC_bool unlimited)
+{
+  return finish_phase == first || half_limit_left(unlimited);
+}
+
 #  ifdef USE_MUNMAP
 /*
  * Run a chunk of the unmapping of the pending finish until the time limit
@@ -1931,6 +1953,7 @@ static void
 run_finish_chunk(GC_bool unlimited, GC_bool unmap)
 {
   GC_stop_func stop_func = unlimited ? GC_never_stop_func : setup_stop_func;
+  int first = finish_phase;
 
   GC_ASSERT(I_HOLD_LOCK());
   GC_ASSERT(FINISH_PENDING());
@@ -1941,7 +1964,7 @@ run_finish_chunk(GC_bool unlimited, GC_bool unmap)
       finish_phase = FINISH_WALK_START;
     EXIT_GC();
   }
-  if (FINISH_WALK_START == finish_phase && half_limit_left(unlimited)) {
+  if (FINISH_WALK_START == finish_phase && phase_may_start(first, unlimited)) {
     GC_start_reclaim_begin(pending_rl);
     walk_next = NULL;
     finish_phase = FINISH_WALK;
@@ -1957,7 +1980,7 @@ run_finish_chunk(GC_bool unlimited, GC_bool unmap)
       finish_phase = FINISH_REST;
     EXIT_GC();
   }
-  if (FINISH_REST == finish_phase && half_limit_left(unlimited)) {
+  if (FINISH_REST == finish_phase && phase_may_start(first, unlimited)) {
     finish_phase = FINISH_NONE;
     finish_rest(finish_full);
 #  ifdef USE_MUNMAP
@@ -1969,8 +1992,8 @@ run_finish_chunk(GC_bool unlimited, GC_bool unmap)
 #  endif
   }
 #  ifdef USE_MUNMAP
-  if (FINISH_UNMAP == finish_phase && unmap && half_limit_left(unlimited)
-      && run_unmap_chunk(unlimited))
+  if (FINISH_UNMAP == finish_phase && unmap
+      && phase_may_start(first, unlimited) && run_unmap_chunk(unlimited))
     finish_phase = FINISH_NONE;
 #  else
   UNUSED_ARG(unmap);

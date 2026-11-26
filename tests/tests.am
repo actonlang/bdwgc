@@ -366,6 +366,11 @@ check_PROGRAMS += liftlimittest
 liftlimittest_SOURCES = tests/liftlimit.c
 liftlimittest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
+TESTS += chunkprogresstest$(EXEEXT)
+check_PROGRAMS += chunkprogresstest
+chunkprogresstest_SOURCES = tests/chunkprogress.c
+chunkprogresstest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+
 TESTS += unmapstabletest$(EXEEXT)
 check_PROGRAMS += unmapstabletest
 unmapstabletest_SOURCES = tests/unmapstable.c
@@ -482,6 +487,7 @@ check-without-test-driver: $(TESTS)
 	./unmaptest$(EXEEXT)
 	./untouchedtest$(EXEEXT)
 	test ! -f atomicopstest$(EXEEXT) || ./atomicopstest$(EXEEXT)
+	test ! -f chunkprogresstest$(EXEEXT) || ./chunkprogresstest$(EXEEXT)
 	test ! -f cpptest$(EXEEXT) || ./cpptest$(EXEEXT)
 	test ! -f disclaim_bench$(EXEEXT) || ./disclaim_bench$(EXEEXT)
 	test ! -f disclaimtest$(EXEEXT) || ./disclaimtest$(EXEEXT)

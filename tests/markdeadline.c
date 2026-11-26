@@ -124,24 +124,23 @@
  * mark bits and the first world-stopped mark must wait for a builder of
  * a free list.  With memory unmapping (except on Windows), the blocks of
  * every other one of many objects (with resident pages) are freed
- * explicitly and unmapped after the finish of the next collection, in
- * chunks with a time limit of 10 us (the unmapping threshold is one
- * collection): it must not start in a chunk after half of the time limit,
- * and with a time limit of 10 s the next chunk must not be due, even after
- * the allocation volume between two steps.  With the next chunk not due,
- * a collection that is due after the first chunk must end the unmapping
- * and start, but not while none is due, not before that chunk, and not
- * while the collections are disabled.  With the blocks of every other one
- * of as many new objects freed, the unmapping of every free block before
- * a heap growth must stop at the time limit, counted from its start, which
- * leaves most of those blocks mapped, and without a time limit the next
- * growth must unmap more, so that the two together unmap at least half as
- * many bytes as were freed.  The checks of the unmapping run only where
- * the clock of the collector resolves fractions of a millisecond (see
- * `fine_clock()`).  The incremental mode must still be on then, and the
- * trees must stay intact.  Throughout, a step that leaves the marking
- * unfinished must keep the world stopped for at least its time limit after
- * stopping it.
+ * explicitly and unmapped after the finish of the next collection, in chunks
+ * with a time limit of 10 us (the unmapping threshold is one collection):
+ * a chunk starting in it must unmap a block past its time limit, and with
+ * a time limit of 10 s the next chunk must not be due, even after the
+ * allocation volume between two steps.  With the next chunk not due,
+ * a collection that is due after the first chunk must end the unmapping and
+ * start, but not while none is due, not before that chunk, and not while the
+ * collections are disabled.  With the blocks of every other one of as many
+ * new objects freed, the unmapping of every free block before a heap growth
+ * must stop at the time limit, counted from its start, which leaves most of
+ * those blocks mapped, and without a time limit the next growth must unmap
+ * more, so that the two together unmap at least half as many bytes as were
+ * freed.  The checks of the unmapping run only where the clock of the
+ * collector resolves fractions of a millisecond (see `fine_clock()`).  The
+ * incremental mode must still be on then, and the trees must stay intact.
+ * Throughout, a step that leaves the marking unfinished must keep the world
+ * stopped for at least its time limit after stopping it.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -1800,12 +1799,12 @@ check_unmap_chunks(void)
   }
   /* A chunk unmaps a few of the blocks at most. */
   CHECK(FINISH_UNMAP == finish_phase);
-  /* The unmapping does not start in a chunk after half of its time limit. */
+  /* A chunk starting in the unmapping unmaps a block past its time limit. */
   unmapped = GC_unmapped_bytes;
   GET_TIME(GC_start_time);
-  wait_us_since(GC_start_time, 6);
+  wait_us_since(GC_start_time, time_limit_us());
   run_finish_chunk(FALSE, TRUE);
-  CHECK(FINISH_UNMAP == finish_phase && GC_unmapped_bytes == unmapped);
+  CHECK(FINISH_UNMAP == finish_phase && GC_unmapped_bytes > unmapped);
 
   /*
    * With a time limit of 10 s, the next chunk of the unmapping is not due,

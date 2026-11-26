@@ -956,6 +956,7 @@ pub fn build(b: *std.Build) void {
         });
         addTest(b, gc, test_step, flags, "unmapchunkstest", "tests/unmapchunks.c");
         addTest(b, gc, test_step, flags, "liftlimittest", "tests/liftlimit.c");
+        addTest(b, gc, test_step, flags, "chunkprogresstest", "tests/chunkprogress.c");
         addTest(b, gc, test_step, flags, "unmapstabletest", "tests/unmapstable.c");
         addTest(b, gc, test_step, flags, "freelistmarkstest", "tests/freelistmarks.c");
         addTest(b, gc, test_step, flags, "subthreadcreatetest", "tests/subthreadcreate.c");

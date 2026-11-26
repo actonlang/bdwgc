@@ -1470,6 +1470,13 @@ if(BUILD_TESTING)
         )
         add_test(NAME liftlimittest COMMAND liftlimittest)
 
+        add_executable(chunkprogresstest tests/chunkprogress.c ${NODIST_SRC})
+        target_link_libraries(
+            chunkprogresstest
+            PRIVATE gc gc_build_flags ${THREADDLLIBS_LIST}
+        )
+        add_test(NAME chunkprogresstest COMMAND chunkprogresstest)
+
         add_executable(unmapstabletest tests/unmapstable.c ${NODIST_SRC})
         target_link_libraries(
             unmapstabletest
