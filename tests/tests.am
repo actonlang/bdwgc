@@ -376,6 +376,11 @@ check_PROGRAMS += neverrunthreadtest
 neverrunthreadtest_SOURCES = tests/neverrunthread.c
 neverrunthreadtest_LDADD = $(test_ldadd) $(THREADDLLIBS)
 
+TESTS += freelistmarkstest$(EXEEXT)
+check_PROGRAMS += freelistmarkstest
+freelistmarkstest_SOURCES = tests/freelistmarks.c
+freelistmarkstest_LDADD = $(test_ldadd) $(THREADDLLIBS)
+
 endif
 
 if CPLUSPLUS
@@ -484,6 +489,7 @@ check-without-test-driver: $(TESTS)
 	test ! -f finalboundtest$(EXEEXT) || ./finalboundtest$(EXEEXT)
 	test ! -f finishtest$(EXEEXT) || ./finishtest$(EXEEXT)
 	test ! -f forktest$(EXEEXT) || ./forktest$(EXEEXT)
+	test ! -f freelistmarkstest$(EXEEXT) || ./freelistmarkstest$(EXEEXT)
 	test ! -f heapsectstest$(EXEEXT) || ./heapsectstest$(EXEEXT)
 	test ! -f idleratetest$(EXEEXT) || ./idleratetest$(EXEEXT)
 	test ! -f initfromthreadtest$(EXEEXT) || ./initfromthreadtest$(EXEEXT)

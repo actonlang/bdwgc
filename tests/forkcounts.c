@@ -15,23 +15,24 @@
  * Test that a child process forked by a process with parallel markers
  * does not take the mark counts of the blocks for exact ones.  The
  * markers increment the count of a block without synchronization, thus
- * a count may be lower than the number of the set mark bits, and the
- * collector never decrements a count to zero (which means a block without
- * marked objects) while the counts may be low.  The parent process clears
- * the mark bits of uncollectable objects (whose mark bits no collection
- * clears), except those of the first objects of each block (the kept
- * ones, 1 up to half of the block, varying by block), and sets them
- * again from two threads at once, as parallel markers would, then forks.
- * The child process, which marks without the markers, frees the objects
- * explicitly, except the kept ones, and collects: clearing the mark bits
- * of the freed objects on the free list decrements the counts.  A count
- * decremented to zero would free the block of the kept objects (or,
- * decremented further, wrap around).  This is repeated with other kept
- * objects in three child processes.  The test fails if a kept object is
- * no longer an object of the heap, or if its contents change while the
- * child process allocates objects of its size, or if a child process
- * crashes (an assertion in a build with assertions).  Without the
- * parallel markers or the support of `fork()`, the test is skipped.
+ * a count may be lower than the number of the set mark bits, and while
+ * the counts may be low, the collector stores a count decremented to zero
+ * (which means a block without marked objects) only if no mark bit of the
+ * block is set.  The parent process clears the mark bits of uncollectable
+ * objects (whose mark bits no collection clears), except those of the
+ * first objects of each block (the kept ones, 1 up to half of the block,
+ * varying by block), and sets them again from two threads at once, as
+ * parallel markers would, then forks.  The child process, which marks
+ * without the markers, frees the objects explicitly, except the kept ones,
+ * and collects: clearing the mark bits of the freed objects on the free
+ * list decrements the counts.  A count stored as zero while the kept
+ * objects are marked would free their block (or, decremented further, wrap
+ * around).  This is repeated with other kept objects in three child
+ * processes.  The test fails if a kept object is no longer an object of
+ * the heap, or if its contents change while the child process allocates
+ * objects of its size, or if a child process crashes (an assertion in a
+ * build with assertions).  Without the parallel markers or the support of
+ * `fork()`, the test is skipped.
  */
 
 #ifdef HAVE_CONFIG_H

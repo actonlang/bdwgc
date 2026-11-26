@@ -1477,6 +1477,13 @@ if(BUILD_TESTING)
         )
         add_test(NAME unmapstabletest COMMAND unmapstabletest)
 
+        add_executable(freelistmarkstest tests/freelistmarks.c ${NODIST_SRC})
+        target_link_libraries(
+            freelistmarkstest
+            PRIVATE gc gc_build_flags ${THREADDLLIBS_LIST}
+        )
+        add_test(NAME freelistmarkstest COMMAND freelistmarkstest)
+
         if(NOT WIN32)
             add_executable(expandmanytest tests/expandmany.c ${NODIST_SRC})
             target_link_libraries(

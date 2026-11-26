@@ -3210,6 +3210,27 @@ GC_check_fl_marks(void **pfreelist)
  */
 #define FL_CLEAR_CHECK 512
 
+#ifdef PARALLEL_MARK
+/*
+ * Whether an object of the block of small objects of `hhdr` is marked,
+ * read from the mark bits of the block, which are exact once the marking
+ * is complete.
+ */
+static GC_bool
+block_has_marked_objs(const hdr *hhdr)
+{
+  size_t sz = hhdr->hb_sz;
+  size_t n_objs = HBLK_OBJS(sz);
+  size_t i, bit_no;
+
+  for (i = 0, bit_no = 0; i < n_objs; i++, bit_no += MARK_BIT_OFFSET(sz)) {
+    if (mark_bit_from_hdr(hhdr, bit_no))
+      return TRUE;
+  }
+  return FALSE;
+}
+#endif
+
 /*
  * Clear the mark bits of the free list starting at `*pq`, and its links if
  * `clear_links`, until the end of the list or until `stop_func` (if not
@@ -3243,13 +3264,19 @@ GC_clear_fl_marks(ptr_t *pq, GC_bool clear_links, GC_stop_func stop_func)
       clear_mark_bit_from_hdr(hhdr, bit_no);
       n_marks--;
 #ifdef PARALLEL_MARK
-      /* Approximate count, do not decrement to zero! */
-      if (n_marks != 0 || !GC_APPROX_MARK_COUNTS()) {
-        hhdr->hb_n_marks = n_marks;
-      }
-#else
-      hhdr->hb_n_marks = n_marks;
+      /*
+       * The count is approximate: it may reach zero here while objects of
+       * the block are still marked, thus it is set to zero only if the mark
+       * bits, exact once the marking is complete, show that none is.  So
+       * the sweep frees a block whose only marked objects were on the free
+       * lists, e.g. objects of a free list marked from a stale reference to
+       * one of them, which marks the rest of the list through the links.
+       */
+      if (0 == n_marks && GC_APPROX_MARK_COUNTS()
+          && block_has_marked_objs(hhdr))
+        n_marks = 1;
 #endif
+      hhdr->hb_n_marks = n_marks;
     }
     bytes += sz;
 

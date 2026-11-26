@@ -1421,12 +1421,14 @@ struct hblkhdr {
    * Number of set mark bits, excluding the one always set at the end.
    * Currently it is updated concurrently and hence only approximate.
    * But a zero value does guarantee that the block contains
-   * no marked objects.  Ensuring this property means that we never
-   * decrement it to zero during a collection, and hence the count may
-   * be one too high.  Due to concurrent updates, an arbitrary number
-   * of increments, but not all of them (!) may be lost, hence it may,
-   * in theory, be much too low.  The count may also be too high
-   * if multiple mark threads mark the same object due to a race.
+   * no marked objects.  Ensuring this property means that a count
+   * decremented to zero during a collection is stored only if no mark
+   * bit of the block is set, or never (see `GC_APPROX_MARK_COUNTS()`),
+   * and hence the count may be one too high.  Due to concurrent updates,
+   * an arbitrary number of increments, but not all of them (!) may be
+   * lost, hence it may, in theory, be much too low.  The count may also
+   * be too high if multiple mark threads mark the same object due to
+   * a race.
    */
   volatile AO_t hb_n_marks;
 #else
@@ -5262,8 +5264,10 @@ GC_EXTERN GC_bool GC_forked_with_markers;
 /*
  * Whether the mark counts of the blocks may be lower than the numbers of
  * their set mark bits: the parallel markers increment them without
- * synchronization.  Then a count is never decremented to zero, which
- * means a block without marked objects.
+ * synchronization.  Then a count that a decrement brings to zero, which
+ * means a block without marked objects, is stored only if no mark bit of
+ * the block is set (`GC_clear_fl_marks()`), or never
+ * (`GC_clear_mark_bit()`).
  */
 #  define GC_APPROX_MARK_COUNTS() (GC_parallel || GC_forked_with_markers)
 
