@@ -118,8 +118,13 @@ make_free_list(void)
     last_block = block;
   } while (n_in_block < block_objs);
   keep = GC_REVEAL_POINTER(objs[n_objs - block_objs + block_objs / 2]);
+  /*
+   * By `GC_free()`, as the objects are allocated without a debug header:
+   * `GC_FREE()` is `GC_debug_free()` with `GC_DEBUG`, which leaves
+   * a collectable object to the collector.
+   */
   for (i = 0; i < n_objs; i++)
-    GC_FREE(GC_REVEAL_POINTER(objs[i]));
+    GC_free(GC_REVEAL_POINTER(objs[i]));
   GC_enable();
 }
 
