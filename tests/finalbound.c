@@ -71,34 +71,35 @@
  * Last, with a time limit of 1 ms, no allocation budget (so that the heap cap
  * is the live data plus half of the distance from it to the heap ceiling) and
  * a heap ceiling of at least `MIN_CEILING_MIB` MiB, so that the heap cap is
- * far above the heap of the test whatever the memory limit, the client links a
- * new list of `N_LIST` nodes to a root, allocated with the collections
- * disabled, before a collection (so that its first mark does not complete),
- * once the collection marks in steps, and again after every abandoned final
- * mark, until a final mark at `MAX_SLICE_LIMITS` times the time limit (the
- * bound) is abandoned.  The steps do not mark from the roots, thus every final
- * mark has the latest list to mark, which takes longer than the bound, and the
- * need of the next final mark doubles with each one abandoned.  The part runs
- * three times.  In each, a final mark may run without a time limit outside one
- * stop only after `MAX_ABANDONED_AT_BOUND` final marks abandoned at the bound,
- * or with nothing allocated since the latest of them.  At most that many final
- * marks may be abandoned at the bound, and the collection must complete after
- * the first one abandoned there, not in one stop.  First, the client goes on
- * allocating after that.  The final marks after the first one abandoned at
- * the bound complete at it if the part before their roots are pushed (the
- * world stop, the dirty bits, the walk of the blocks for the dirty ones, the
- * roots) leaves room.  Otherwise the final mark after
- * `MAX_ABANDONED_AT_BOUND` abandoned at the bound runs without a time limit,
- * as in a zig build in the Debug mode, where that part takes longer than the
- * bound with a heap of a few hundred MiB.  Second, the client links a new list
- * after every final mark abandoned, also at the bound, and calls
- * `GC_collect_a_little()` in between, so that no final mark at the bound
- * completes (a list is marked by one marker, for longer than the bound):
- * exactly one final mark must run without a time limit, after exactly
- * `MAX_ABANDONED_AT_BOUND` abandoned at the bound.  Third, the client waits
- * for the collection by calling `GC_collect_a_little()` until it returns 0,
- * with nothing allocated: the wait must end, and at most one more final mark
- * may be abandoned at the bound.
+ * at least about 4 GiB, or about 1.5 GiB on 32-bit targets, whatever the
+ * memory limit (see `MIN_CEILING_MIB`), the client links a new list of
+ * `N_LIST` nodes to a root, allocated with the collections disabled, before
+ * a collection (so that its first mark does not complete), once the
+ * collection marks in steps, and again after every abandoned final mark,
+ * until a final mark at `MAX_SLICE_LIMITS` times the time limit (the bound)
+ * is abandoned.  The steps do not mark from the roots, thus every final mark
+ * has the latest list to mark, which takes longer than the bound, and the
+ * need of the next final mark doubles with each one abandoned.  The part
+ * runs three times.  In each, a final mark may run without a time limit
+ * outside one stop only after `MAX_ABANDONED_AT_BOUND` final marks abandoned
+ * at the bound, or with nothing allocated since the latest of them.  At most
+ * that many final marks may be abandoned at the bound, and the collection
+ * must complete after the first one abandoned there, not in one stop.
+ * First, the client goes on allocating after that.  The final marks after
+ * the first one abandoned at the bound complete at it if the part before
+ * their roots are pushed (the world stop, the dirty bits, the walk of the
+ * blocks for the dirty ones, the roots) leaves room.  Otherwise the final
+ * mark after `MAX_ABANDONED_AT_BOUND` abandoned at the bound runs without
+ * a time limit, as in a zig build in the Debug mode, where that part takes
+ * longer than the bound with a heap of a few hundred MiB.  Second, the
+ * client links a new list after every final mark abandoned, also at the
+ * bound, and calls `GC_collect_a_little()` in between, so that no final mark
+ * at the bound completes (a list is marked by one marker, for longer than
+ * the bound): exactly one final mark must run without a time limit, after
+ * exactly `MAX_ABANDONED_AT_BOUND` abandoned at the bound.  Third, the
+ * client waits for the collection by calling `GC_collect_a_little()` until
+ * it returns 0, with nothing allocated: the wait must end, and at most one
+ * more final mark may be abandoned at the bound.
  *
  * Without the steps (e.g. without the parallel marker), the manual VDB mode
  * abandons no mark, and every collection completes in its first one.
@@ -495,13 +496,24 @@ run_part(int p, unsigned marks, unsigned max_marks)
 #  define MAX_COLLECTIONS 40
 
 /*
- * The heap ceiling of the last part at least, in MiB.  The heap cap, the live
- * data plus half of the distance to the ceiling, is then at least about
- * 4 GiB, above the heap of the test whatever the memory limit: in a zig build
- * in the Debug mode that heap grows up to about 1.5 GiB, also at 16 KiB
- * blocks.  On 32-bit targets the ceiling saturates at the largest word.
+ * The heap ceiling of the last part at least, in MiB.  The heap cap, the
+ * live data plus half of the distance to the ceiling, is then at least about
+ * 4 GiB, above the heap of the test whatever the memory limit: in a zig
+ * build in the Debug mode that heap grows up to about 1.5 GiB, also at
+ * 16 KiB blocks.  On 32-bit targets a ceiling of 4 GiB or more saturates at
+ * the largest word, which gives a heap cap of about 2 GiB, so there the
+ * ceiling is at least 3 GiB, for a heap cap of about 1.5 GiB.  Under
+ * qemu-user the heap of the last part may grow to near the heap cap, and on
+ * MIPS with 32-bit pointers a process has 2 GiB of address space, in which
+ * the block headers take another eighth of the heap (a mark byte for each
+ * granule of 8 bytes with the parallel marker), so that a heap near 2 GiB
+ * does not fit there.
  */
-#  define MIN_CEILING_MIB 8192
+#  if CPP_WORDSZ == 32
+#    define MIN_CEILING_MIB 3072
+#  else
+#    define MIN_CEILING_MIB 8192
+#  endif
 
 struct list_node {
   struct list_node *next;
