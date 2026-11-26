@@ -5451,13 +5451,23 @@ GC_INNER void GC_start_mark_threads_inner(void);
  * Linux `glibc`, but it is not exported.)  Thus we continue to use
  * the same hard-coded signals we have always used.
  */
-#  ifdef THREAD_SANITIZER
+#  if defined(THREAD_SANITIZER) \
+      && (defined(USE_RWLOCK)   \
+          || !(GC_CLANG_PREREQ(20, 0) || GC_GNUC_PREREQ(15, 0)))
 /*
- * Unfortunately, use of an asynchronous signal to suspend threads leads to
- * the situation when the signal is not delivered (it is stored to
- * `pending_signals` in TSan runtime actually) while the destination thread
- * is blocked in `pthread_mutex_lock()`.  Thus, we use some synchronous one
- * instead (which is again unlikely to be used by clients directly).
+ * TSan stores an asynchronous signal to `pending_signals`, and calls the
+ * handler when the destination thread leaves the intercepted call it is
+ * in, unless TSan treats the call as blocking.  It does not treat
+ * `pthread_rwlock_rdlock()` as blocking, nor `pthread_mutex_lock()` in
+ * some runtimes (e.g. those of clang v18 and gcc v13), thus a thread which
+ * waits there for the allocator lock would not acknowledge the signal.
+ * Hence, with `USE_RWLOCK`, and with the runtimes of clang before v20 and
+ * gcc before v15, we use some synchronous one instead (which is again
+ * unlikely to be used by clients directly).  Otherwise the default signal
+ * is used: TSan handles a synchronous signal at once, also inside its
+ * bookkeeping of a synchronization operation (e.g. of an atomic load with
+ * the acquire ordering), where the thread holds the lock of its TSan slot,
+ * and the handling then waits for that lock forever.
  */
 #    define SIG_SUSPEND SIGSYS
 #  elif (defined(DGUX) || defined(LINUX)) && !defined(GC_USESIGRT_SIGNALS)

@@ -285,11 +285,23 @@ GC_suspend_sigaction(int sig, siginfo_t *info, void *context)
   GC_with_callee_saves_pushed(GC_suspend_handler_inner, NULL);
 #    else
   UNUSED_ARG(info);
+#      ifdef THREAD_SANITIZER
+  /*
+   * TSan calls the handler of an asynchronous signal at once only if the
+   * thread is in a blocking call, otherwise later from an interceptor or
+   * an atomic operation, where no signal frame holds the registers of the
+   * code which called them.  Thus, the callee-saved registers are pushed
+   * here.
+   */
+  UNUSED_ARG(context);
+  GC_with_callee_saves_pushed(GC_suspend_handler_inner, NULL);
+#      else
   /*
    * We believe that in this case the full context is already in the
    * signal handler frame.
    */
   GC_suspend_handler_inner(NULL, context);
+#      endif
 #    endif
   errno = old_errno;
 }
