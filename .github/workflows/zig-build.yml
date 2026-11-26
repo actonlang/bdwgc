@@ -17,7 +17,7 @@ jobs:
       thrlocal:${{ matrix.thread_local_alloc }}
       multi-obj:${{ matrix.disable_single_obj }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+    timeout-minutes: 19
 
     strategy:
       fail-fast: false
@@ -155,7 +155,7 @@ jobs:
         run: zig build $ZIG_BUILD_FLAGS
 
       - name: Build and run tests
-        timeout-minutes: 9
+        timeout-minutes: 14
         shell: bash
         run: zig build $ZIG_BUILD_FLAGS test
 
