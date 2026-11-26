@@ -93,6 +93,6 @@ jobs:
           -i tests/cpucount.c -i tests/expandfail.c -i tests/finalbound.c
           -i tests/fulllive.c -i tests/idlerate.c -i tests/markdeadline.c
           -i tests/markstackgrowth.c -i tests/memlimit.c -i tests/rescue.c
-          -i tests/serialgrowth.c
+          -i tests/ringstart.c -i tests/serialgrowth.c
           -i tests/switchedstack.c -i tests/unmap.c
           --check-level=exhaustive --safety ${{ matrix.args }}

@@ -1268,6 +1268,20 @@ if(BUILD_TESTING)
     )
     add_test(NAME rescuetest COMMAND rescuetest)
 
+    # Likewise, the test includes the collector source.
+    add_executable(ringstarttest tests/ringstart.c ${NODIST_SRC})
+    if(MSVC)
+        target_sources(ringstarttest PRIVATE extra/msvc_dbg.c)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(sparc.*|SPARC.*)")
+        target_sources(ringstarttest PRIVATE sparc_mach_dep.S)
+    endif()
+    target_link_libraries(
+        ringstarttest
+        PRIVATE gc_build_flags ${ATOMIC_OPS_LIBS_CMAKE} ${THREADDLLIBS_LIST}
+    )
+    add_test(NAME ringstarttest COMMAND ringstarttest)
+
     add_executable(sectionstarttest tests/sectionstart.c ${NODIST_SRC})
     target_link_libraries(sectionstarttest PRIVATE gc gc_build_flags)
     add_test(NAME sectionstarttest COMMAND sectionstarttest)
