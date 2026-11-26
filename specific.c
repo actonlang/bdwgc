@@ -138,6 +138,16 @@ GC_remove_specific_after_fork(tsd *key, pthread_t t)
      * both this and the preceding write should become visible no later
      * than the `pthread_mutex_unlock()` call.
      */
+    /*
+     * The cache may still reference the entry, so it may stay reachable
+     * after the thread is gone.  Clear the thread id: it may be an address
+     * (with glibc, that of the thread descriptor at the top of the thread
+     * stack) which the heap reuses once the stack is unmapped, and then it
+     * would look like a pointer to a newer object (the write-barrier
+     * checker would report it).  A concurrent lookup at this entry finds
+     * no match and goes on to `next`, which is unchanged.
+     */
+    entry->thread = INVALID_THREADID;
   }
   /*
    * If we wanted to deallocate the entry, we would first have to clear
