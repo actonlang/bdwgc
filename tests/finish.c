@@ -86,7 +86,12 @@
       }                                                                       \
     } while (0)
 
-#  define MAGIC 0x5e7a9L
+/*
+ * The first word of a young object, which the marking and the checker
+ * read as a possible pointer.  No heap object lies below 4096: the
+ * collector takes no memory for its heap there on any supported system.
+ */
+#  define MAGIC 0x5e7L
 
 /* The old objects, about 30 of them per 16 KiB block (1000 blocks). */
 #  define N_OLD 30000

@@ -82,7 +82,16 @@
       }                                                                       \
     } while (0)
 
-#  define MAGIC 0x5eed1234L
+/*
+ * The first word of a young object, which the marking and the checker
+ * read as a possible pointer.  No heap object lies below 4096: the
+ * collector takes no memory for its heap there on any supported system.
+ * The value is odd, which tells a live young object from one on a free
+ * list: the first word of the latter is a link or zero, a multiple of the
+ * granule size, and so is the half of that word that `long` holds where
+ * `long` is narrower than a pointer.
+ */
+#  define MAGIC 0x5edL
 
 struct young {
   long magic;
